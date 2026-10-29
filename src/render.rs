@@ -57,6 +57,19 @@ pub enum RenderError {
         second: PathBuf,
         rendered: String,
     },
+    #[error("{} and {} cannot both be emitted: {inner} is inside {outer}", first.display(), second.display())]
+    Conflict {
+        first: PathBuf,
+        second: PathBuf,
+        outer: String,
+        inner: String,
+    },
+    #[error("{}: symlink target {target:?} {reason}", path.display())]
+    SymlinkTarget {
+        path: PathBuf,
+        target: String,
+        reason: &'static str,
+    },
     #[error("invalid file rule {pattern:?}: {source}")]
     BadPattern {
         pattern: String,
@@ -126,7 +139,8 @@ impl Walk<'_> {
             let Some(name) = name.to_str() else {
                 return Err(RenderError::NonUtf8Name { path });
             };
-            if name == ".git" || (name == CONFIG_FILE && src_rel.is_empty() && self.cfg.root == ".")
+            if name == ".git"
+                || (name == CONFIG_FILE && src_rel.is_empty() && root_is_top(&self.cfg.root))
             {
                 continue;
             }
@@ -164,7 +178,7 @@ impl Walk<'_> {
             let mut out = out_rel.to_vec();
             out.extend(segments);
             let rendered = out.join("/");
-            if rendered == RECORD_FILE {
+            if out[0].eq_ignore_ascii_case(RECORD_FILE) {
                 return Err(RenderError::RecordPath { path });
             }
             if self
@@ -174,13 +188,7 @@ impl Walk<'_> {
             {
                 continue;
             }
-            if let Some(first) = self.sources.get(&rendered) {
-                return Err(RenderError::Collision {
-                    first: first.clone(),
-                    second: path,
-                    rendered,
-                });
-            }
+            self.check_conflicts(&rendered, &path)?;
             let entry = if meta.file_type().is_symlink() {
                 let target = std::fs::read_link(&path).map_err(|source| RenderError::Io {
                     path: path.clone(),
@@ -190,6 +198,7 @@ impl Walk<'_> {
                     .to_str()
                     .ok_or_else(|| RenderError::NonUtf8Link { path: path.clone() })?
                     .to_string();
+                check_link_target(&path, &out[..out.len() - 1], &target)?;
                 Entry::Symlink { target }
             } else {
                 let bytes = std::fs::read(&path).map_err(|source| RenderError::Io {
@@ -223,8 +232,39 @@ impl Walk<'_> {
             } else {
                 FileClass::Managed
             };
-            self.sources.insert(rendered.clone(), path);
+            self.sources.insert(rendered.to_lowercase(), path);
             self.tree.insert(rendered, Rendered { entry, class });
+        }
+        Ok(())
+    }
+
+    /// Rejects a path equal to, inside, or containing an already emitted
+    /// path, comparing case-insensitively (macOS/Windows filesystems).
+    fn check_conflicts(&self, rendered: &str, path: &Path) -> Result<(), RenderError> {
+        let lower = rendered.to_lowercase();
+        if let Some(first) = self.sources.get(&lower) {
+            return Err(RenderError::Collision {
+                first: first.clone(),
+                second: path.to_path_buf(),
+                rendered: rendered.to_string(),
+            });
+        }
+        let conflict = |outer: &str, inner: &str, first: &PathBuf| RenderError::Conflict {
+            first: first.clone(),
+            second: path.to_path_buf(),
+            outer: outer.to_string(),
+            inner: inner.to_string(),
+        };
+        for (i, _) in lower.match_indices('/') {
+            if let Some(first) = self.sources.get(&lower[..i]) {
+                return Err(conflict(&lower[..i], rendered, first));
+            }
+        }
+        let prefix = format!("{lower}/");
+        if let Some((key, first)) = self.sources.range(prefix.clone()..).next()
+            && key.starts_with(&prefix)
+        {
+            return Err(conflict(rendered, key, first));
         }
         Ok(())
     }
@@ -264,6 +304,9 @@ impl Walk<'_> {
                 "." | ".." => return Err(bad("has a `.` or `..` segment")),
                 _ => {}
             }
+            if seg.eq_ignore_ascii_case(".git") {
+                return Err(bad("has a `.git` segment"));
+            }
             let b = seg.as_bytes();
             if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
                 return Err(bad("has a drive prefix"));
@@ -272,6 +315,44 @@ impl Walk<'_> {
         }
         Ok(Some(segments))
     }
+}
+
+/// True when `root` names the repository top (`.`, `./`, empty).
+fn root_is_top(root: &str) -> bool {
+    Path::new(root)
+        .components()
+        .all(|c| matches!(c, std::path::Component::CurDir))
+}
+
+/// Rejects absolute targets and targets that leave the project root when
+/// resolved lexically from the link's directory `dir` (rendered segments).
+fn check_link_target(path: &Path, dir: &[String], target: &str) -> Result<(), RenderError> {
+    let bad = |reason| RenderError::SymlinkTarget {
+        path: path.to_path_buf(),
+        target: target.to_string(),
+        reason,
+    };
+    let b = target.as_bytes();
+    if target.starts_with('/')
+        || target.starts_with('\\')
+        || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
+    {
+        return Err(bad("is absolute"));
+    }
+    let mut depth = dir.len();
+    for seg in target.split(['/', '\\']) {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if depth == 0 {
+                    return Err(bad("escapes the project root"));
+                }
+                depth -= 1;
+            }
+            _ => depth += 1,
+        }
+    }
+    Ok(())
 }
 
 /// Renders every pattern with `ctx` and compiles them into one matcher.
@@ -541,6 +622,93 @@ mod tests {
         put(d.path(), "{{ n }}/f", "x");
         let r = render(d.path(), &cfg(""), &answers(json!({"n": ".."})));
         assert!(matches!(r, Err(RenderError::BadPath { .. })));
+    }
+
+    #[test]
+    fn rejects_record_dir_and_git_segments() {
+        for bad in [
+            ".rootstock.toml/x",
+            ".ROOTSTOCK.toml",
+            ".git/hooks/pre-commit",
+            ".GIT/x",
+            "a/.Git",
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            put(d.path(), "{{ n }}", "x");
+            let r = render(d.path(), &cfg(""), &answers(json!({"n": bad})));
+            assert!(
+                matches!(
+                    r,
+                    Err(RenderError::BadPath { .. } | RenderError::RecordPath { .. })
+                ),
+                "{bad}: {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_case_insensitive_collision() {
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "README.md", "1");
+        put(d.path(), "{{ n }}", "2");
+        let r = render(d.path(), &cfg(""), &answers(json!({"n": "readme.md"})));
+        assert!(matches!(r, Err(RenderError::Collision { .. })), "{r:?}");
+    }
+
+    #[test]
+    fn rejects_file_dir_conflict() {
+        // `a` sorts before `a.d`... use names where either order occurs.
+        for (file, nested) in [("a", "{{ n }}/b"), ("{{ n }}", "a/b")] {
+            let d = tempfile::tempdir().unwrap();
+            put(d.path(), file, "1");
+            put(d.path(), nested, "2");
+            let r = render(d.path(), &cfg(""), &answers(json!({"n": "a"})));
+            assert!(
+                matches!(r, Err(RenderError::Conflict { .. })),
+                "{file}: {r:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_dir_conflict() {
+        let d = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("x", d.path().join("a")).unwrap();
+        put(d.path(), "{{ n }}/f", "1");
+        let r = render(d.path(), &cfg(""), &answers(json!({"n": "a"})));
+        assert!(matches!(r, Err(RenderError::Conflict { .. })), "{r:?}");
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "a/f", "1");
+        std::os::unix::fs::symlink("x", d.path().join("{{ n }}")).unwrap();
+        let r = render(d.path(), &cfg(""), &answers(json!({"n": "a"})));
+        assert!(matches!(r, Err(RenderError::Conflict { .. })), "{r:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_targets_checked() {
+        let link = |target: &str, at: &str| {
+            let d = tempfile::tempdir().unwrap();
+            let p = d.path().join(at);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(target, p).unwrap();
+            render(d.path(), &cfg(""), &Answers::new())
+        };
+        for (t, at) in [
+            ("/etc", "l"),
+            ("../x", "l"),
+            ("../../x", "a/l"),
+            ("a/../../x", "l"),
+        ] {
+            let r = link(t, at);
+            assert!(
+                matches!(r, Err(RenderError::SymlinkTarget { .. })),
+                "{t}: {r:?}"
+            );
+        }
+        assert!(link("../shared/x", "a/l").is_ok());
+        assert!(link("sub/../x", "l").is_ok());
     }
 
     #[test]

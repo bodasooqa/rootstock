@@ -38,6 +38,12 @@ pub enum ConfigError {
         question: String,
         kind: &'static str,
     },
+    #[error("{}: `{field}` = {value:?} must be a relative path inside the repository (no `..`, no absolute path)", path.display())]
+    BadDir {
+        path: PathBuf,
+        field: &'static str,
+        value: String,
+    },
     #[error("{}: duplicate question name `{name}`", path.display())]
     DuplicateQuestion { path: PathBuf, name: String },
 }
@@ -307,6 +313,25 @@ fn validate(config: &TemplateConfig, path: &Path) -> Result<(), ConfigError> {
             });
         }
     }
+    for (field, value) in [
+        ("root", &config.root),
+        ("include_root", &config.include_root),
+    ] {
+        let ok = !value.contains(['\\', '\0'])
+            && Path::new(value).components().all(|c| {
+                matches!(
+                    c,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            });
+        if !ok {
+            return Err(ConfigError::BadDir {
+                path: path.to_path_buf(),
+                field,
+                value: value.clone(),
+            });
+        }
+    }
     let mut seen = HashSet::new();
     for q in &config.questions {
         if !seen.insert(q.name.as_str()) {
@@ -392,6 +417,24 @@ when = ["new"]
 [[hooks]]
 run = "make fmt"
 "#;
+
+    #[test]
+    fn rejects_dirs_outside_repository() {
+        for field in ["root", "include_root"] {
+            for bad in ["..", "../x", "a/../..", "/etc", "a\\b"] {
+                let text = format!("schema = 1\n{field} = '{bad}'\n");
+                let e = parse(&text, p()).unwrap_err();
+                assert!(
+                    matches!(e, ConfigError::BadDir { .. }),
+                    "{field}={bad}: {e}"
+                );
+            }
+            for ok in ["", ".", "./", "tpl", "./tpl/sub"] {
+                let text = format!("schema = 1\n{field} = '{ok}'\n");
+                assert!(parse(&text, p()).is_ok(), "{field}={ok}");
+            }
+        }
+    }
 
     #[test]
     fn parses_full_example() {
