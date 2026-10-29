@@ -5,6 +5,7 @@ pub mod answers;
 pub mod cli;
 pub mod config;
 pub mod jinja;
+pub mod merge;
 pub mod record;
 pub mod render;
 
