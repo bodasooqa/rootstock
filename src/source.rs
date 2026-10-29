@@ -43,6 +43,8 @@ fn run_git(args: &[&str]) -> Result<std::process::Output> {
     Command::new("git")
         // Repository hooks must never run on behalf of a template.
         .args(["-c", "core.hooksPath=/dev/null"])
+        // The `ext::` transport runs arbitrary commands.
+        .args(["-c", "protocol.ext.allow=never"])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
@@ -65,7 +67,8 @@ fn git(args: &[&str]) -> Result<String> {
 
 /// Lists `vX.Y.Z` tags of the source, ascending by version.
 pub fn tags(src: &Source) -> Result<Vec<(Version, String)>> {
-    let out = git(&["ls-remote", "--tags", "--refs", &src.location()])?;
+    let location = checked_location(src)?;
+    let out = git(&["ls-remote", "--tags", "--refs", "--", &location])?;
     let mut found: Vec<(Version, String)> = out
         .lines()
         .filter_map(|line| {
@@ -102,12 +105,45 @@ impl Checkout {
     }
 }
 
-/// Checks out a tag or full sha. A local source with `HEAD` is used as-is.
+/// Rejects locations git could read as an option, and local directories
+/// that are not the root of a git work tree.
+fn checked_location(src: &Source) -> Result<String> {
+    let location = src.location();
+    if location.starts_with('-') {
+        bail!("invalid template source `{location}`");
+    }
+    if let Source::Local(dir) = src {
+        let dir_str = dir.to_string_lossy();
+        let out = run_git(&["-C", &dir_str, "rev-parse", "--show-toplevel"])?;
+        if !out.status.success() {
+            bail!(
+                "`{dir_str}` is not a git repository: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let same = match (Path::new(&top).canonicalize(), dir.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if !same {
+            bail!("`{dir_str}` is not the root of a git repository (root is `{top}`)");
+        }
+    }
+    Ok(location)
+}
+
+fn is_full_sha(rev: &str) -> bool {
+    rev.len() == 40 && rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Checks out a tag or a full sha. A local source with `HEAD` is used as-is.
 pub fn checkout(src: &Source, rev: &str) -> Result<Checkout> {
+    let location = checked_location(src)?;
     if let (Source::Local(dir), "HEAD") = (src, rev) {
         let dir_str = dir.to_string_lossy();
         let commit = git(&["-C", &dir_str, "rev-parse", "HEAD"])
-            .with_context(|| format!("{dir_str} is not a git repository with commits"))?;
+            .with_context(|| format!("{dir_str} has no commits"))?;
         return Ok(Checkout {
             path: dir.clone(),
             commit,
@@ -117,8 +153,14 @@ pub fn checkout(src: &Source, rev: &str) -> Result<Checkout> {
 
     let tmp = TempDir::new().context("failed to create a temporary directory")?;
     let tmp_str = tmp.path().to_string_lossy().into_owned();
-    let location = src.location();
-    git(&["clone", "--quiet", "--no-checkout", &location, &tmp_str])?;
+    git(&[
+        "clone",
+        "--quiet",
+        "--no-checkout",
+        "--",
+        &location,
+        &tmp_str,
+    ])?;
 
     let commit = resolve(&tmp_str, rev)?
         .ok_or_else(|| anyhow!("template commit or tag `{rev}` not found in {location}"))?;
@@ -141,10 +183,14 @@ pub fn checkout(src: &Source, rev: &str) -> Result<Checkout> {
 
 /// Resolves a tag name or sha to a commit in the clone; `None` if absent.
 fn resolve(dir: &str, rev: &str) -> Result<Option<String>> {
-    for candidate in [
-        format!("refs/tags/{rev}^{{commit}}"),
-        format!("{rev}^{{commit}}"),
-    ] {
+    let mut candidates = Vec::new();
+    if !rev.starts_with('-') {
+        candidates.push(format!("refs/tags/{rev}^{{commit}}"));
+    }
+    if is_full_sha(rev) {
+        candidates.push(format!("{rev}^{{commit}}"));
+    }
+    for candidate in candidates {
         let out = run_git(&["-C", dir, "rev-parse", "--verify", "--quiet", &candidate])?;
         if out.status.success() {
             return Ok(Some(

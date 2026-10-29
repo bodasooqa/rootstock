@@ -28,6 +28,8 @@ impl TemplateRepo {
 
     fn git(&self, args: &[&str]) -> String {
         let out = Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .arg("-C")
             .arg(self.dir.path())
             .args(args)
@@ -66,6 +68,20 @@ impl TemplateRepo {
         self.git(&["add", "-A"]);
         self.git(&["commit", "--allow-empty", "-q", "-m", tag]);
         self.git(&["tag", tag]);
+        self
+    }
+
+    /// Commits everything and creates an annotated tag.
+    pub fn tag_annotated(&self, tag: &str) -> &Self {
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "--allow-empty", "-q", "-m", tag]);
+        self.git(&["tag", "-a", "-m", tag, tag]);
+        self
+    }
+
+    /// Creates a branch at the current commit.
+    pub fn branch(&self, name: &str) -> &Self {
+        self.git(&["branch", name]);
         self
     }
 
