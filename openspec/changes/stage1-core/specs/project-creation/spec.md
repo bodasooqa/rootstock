@@ -2,10 +2,10 @@
 
 ### Requirement: Команда new создаёт проект
 
-`rootstock new <template> <dir>` SHALL создавать проект из шаблона на заданной версии (по умолчанию — последний не-пререлизный semver-тег) и записывать `.rootstock.toml` (ТЗ: §Commands, §Concepts «Record»). `new` MUST быть обновлением из пустой базы в пустой проект (ТЗ: §How update works, последний абзац). Опции: `--version vX.Y.Z`, `--data k=v` (повторяемая), `--data-file`, `--defaults`, `--trust`, `--git`.
+`rootstock new <template> <dir>` SHALL создавать проект из шаблона на заданной версии (по умолчанию — последний semver-тег) и записывать `.rootstock.toml` (ТЗ: §Commands, §Concepts «Record»). `new` MUST быть обновлением из пустой базы в пустой проект (ТЗ: §How update works, последний абзац). Опции: `--version vX.Y.Z`, `--data k=v` (повторяемая), `--data-file`, `--defaults`, `--trust`, `--git`.
 
 #### Scenario: Последняя версия по умолчанию
-- **WHEN** в шаблоне есть теги `v1.0.0`, `v1.2.0`, `v2.0.0-rc.1`, и `new` вызван без `--version`
+- **WHEN** в шаблоне есть теги `v1.0.0`, `v1.2.0`, и `new` вызван без `--version`
 - **THEN** проект создаётся на `v1.2.0`
 
 #### Scenario: Явная версия
@@ -18,7 +18,7 @@
 
 ### Requirement: Запись проекта
 
-`.rootstock.toml` SHALL хранить `schema = 1`, источник шаблона, версию (тег и коммит), ответы и инвентарь — список выпущенных путей с классами (ТЗ: §Concepts «Record», «Inventory»). Ответы вопросов с ложным `when` MUST не записываться.
+`.rootstock.toml` SHALL хранить номер версии схемы (ТЗ: §Left to the builder), источник шаблона, версию (тег и коммит), ответы и инвентарь — список выпущенных путей с классами (ТЗ: §Concepts «Record», «Inventory»). Ответы вопросов с ложным `when` MUST не записываться.
 
 #### Scenario: Состав записи
 - **WHEN** проект создан успешно

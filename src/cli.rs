@@ -31,12 +31,8 @@ pub fn run() -> anyhow::Result<Outcome> {
     match Cli::try_parse() {
         Ok(_cli) => Ok(Outcome::Clean),
         Err(e) => {
-            let display_only = matches!(
-                e.kind(),
-                ErrorKind::DisplayHelp
-                    | ErrorKind::DisplayVersion
-                    | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-            );
+            let display_only =
+                matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
             // Best effort: nothing useful can be done if the stream is closed.
             let _ = e.print();
             if display_only {
