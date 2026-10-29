@@ -3,6 +3,7 @@
 
 pub mod cli;
 pub mod config;
+pub mod jinja;
 pub mod record;
 
 /// Path relative to a project or template root: `/` separators, never starting with `/`, never containing `..`.
