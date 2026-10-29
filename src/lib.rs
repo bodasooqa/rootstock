@@ -6,6 +6,7 @@ pub mod cli;
 pub mod config;
 pub mod jinja;
 pub mod merge;
+pub mod plan;
 pub mod record;
 pub mod render;
 
