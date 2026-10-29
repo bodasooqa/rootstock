@@ -2,8 +2,10 @@
 //! with a three-way merge.
 
 pub mod answers;
+pub mod apply;
 pub mod cli;
 pub mod config;
+pub mod hooks;
 pub mod jinja;
 pub mod merge;
 pub mod plan;
