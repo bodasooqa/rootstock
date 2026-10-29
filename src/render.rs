@@ -295,6 +295,14 @@ impl Walk<'_> {
                 target: target.clone(),
                 reason,
             };
+            // Filesystems that normalize Unicode (APFS, HFS+) alias an NFD path with an
+            // NFC one, which `fold_path` does not model. With link paths and link targets
+            // both ASCII, every alias is one `fold_segment` models.
+            if !rendered.is_ascii() {
+                return Err(bad(
+                    "belongs to a link whose own path has a non-ASCII character",
+                ));
+            }
             // Filesystems fold Unicode (HFS+ NFD) and 8.3 short names in ways we do not
             // model, so targets are restricted to a class where exact and folded
             // resolution are the whole story.
@@ -994,6 +1002,32 @@ mod tests {
                 "{t}: {r:?}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_path_non_ascii_rejected() {
+        for l in ["caf\u{e9}/l", "\u{e9}"] {
+            let d = tempfile::tempdir().unwrap();
+            if let Some((dir, _)) = l.split_once('/') {
+                std::fs::create_dir(d.path().join(dir)).unwrap();
+            }
+            std::os::unix::fs::symlink("x", d.path().join(l)).unwrap();
+            let r = render(d.path(), &cfg(""), &Answers::new());
+            assert!(
+                matches!(r, Err(RenderError::SymlinkTarget { .. })),
+                "{l}: {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_ascii_regular_file_allowed() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("caf\u{e9}")).unwrap();
+        std::fs::write(d.path().join("caf\u{e9}/f"), "x").unwrap();
+        let r = render(d.path(), &cfg(""), &Answers::new());
+        assert!(r.is_ok(), "{r:?}");
     }
 
     #[cfg(unix)]
