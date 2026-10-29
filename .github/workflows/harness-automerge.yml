@@ -1,0 +1,131 @@
+# Автовливание PR обновления харнесса. Управляемый файл: обновляется шаблоном,
+# руками не правится.
+#
+# Срабатывает по завершении CI проекта (workflow `CI`, стартовый ci.yml), а не
+# ожиданием внутри джобы: при одном раннере на репозиторий ждущая джоба заняла
+# бы раннер и заблокировала бы сам CI. Штатный auto-merge GitHub не подходит:
+# без обязательных проверок он влил бы PR сразу.
+#
+# Вливает squash'ем и удаляет ветку, только если всё сразу:
+#   - ветка harness/update-*, PR открыт и из этого же репозитория;
+#   - CI зелёный (красный — ничего не делает, PR остаётся открытым);
+#   - автор PR — владелец токена HARNESS_UPDATE_TOKEN, тот, кто его открыл;
+#   - нет меток harness:major и harness:conflict;
+#   - голова PR — тот коммит, на котором прошёл CI;
+#   - все коммиты PR — от обновления (автор и коммиттер с подписью
+#     harness-update.yml); есть посторонний — комментарий в PR, вливание руками.
+#
+# Подключение — .harness/local/README.md.
+name: harness-automerge
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: ["harness/update-*"]
+
+concurrency:
+  group: harness-automerge-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+# GITHUB_TOKEN не нужен: вливает HARNESS_UPDATE_TOKEN, чтобы пуш в основную
+# ветку запустил её CI.
+permissions: {}
+
+env:
+  # gh — на случай раннера, где его нет (шаг «Инструменты»).
+  GH_VERSION: 2.102.0
+
+jobs:
+  merge:
+    name: merge
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.head_branch, 'harness/update-')
+    # Раннер — переменная репозитория HARNESS_RUNNER, как в harness-update.yml.
+    runs-on: ${{ vars.HARNESS_RUNNER && (startsWith(vars.HARNESS_RUNNER, '[') && fromJSON(vars.HARNESS_RUNNER) || vars.HARNESS_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.HARNESS_UPDATE_TOKEN }}
+      REPO: ${{ github.repository }}
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      # Как в harness-update.yml: на своём раннере gh может не быть.
+      - name: Инструменты
+        run: |
+          set -euo pipefail
+          command -v gh >/dev/null 2>&1 && exit 0
+          case "$(uname -s)/$(uname -m)" in
+            Linux/x86_64) gh_arch=amd64 ;;
+            Linux/aarch64|Linux/arm64) gh_arch=arm64 ;;
+            *)
+              echo "::error title=Нет gh::На раннере $(uname -s)/$(uname -m) нужен gh: сам шаг ставит его только на Linux x86_64 и arm64."
+              exit 1 ;;
+          esac
+          bin="$RUNNER_TEMP/harness-bin"
+          mkdir -p "$bin"
+          name="gh_${GH_VERSION}_linux_${gh_arch}"
+          curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${name}.tar.gz" \
+            | tar -xz -C "$bin" --strip-components=2 "${name}/bin/gh"
+          echo "$bin" >>"$GITHUB_PATH"
+
+      - name: Вливание
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error title=Нет секрета HARNESS_UPDATE_TOKEN::Заведи в Settings → Secrets and variables → Actions секрет HARNESS_UPDATE_TOKEN: fine-grained PAT на этот репозиторий с правами Contents RW, Pull requests RW, Issues RW (метки PR), Workflows RW, Metadata R. Подробнее — .harness/local/README.md."
+            exit 1
+          fi
+          say() { printf '%s\n' "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
+
+          pr=$(gh pr list -R "$REPO" --state open --head "$BRANCH" \
+            --json number,author,labels,headRefOid,isCrossRepository --jq '.[0] // empty')
+          if [ -z "$pr" ]; then
+            say "Открытого PR из $BRANCH нет — вливать нечего."
+            exit 0
+          fi
+          number=$(jq -r .number <<<"$pr")
+
+          read -r me id < <(gh api user --jq '"\(.login) \(.id)"')
+          email="$id+$me@users.noreply.github.com"
+          author=$(jq -r .author.login <<<"$pr")
+          if [ "$author" != "$me" ]; then
+            say "PR #$number открыл $author, а не владелец токена ($me) — не вливаю."
+            exit 0
+          fi
+          if [ "$(jq -r .isCrossRepository <<<"$pr")" = true ]; then
+            say "PR #$number из другого репозитория — не вливаю."
+            exit 0
+          fi
+          held=$(jq -r '[.labels[].name | select(. == "harness:major" or . == "harness:conflict")] | join(", ")' <<<"$pr")
+          if [ -n "$held" ]; then
+            say "PR #$number помечен $held — вливается вручную."
+            exit 0
+          fi
+          head=$(jq -r .headRefOid <<<"$pr")
+          if [ "$head" != "$SHA" ]; then
+            say "Голова PR #$number ($head) — не тот коммит, на котором прошёл CI ($SHA): жду CI нового."
+            exit 0
+          fi
+
+          # Каждый коммит PR — от обновления: автор и коммиттер с подписью
+          # harness-update.yml (логин владельца токена и его noreply-почта).
+          # Дописанный в ветку коммит — разбор конфликта или чужая правка —
+          # вливается только руками.
+          # shellcheck disable=SC2016 # $name и $email — переменные jq
+          foreign=$(gh api --paginate "repos/$REPO/pulls/$number/commits" |
+            jq -rs --arg name "$me" --arg email "$email" '[.[][]
+              | select(.commit.author.name != $name or .commit.author.email != $email
+                  or .commit.committer.name != $name or .commit.committer.email != $email)
+              | .sha[0:7]] | join(", ")')
+          if [ -n "$foreign" ]; then
+            say "В PR #$number есть коммиты не от обновления: $foreign — не вливаю."
+            gh pr comment "$number" -R "$REPO" --body "Автовливание пропущено: в ветке есть коммиты не от обновления харнесса ($foreign). Проверь их и влей PR вручную."
+            exit 0
+          fi
+
+          gh pr merge "$number" -R "$REPO" --squash --delete-branch --match-head-commit "$SHA"
+          say "Влит PR #$number ($BRANCH, $SHA)."

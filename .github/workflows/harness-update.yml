@@ -1,0 +1,258 @@
+# Обновление харнесса: новая версия шаблона приходит в проект PR'ом.
+# Управляемый файл: обновляется шаблоном, руками не правится.
+#
+# Раз в сутки и вручную сверяет теги шаблона с версией проекта (`_commit` в
+# .copier-answers.yml). Есть новее — `copier update` до неё, конфликты
+# маркерами в файлах, PR «Обновление харнесса до vX.Y.Z» из ветки
+# harness/update-vX.Y.Z. Вливает его harness-automerge.yml после зелёного CI.
+#
+# Метки PR (создаются здесь же):
+#   harness:major     мажорная версия — вливается вручную, см. CHANGELOG шаблона;
+#   harness:conflict  конфликт слияния — маркеры в файлах, CI красный.
+#
+# PR на тот же тег не дублируется. Открытые PR обновления на более ранний тег
+# закрываются с комментарием: новый их включает. PR, закрытый без вливания,
+# по расписанию не открывается заново — только запуском вручную.
+#
+# Подключение — .harness/local/README.md: секрет HARNESS_UPDATE_TOKEN, по
+# желанию переменные HARNESS_RUNNER и HARNESS_TEMPLATE_URL.
+name: harness-update
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Версия шаблона, тег vX.Y.Z; пусто — последняя
+        type: string
+        required: false
+
+concurrency:
+  group: harness-update
+  cancel-in-progress: false
+
+# GITHUB_TOKEN только читает: PR, открытый им, не запускает CI, а пуш правок в
+# .github/workflows/ ему запрещён. Всё, что пишет, — токеном
+# HARNESS_UPDATE_TOKEN.
+permissions:
+  contents: read
+
+env:
+  COPIER_VERSION: 9.19.1
+  # gh и uv — на случай раннера, где их нет (шаг «Инструменты»).
+  GH_VERSION: 2.102.0
+  UV_VERSION: 0.12.24
+  TEMPLATE_URL: ${{ vars.HARNESS_TEMPLATE_URL || 'https://github.com/bodasooqa/harness' }}
+
+jobs:
+  update:
+    name: update
+    # Раннер — переменная репозитория HARNESS_RUNNER: метка строкой
+    # (`self-hosted`) или массив меток в JSON (`["self-hosted", "ci"]`).
+    runs-on: ${{ vars.HARNESS_RUNNER && (startsWith(vars.HARNESS_RUNNER, '[') && fromJSON(vars.HARNESS_RUNNER) || vars.HARNESS_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.HARNESS_UPDATE_TOKEN }}
+      REPO: ${{ github.repository }}
+      WANT: ${{ inputs.version }}
+      EVENT: ${{ github.event_name }}
+    steps:
+      # На hosted-раннере gh и pipx есть, на своём их может не быть. Недостающее
+      # ставится закреплённой версией в каталог джоба, система раннера не
+      # трогается. Тот же шаг — в harness-automerge.yml.
+      - name: Инструменты
+        run: |
+          set -euo pipefail
+          need_gh=0 need_uv=0
+          command -v gh >/dev/null 2>&1 || need_gh=1
+          command -v pipx >/dev/null 2>&1 || command -v uvx >/dev/null 2>&1 || need_uv=1
+          [ $need_gh = 0 ] && [ $need_uv = 0 ] && exit 0
+          case "$(uname -s)/$(uname -m)" in
+            Linux/x86_64) gh_arch=amd64 uv_arch=x86_64 ;;
+            Linux/aarch64|Linux/arm64) gh_arch=arm64 uv_arch=aarch64 ;;
+            *)
+              echo "::error title=Нет gh или uv::На раннере $(uname -s)/$(uname -m) нужны gh и pipx или uv: сам шаг ставит их только на Linux x86_64 и arm64."
+              exit 1 ;;
+          esac
+          bin="$RUNNER_TEMP/harness-bin"
+          mkdir -p "$bin"
+          if [ $need_gh = 1 ]; then
+            name="gh_${GH_VERSION}_linux_${gh_arch}"
+            curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${name}.tar.gz" \
+              | tar -xz -C "$bin" --strip-components=2 "${name}/bin/gh"
+          fi
+          if [ $need_uv = 1 ]; then
+            curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${uv_arch}-unknown-linux-gnu.tar.gz" \
+              | tar -xz -C "$bin" --strip-components=1
+          fi
+          echo "$bin" >>"$GITHUB_PATH"
+
+      # Владелец токена — автор PR обновления и его коммитов. Ту же подпись
+      # (имя — логин, почта — noreply GitHub) сверяет harness-automerge.yml.
+      - name: Секрет
+        id: me
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error title=Нет секрета HARNESS_UPDATE_TOKEN::Заведи в Settings → Secrets and variables → Actions секрет HARNESS_UPDATE_TOKEN: fine-grained PAT на этот репозиторий с правами Contents RW, Pull requests RW, Issues RW (метки PR), Workflows RW, Metadata R. Подробнее — .harness/local/README.md."
+            exit 1
+          fi
+          read -r login id < <(gh api user --jq '"\(.login) \(.id)"')
+          echo "login=$login" >>"$GITHUB_OUTPUT"
+          echo "email=$id+$login@users.noreply.github.com" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Версия
+        id: version
+        run: |
+          set -euo pipefail
+          answers=.copier-answers.yml
+          value() { sed -n "s/^$1: //p" "$answers" | tr -d "'\""; }
+          # Источник обновления — `_src_path` файла ответов: copier update берёт
+          # шаблон оттуда, а теги здесь — из TEMPLATE_URL. Разойтись они не
+          # должны, иначе версия придёт из одного репозитория, а файлы из другого.
+          norm() {
+            local u=$1
+            case "$u" in
+              gh:*) u="https://github.com/${u#gh:}" ;;
+              git@github.com:*) u="https://github.com/${u#git@github.com:}" ;;
+            esac
+            u=${u%/}
+            printf '%s' "${u%.git}"
+          }
+          src=$(value _src_path)
+          if [ "$(norm "$src")" != "$(norm "$TEMPLATE_URL")" ]; then
+            echo "::error title=Источник шаблона::_src_path в $answers ($src) не совпадает с источником тегов ($TEMPLATE_URL). Поправь _src_path или переменную HARNESS_TEMPLATE_URL."
+            exit 1
+          fi
+          git ls-remote --tags --refs "$TEMPLATE_URL" | cut -f2 >"$RUNNER_TEMP/tags"
+          out=$(.harness/update/next-version.sh ${WANT:+--want "$WANT"} "$(value _commit)" <"$RUNNER_TEMP/tags")
+          printf '%s\n' "$out" | tee -a "$GITHUB_OUTPUT"
+          next=$(printf '%s\n' "$out" | sed -n 's/^next=//p')
+          current=$(printf '%s\n' "$out" | sed -n 's/^current=//p')
+          if [ -z "$next" ]; then
+            echo "Харнесс $current — обновлять нечего." >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: PR уже есть?
+        id: existing
+        if: steps.version.outputs.next != ''
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          LOGIN: ${{ steps.me.outputs.login }}
+        run: |
+          set -euo pipefail
+          branch="harness/update-$NEXT"
+          # Только свои PR: из этого репозитория и открытые владельцем токена.
+          # PR из форка с той же веткой не в счёт.
+          ours() {
+            gh pr list -R "$REPO" --state "$1" --head "$branch" \
+              --json number,mergedAt,author,isCrossRepository |
+              jq -r --arg me "$LOGIN" "[.[] | select(.isCrossRepository == false and .author.login == \$me) $2][0].number // empty"
+          }
+          open=$(ours open "")
+          if [ -n "$open" ]; then
+            echo "Обновление до $NEXT уже ждёт в PR #$open." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          closed=$(ours closed "| select(.mergedAt == null)")
+          if [ -n "$closed" ] && [ "$EVENT" = schedule ]; then
+            echo "PR #$closed обновления до $NEXT закрыт без вливания — по расписанию не открываю заново; запусти workflow вручную." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >>"$GITHUB_OUTPUT"
+
+      - name: copier update и PR
+        if: steps.version.outputs.next != '' && steps.existing.outputs.skip == 'false'
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          CURRENT: ${{ steps.version.outputs.current }}
+          MAJOR: ${{ steps.version.outputs.major }}
+          LOGIN: ${{ steps.me.outputs.login }}
+          EMAIL: ${{ steps.me.outputs.email }}
+        run: |
+          set -euo pipefail
+          branch="harness/update-$NEXT"
+
+          # Коммиты — подписью владельца токена: и свой, и временные коммиты
+          # copier. Глобальный git config не трогаем: раннер может быть своим.
+          export GIT_AUTHOR_NAME="$LOGIN" GIT_COMMITTER_NAME="$LOGIN"
+          export GIT_AUTHOR_EMAIL="$EMAIL" GIT_COMMITTER_EMAIL="$EMAIL"
+
+          # copier закреплённой версии, без установки в систему раннера.
+          if command -v pipx >/dev/null 2>&1; then
+            copier() { pipx run --spec "copier==$COPIER_VERSION" copier "$@"; }
+          elif command -v uvx >/dev/null 2>&1; then
+            copier() { uvx --from "copier==$COPIER_VERSION" copier "$@"; }
+          else
+            echo "::error title=Нет pipx и uv::Для copier на раннере нужен pipx или uv."
+            exit 1
+          fi
+
+          # Конфликт copier оставляет маркерами в файлах (--conflict inline)
+          # и помечает файл неслитым в индексе.
+          copier update --trust --defaults --conflict inline --vcs-ref "$NEXT"
+          unmerged=$(git diff --name-only --diff-filter=U)
+          git add -A
+          markers=$(.harness/update/conflict-markers.sh 2>/dev/null || true)
+          conflicts=$(printf '%s\n%s\n' "$unmerged" "$markers" | sed '/^$/d' | sort -u)
+
+          git commit --quiet --no-verify -m "Обновление харнесса до $NEXT"
+          push_url="${GITHUB_SERVER_URL/https:\/\//https://x-access-token:$GH_TOKEN@}/$REPO.git"
+          git push --quiet --force "$push_url" "HEAD:refs/heads/$branch"
+
+          gh label create harness:major -R "$REPO" --force --color B60205 \
+            --description "Мажорная версия харнесса: вливается вручную"
+          gh label create harness:conflict -R "$REPO" --force --color D93F0B \
+            --description "Конфликт обновления харнесса: маркеры в файлах"
+
+          body="$RUNNER_TEMP/body.md"
+          labels=()
+          {
+            echo "Обновление харнесса с $CURRENT до [$NEXT]($TEMPLATE_URL/releases/tag/$NEXT)."
+            if [ "$MAJOR" = true ]; then
+              labels+=(--label harness:major)
+              echo
+              echo "**Мажорная версия: вливается вручную, см. [CHANGELOG shared]($TEMPLATE_URL/blob/$NEXT/CHANGELOG.md)** — там шаги миграции."
+            fi
+            if [ -n "$conflicts" ]; then
+              labels+=(--label harness:conflict)
+              echo
+              echo "**Конфликт:** правки проекта разошлись с шаблоном, маркеры в файлах — разреши в этой ветке и влей вручную после зелёного CI (коммит не от обновления автовливание не пропускает):"
+              echo
+              # Обратные кавычки здесь — разметка Markdown, а не подстановка.
+              # shellcheck disable=SC2016
+              printf '%s\n' "$conflicts" | sed 's/.*/- `&`/'
+            fi
+            echo
+            echo "Без меток \`harness:major\` и \`harness:conflict\` PR вливается сам после зелёного CI (harness-automerge.yml)."
+          } >"$body"
+
+          # База — ветка, на которой запущен workflow (по расписанию — основная).
+          url=$(gh pr create -R "$REPO" --base "$GITHUB_REF_NAME" --head "$branch" \
+            --title "Обновление харнесса до $NEXT" --body-file "$body" "${labels[@]}")
+          echo "Открыт $url: $CURRENT → $NEXT${labels[*]:+ (${labels[*]})}." | tee -a "$GITHUB_STEP_SUMMARY"
+
+          # Открытые PR обновления на более ранний тег — устарели.
+          number=${url##*/}
+          # Только свои: из этого репозитория и открытые владельцем токена.
+          # $me — переменная jq, а не оболочки.
+          # shellcheck disable=SC2016
+          gh pr list -R "$REPO" --state open --json number,headRefName,author,isCrossRepository |
+            jq -r --arg me "$LOGIN" '.[]
+              | select(.isCrossRepository == false and .author.login == $me)
+              | select(.headRefName | startswith("harness/update-"))
+              | "\(.number) \(.headRefName)"' |
+            while read -r n ref; do
+              old=${ref#harness/update-}
+              if [ "$n" != "$number" ] && .harness/update/next-version.sh --lt "$old" "$NEXT" 2>/dev/null; then
+                gh pr close "$n" -R "$REPO" --delete-branch --comment "Заменён #$number: обновление до $NEXT."
+                echo "Закрыт #$n ($old): заменён #$number." | tee -a "$GITHUB_STEP_SUMMARY"
+              fi
+            done

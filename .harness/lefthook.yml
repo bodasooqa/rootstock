@@ -1,0 +1,69 @@
+# Общие git-хуки обвязки. Управляемый файл: обновляется шаблоном, руками
+# не правится. Подключается из `lefthook.yml` проекта через `extends`; свои
+# джобы проект пишет там.
+#
+# Делят ответственность с хуками агента: те стерегут каждую правку, lefthook —
+# коммит и пуш, включая ручные. pre-commit держим быстрым. На pre-push — только
+# то, что срабатывает редко и стережёт инварианты, которые дороже поймать
+# до PR; полные линтеры и тесты гоняет CI.
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: rustfmt
+      glob: "*.rs"
+      run: rustfmt --edition 2024 {staged_files}
+      stage_fixed: true
+
+    - name: secrets
+      run: ./.harness/lefthook/no-secrets.sh {staged_files}
+
+    # Архив закрытых вопросов и оглавления знания собираются скриптами: ручное
+    # разъезжается с содержимым. stage_fixed возвращает в индекс только
+    # staged-файлы, а архив и оглавления скрипты пишут сами, и в индексе их
+    # обычно нет — `--stage` ставит их туда, иначе перенос делился бы на два
+    # коммита.
+    - name: knowledge
+      glob:
+        - "knowledge/open-questions.md"
+      run: ./knowledge/archive-questions.sh --stage
+      stage_fixed: true
+
+pre-push:
+  parallel: true
+  # Список файлов пуша для глобов — свой: встроенный при первом пуше без
+  # upstream сравнивает HEAD с origin/main двумя точками и берёт чужие правки
+  # main.
+  files: ./.harness/lefthook/push-files.sh
+  jobs:
+    # Хук, который может тихо ничего не сделать, хуже отсутствующего: каждый
+    # проверяется случаем на срабатывание и случаем на пропуск. Там же тесты
+    # самого lefthook (архив вопросов, файлы пуша), поэтому и его правка их будит.
+    - name: harness-hooks
+      glob:
+        - ".harness/**"
+        - "lefthook.yml"
+        - ".copier-answers.yml"
+      run: ./.harness/hooks/tests/run.sh
+
+    # Прослойка Pi переводит события Pi в те же слоты: её правка и правка хуков
+    # будят её тесты.
+    - name: harness-pi
+      glob:
+        - ".pi/extensions/**"
+        - ".harness/hooks/**"
+      run: bun test ./.harness/hooks/tests/pi.test.ts
+
+    - name: knowledge-tests
+      glob: "knowledge/**"
+      run: for t in knowledge/tests/*.sh; do "./$t" || exit 1; done
+
+    # Просроченный вопрос — тот, чей этап закрыт, чей change заархивирован или
+    # чей срок не назван этапом. Состояние меняется правкой таблицы этапов или
+    # самого списка, и проверка ходит следом за ними, а не за каждым пушем:
+    # чужая работа не должна краснеть из-за чужого долга.
+    - name: knowledge-due
+      glob:
+        - "knowledge/stages.md"
+        - "knowledge/open-questions.md"
+      run: ./knowledge/due.sh --overdue

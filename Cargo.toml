@@ -1,0 +1,36 @@
+[package]
+name = "rootstock"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+description = "Create a project from a versioned git template and update it with a three-way merge"
+publish = false
+
+[lib]
+name = "rootstock"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rootstock"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+diffy = "0.5.2"
+ignore = "0.4.34"
+inquire = "0.9.4"
+minijinja = "3.0.4"
+regex = "1.13.1"
+semver = "1.0.28"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+serde_norway = "0.9.42"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+toml = "1.1.8"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"

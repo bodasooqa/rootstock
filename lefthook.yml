@@ -1,0 +1,5 @@
+# Git-хуки проекта. Общие джобы — в `.harness/lefthook.yml` (управляемый,
+# обновляется шаблоном); свои джобы проект пишет здесь, в тех же разделах
+# `pre-commit` и `pre-push`. Ставится `lefthook install` из основного каталога.
+extends:
+  - .harness/lefthook.yml

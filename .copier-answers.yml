@@ -1,0 +1,21 @@
+# Файл ведёт Copier: ответы на вопросы шаблона. Руками не править — `copier update`.
+_commit: v0.4.5
+_src_path: gh:bodasooqa/harness
+decisions_path: knowledge/decisions.md
+doc_form: monolith
+frontend: false
+lessons_path: knowledge/lessons.md
+linear: false
+monorepo: false
+open_questions_path: knowledge/open-questions.md
+orca: true
+pi_models:
+    haiku: openrouter/anthropic/claude-haiku-5.5
+    opus: openrouter/anthropic/claude-opus-5.5
+    sonnet: openrouter/anthropic/claude-sonnet-5.5
+project_name: rootstock
+revisions_path: docs/design-revisions.md
+rust: true
+spec_path: docs/design.md
+stages_path: knowledge/stages.md
+telegram: false

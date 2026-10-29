@@ -1,0 +1,150 @@
+# Общие проверки обвязки. Управляемый файл: обновляется шаблоном, руками
+# не правится. Зовётся из `ci.yml` проекта (`uses: ./.github/workflows/harness.yml`);
+# свои джобы проект пишет там.
+#
+# Делят ответственность с lefthook: тот стережёт коммит и пуш на машине
+# разработчика, CI — то, что локальный хук пропустить может: обход через
+# --no-verify и glob-фильтры.
+name: harness
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Раннер — метка строкой (`ubuntu-latest`) или массив меток в JSON (`["self-hosted", "ci"]`)
+        type: string
+        default: ubuntu-latest
+      # Проекту, которому для сборки нужно своё окружение (база в services,
+      # переменные, свои шаги), общая джоба rust мешает: она идёт рядом с его
+      # собственной и падает без того окружения. Такой проект её выключает и
+      # пишет rust в своём ci.yml.
+      rust:
+        description: Общая джоба rust — fmt, clippy, test. false — проект проверяет Rust своей джобой
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Какие джобы нужны этой правке. Правка README не должна стоить прогона
+  # сборки. Ошибка фильтра опасна только в одну сторону: пропущенная проверка
+  # выглядит как зелёная. Поэтому у дорогой rust условие обратное: она идёт на
+  # любой файл, если он не входит в явный список того, чего cargo не видит.
+  # Новый каталог, о котором здесь забыли, запускает её, а не тихо пропускает.
+  # js и harness дешёвые, им хватает прямого списка.
+  changes:
+    name: changes
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    # Таймауты у всех джоб: зависшая джоба без таймаута (по умолчанию 6 часов)
+    # держит очередь раннера.
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.code.outputs.rust }}
+      harness: ${{ steps.any.outputs.harness }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: code
+        uses: dorny/paths-filter@v3
+        with:
+          predicate-quantifier: every
+          filters: |
+            rust:
+              - "**"
+              - "!**/*.md"
+              - "!.claude/**"
+              - "!.pi/**"
+              - "!.harness/**"
+              - "!knowledge/**"
+              - "!openspec/**"
+              - "!.mcp.json"
+              - "!lefthook.yml"
+              - "!.copier-answers.yml"
+
+      - id: any
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            harness:
+              - .harness/**
+              - .claude/**
+              - .pi/**
+              - knowledge/**
+              - lefthook.yml
+              - .copier-answers.yml
+              - "knowledge/open-questions.md"
+              - "knowledge/stages.md"
+              - rust-toolchain.toml
+              - .github/workflows/**
+
+  rust:
+    name: rust
+    needs: changes
+    if: inputs.rust && needs.changes.outputs.rust == 'true'
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      # Тулчейн берётся из rust-toolchain.toml: rustup доставит компоненты сам.
+      # Кеш GitHub — только на чистой машине: у своего раннера каталог сборки
+      # постоянный.
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+
+      - name: Форматирование
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Тесты
+        run: cargo test
+
+  # Маркеры конфликта слияния. Конфликт обновления харнесса (copier update)
+  # остаётся маркерами в файлах, и PR с ним обязан быть красным — иначе
+  # harness-automerge.yml его вольёт. Идёт на любую правку, без фильтра:
+  # маркер может оказаться в любом файле.
+  markers:
+    name: markers
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Нет маркеров конфликта
+        run: ./.harness/update/conflict-markers.sh
+
+  harness:
+    name: harness
+    needs: changes
+    if: needs.changes.outputs.harness == 'true'
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # Тесты гоняют lefthook на временных репозиториях, зовут rustfmt; прослойку Pi — bun test.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: lefthook
+        run: bun add --global lefthook@2.1.12
+
+      - name: Тесты хуков
+        run: ./.harness/hooks/tests/run.sh
+
+      # Прослойка Pi: обработчики расширения с подставным API Pi поверх тех же хуков.
+      - name: Тесты прослойки Pi
+        run: bun test ./.harness/hooks/tests/pi.test.ts
+
+      - name: Тесты knowledge/
+        run: for t in knowledge/tests/*.sh; do "./$t" || exit 1; done
+
+      - name: Тесты обновления харнесса
+        run: for t in .harness/update/tests/*.sh; do "./$t" || exit 1; done

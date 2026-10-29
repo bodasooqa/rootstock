@@ -1,0 +1,29 @@
+# CI проекта. Общие проверки — в `harness.yml` (управляемый, обновляется
+# шаблоном); свои джобы проект пишет здесь, рядом с вызовом.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Прогон устаревает, как только в ветку приходит следующий коммит.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness:
+    uses: ./.github/workflows/harness.yml
+    permissions:
+      contents: read
+      pull-requests: read
+    # Свой раннер: метка строкой или массив меток в JSON. Общую джобу rust или
+    # js (входы есть, если проект их выбрал), которой нужно своё окружение —
+    # база, переменные, — проект выключает и пишет свою ниже.
+    # with:
+    #   runs-on: '["self-hosted", "ci"]'
+    #   rust: false
+    #   js: false
+
+  # Свои джобы проекта — ниже.
