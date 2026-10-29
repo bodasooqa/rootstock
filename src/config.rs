@@ -106,7 +106,7 @@ pub struct FileRules {
 
 /// One question of the template, asked in declaration order.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawQuestion")]
 pub struct Question {
     pub name: String,
     #[serde(rename = "type")]
@@ -122,8 +122,46 @@ pub struct Question {
     /// Template rendering to an error message, empty when the answer is valid.
     #[serde(default)]
     pub validator: Option<String>,
-    #[serde(default)]
     pub choices: Vec<Choice>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawQuestion {
+    name: String,
+    #[serde(rename = "type")]
+    kind: QuestionKind,
+    #[serde(default)]
+    help: Option<String>,
+    #[serde(default)]
+    default: Option<toml::Value>,
+    #[serde(default)]
+    when: Option<String>,
+    #[serde(default)]
+    validator: Option<String>,
+    #[serde(default)]
+    choices: Vec<toml::Value>,
+}
+
+impl TryFrom<RawQuestion> for Question {
+    type Error = String;
+
+    fn try_from(raw: RawQuestion) -> Result<Self, String> {
+        let choices = raw
+            .choices
+            .into_iter()
+            .map(|c| Choice::from_toml(&raw.name, c))
+            .collect::<Result<_, _>>()?;
+        Ok(Question {
+            name: raw.name,
+            kind: raw.kind,
+            help: raw.help,
+            default: raw.default,
+            when: raw.when,
+            validator: raw.validator,
+            choices,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -157,30 +195,30 @@ pub struct Choice {
     pub value: toml::Value,
 }
 
-impl<'de> Deserialize<'de> for Choice {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Labeled {
-            label: String,
-            value: toml::Value,
-        }
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Labeled(Labeled),
-            Plain(toml::Value),
-        }
-        Ok(match Raw::deserialize(deserializer)? {
-            Raw::Labeled(l) => Choice {
-                label: l.label,
-                value: l.value,
-            },
-            Raw::Plain(value) => Choice {
+impl Choice {
+    /// A plain choice is a scalar; a table must be exactly `{ label, value }`.
+    fn from_toml(question: &str, raw: toml::Value) -> Result<Self, String> {
+        let bad = || {
+            format!(
+                "question `{question}`: choice must be a plain value or a table with exactly `label` and `value`"
+            )
+        };
+        match raw {
+            toml::Value::Table(mut t) => {
+                if t.len() != 2 {
+                    return Err(bad());
+                }
+                match (t.remove("label"), t.remove("value")) {
+                    (Some(toml::Value::String(label)), Some(value)) => Ok(Choice { label, value }),
+                    _ => Err(bad()),
+                }
+            }
+            toml::Value::Array(_) | toml::Value::Datetime(_) => Err(bad()),
+            value => Ok(Choice {
                 label: display(&value),
                 value,
-            },
-        })
+            }),
+        }
     }
 }
 
@@ -461,6 +499,25 @@ run = "make fmt"
         let text = "schema = 1\n[[questions]]\nname = \"a\"\ntype = \"str\"\n[[questions]]\nname = \"a\"\ntype = \"bool\"";
         let e = parse(text, p()).unwrap_err().to_string();
         assert!(e.contains("duplicate") && e.contains("`a`"), "{e}");
+    }
+
+    #[test]
+    fn rejects_malformed_choices() {
+        for bad in [
+            "{ lable = \"A\", value = \"a\" }",
+            "{ label = \"A\" }",
+            "{ label = \"A\", value = \"a\", extra = 1 }",
+            "[\"a\", \"b\"]",
+        ] {
+            let text = format!(
+                "schema = 1\n[[questions]]\nname = \"x\"\ntype = \"choice\"\nchoices = [{bad}]"
+            );
+            let e = parse(&text, p()).unwrap_err().to_string();
+            assert!(
+                e.contains("question `x`: choice must be a plain value"),
+                "{bad}: {e}"
+            );
+        }
     }
 
     #[test]
