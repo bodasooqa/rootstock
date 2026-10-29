@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use minijinja::{
-    AutoEscape, Environment, Error, ErrorKind, Value, path_loader, syntax::SyntaxConfig,
+    AutoEscape, Environment, Error, ErrorKind, TemplateSource, Value, syntax::SyntaxConfig,
     value::Serde,
 };
 
@@ -48,7 +48,8 @@ impl Jinja {
         // Default delimiters cannot conflict, so build() does not fail here.
         env.set_syntax(syntax.build().unwrap_or_default());
         env.set_auto_escape_callback(|_| AutoEscape::None);
-        env.set_loader(path_loader(include_root));
+        let root = include_root.to_path_buf();
+        env.set_loader(move |name| load_include(&root, name));
         env.add_filter("regex_search", regex_search);
         Jinja { env }
     }
@@ -72,6 +73,42 @@ impl Jinja {
             .compile_expression(expr)?
             .eval(Value::from(Serde(ctx)))?;
         Ok(value.is_true())
+    }
+}
+
+/// Loads an include by name relative to `root`, like Jinja2's FileSystemLoader:
+/// `.` and empty segments are dropped, dot-prefixed names are allowed. Names
+/// with `..`, a backslash or an absolute form are reported as not found.
+fn load_include(root: &Path, name: &str) -> Result<Option<TemplateSource>, Error> {
+    if name.contains('\\') || name.starts_with('/') {
+        return Ok(None);
+    }
+    let mut path = root.to_path_buf();
+    for seg in name.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => return Ok(None),
+            s if matches!(
+                Path::new(s).components().next(),
+                Some(std::path::Component::Normal(_))
+            ) =>
+            {
+                path.push(s)
+            }
+            _ => return Ok(None),
+        }
+    }
+    if path == root {
+        return Ok(None);
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(src) => Ok(Some(TemplateSource::new(src))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error::new(
+            ErrorKind::InvalidOperation,
+            format!("could not read template {}", path.display()),
+        )
+        .with_source(e)),
     }
 }
 
@@ -231,12 +268,38 @@ mod tests {
         let abs = dir.path().join("secret.txt");
         let j = Jinja::new(&JinjaOptions::default(), &root);
         let c = Answers::new();
-        assert!(
-            j.render_str("t", "{% include '../secret.txt' %}", &c)
-                .is_err()
-        );
+        let not_found = |r: Result<String, JinjaError>| {
+            r.expect_err("must not load").0.kind() == ErrorKind::TemplateNotFound
+        };
+        assert!(not_found(j.render_str(
+            "t",
+            "{% include '../secret.txt' %}",
+            &c
+        )));
+        assert!(not_found(j.render_str(
+            "t",
+            "{% include 'a/../../secret.txt' %}",
+            &c
+        )));
+        assert!(not_found(j.render_str(
+            "t",
+            "{% include 'a\\\\..\\\\secret.txt' %}",
+            &c
+        )));
         let src = format!("{{% include '{}' %}}", abs.display());
-        assert!(j.render_str("t", &src, &c).is_err());
+        assert!(not_found(j.render_str("t", &src, &c)));
+    }
+
+    #[test]
+    fn include_from_dot_directory_and_dot_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".hidden")).unwrap();
+        std::fs::write(dir.path().join(".hidden/x.jinja"), "H").unwrap();
+        std::fs::write(dir.path().join("y.jinja"), "Y").unwrap();
+        let j = Jinja::new(&JinjaOptions::default(), dir.path());
+        let c = Answers::new();
+        let src = "{% include '.hidden/x.jinja' %}{% include './y.jinja' %}";
+        assert_eq!(j.render_str("t", src, &c).unwrap(), "HY");
     }
 
     #[test]
