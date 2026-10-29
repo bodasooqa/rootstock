@@ -295,6 +295,15 @@ impl Walk<'_> {
                 target: target.clone(),
                 reason,
             };
+            // Filesystems fold Unicode (HFS+ NFD) and 8.3 short names in ways we do not
+            // model, so targets are restricted to a class where exact and folded
+            // resolution are the whole story.
+            if !target.is_ascii() {
+                return Err(bad("has a non-ASCII character"));
+            }
+            if target.contains('~') {
+                return Err(bad("has a `~`"));
+            }
             for seg in target.split(['/', '\\']) {
                 if !matches!(seg, "" | "." | "..") {
                     check_segment(seg).map_err(bad)?;
@@ -969,6 +978,46 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         symlink("sub/deep", d.path().join("s")).unwrap();
         symlink("S/../../..", d.path().join("l")).unwrap();
+        let r = render(d.path(), &cfg(""), &Answers::new());
+        assert!(matches!(r, Err(RenderError::SymlinkTarget { .. })), "{r:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_target_non_ascii_rejected() {
+        for t in ["caf\u{e9}/x", "a\u{301}"] {
+            let d = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(t, d.path().join("l")).unwrap();
+            let r = render(d.path(), &cfg(""), &Answers::new());
+            assert!(
+                matches!(r, Err(RenderError::SymlinkTarget { .. })),
+                "{t}: {r:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_target_tilde_rejected() {
+        for t in ["ROOTST~1/x", "a~b"] {
+            let d = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(t, d.path().join("l")).unwrap();
+            let r = render(d.path(), &cfg(""), &Answers::new());
+            assert!(
+                matches!(r, Err(RenderError::SymlinkTarget { .. })),
+                "{t}: {r:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_exact_only_escape_rejected() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "a/sub/deep/f", "x");
+        symlink("sub/deep", d.path().join("a/s")).unwrap();
+        symlink("S/../../../x", d.path().join("a/l")).unwrap();
         let r = render(d.path(), &cfg(""), &Answers::new());
         assert!(matches!(r, Err(RenderError::SymlinkTarget { .. })), "{r:?}");
     }
