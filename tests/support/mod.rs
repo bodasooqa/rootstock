@@ -1,0 +1,84 @@
+//! Test fixtures shared by the integration tests.
+#![allow(dead_code)]
+
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::process::Command;
+
+use tempfile::TempDir;
+
+/// A git repository in a temporary directory that plays the role of a template.
+pub struct TemplateRepo {
+    pub dir: TempDir,
+}
+
+impl TemplateRepo {
+    pub fn new() -> Self {
+        let repo = TemplateRepo {
+            dir: TempDir::new().unwrap(),
+        };
+        repo.git(&["init", "-q", "-b", "main"]);
+        repo.git(&["config", "user.name", "Test"]);
+        repo.git(&["config", "user.email", "test@example.com"]);
+        repo.git(&["config", "commit.gpgsign", "false"]);
+        repo.git(&["config", "tag.gpgsign", "false"]);
+        repo
+    }
+
+    fn git(&self, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(self.dir.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    pub fn file(&self, path: &str, content: &str) -> &Self {
+        let full = self.dir.path().join(path);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&full, content).unwrap();
+        self
+    }
+
+    pub fn exec(&self, path: &str) -> &Self {
+        let full = self.dir.path().join(path);
+        fs::set_permissions(&full, fs::Permissions::from_mode(0o755)).unwrap();
+        self
+    }
+
+    pub fn remove(&self, path: &str) -> &Self {
+        fs::remove_file(self.dir.path().join(path)).unwrap();
+        self
+    }
+
+    /// Commits everything and tags the commit.
+    pub fn tag(&self, tag: &str) -> &Self {
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "--allow-empty", "-q", "-m", tag]);
+        self.git(&["tag", tag]);
+        self
+    }
+
+    pub fn url(&self) -> String {
+        self.dir.path().to_string_lossy().into_owned()
+    }
+
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Resolves a revision to a full commit sha.
+    pub fn commit(&self, rev: &str) -> String {
+        self.git(&["rev-parse", &format!("{rev}^{{commit}}")])
+    }
+}

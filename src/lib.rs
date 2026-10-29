@@ -9,6 +9,7 @@ pub mod merge;
 pub mod plan;
 pub mod record;
 pub mod render;
+pub mod source;
 
 /// Path relative to a project or template root: `/` separators, never starting with `/`, never containing `..`.
 pub type RelPath = String;
