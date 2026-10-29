@@ -70,6 +70,8 @@ pub enum RenderError {
         target: String,
         reason: &'static str,
     },
+    #[error("{}: template root resolves outside the repository", path.display())]
+    RootOutside { path: PathBuf },
     #[error("invalid file rule {pattern:?}: {source}")]
     BadPattern {
         pattern: String,
@@ -92,6 +94,15 @@ pub fn render_tree(
         .map(|p| p.trim_matches('/').trim_start_matches("./").to_string())
         .collect();
     let base = repo_root.join(&cfg.root);
+    let io = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| RenderError::Io { path, source }
+    };
+    let real_repo = std::fs::canonicalize(repo_root).map_err(io(repo_root))?;
+    let real_base = std::fs::canonicalize(&base).map_err(io(&base))?;
+    if !real_base.starts_with(&real_repo) {
+        return Err(RenderError::RootOutside { path: base });
+    }
     let mut walk = Walk {
         cfg,
         jinja,
@@ -103,6 +114,7 @@ pub fn render_tree(
         tree: BTreeMap::new(),
     };
     walk.dir(&base, &[], &[])?;
+    walk.check_symlinks()?;
     Ok(walk.tree)
 }
 
@@ -178,7 +190,7 @@ impl Walk<'_> {
             let mut out = out_rel.to_vec();
             out.extend(segments);
             let rendered = out.join("/");
-            if out[0].eq_ignore_ascii_case(RECORD_FILE) {
+            if fold_segment(&out[0]) == RECORD_FILE {
                 return Err(RenderError::RecordPath { path });
             }
             if self
@@ -198,7 +210,7 @@ impl Walk<'_> {
                     .to_str()
                     .ok_or_else(|| RenderError::NonUtf8Link { path: path.clone() })?
                     .to_string();
-                check_link_target(&path, &out[..out.len() - 1], &target)?;
+                check_absolute(&path, &target)?;
                 Entry::Symlink { target }
             } else {
                 let bytes = std::fs::read(&path).map_err(|source| RenderError::Io {
@@ -232,8 +244,68 @@ impl Walk<'_> {
             } else {
                 FileClass::Managed
             };
-            self.sources.insert(rendered.to_lowercase(), path);
+            self.sources.insert(fold_path(&rendered), path);
             self.tree.insert(rendered, Rendered { entry, class });
+        }
+        Ok(())
+    }
+
+    /// Resolves every symlink target through the emitted tree (following
+    /// other emitted links) and rejects any that leaves the project root.
+    fn check_symlinks(&self) -> Result<(), RenderError> {
+        let links: BTreeMap<String, &str> = self
+            .tree
+            .iter()
+            .filter_map(|(p, r)| match &r.entry {
+                Entry::Symlink { target } => Some((fold_path(p), target.as_str())),
+                Entry::File { .. } => None,
+            })
+            .collect();
+        for (rendered, item) in &self.tree {
+            let Entry::Symlink { target } = &item.entry else {
+                continue;
+            };
+            let source = self
+                .sources
+                .get(&fold_path(rendered))
+                .cloned()
+                .unwrap_or_else(|| PathBuf::from(rendered));
+            let bad = |reason| RenderError::SymlinkTarget {
+                path: source.clone(),
+                target: target.clone(),
+                reason,
+            };
+            let mut cur: Vec<String> = rendered.split('/').map(String::from).collect();
+            cur.pop();
+            let mut pending: std::collections::VecDeque<String> =
+                target.split(['/', '\\']).map(String::from).collect();
+            let mut hops = 0;
+            while let Some(seg) = pending.pop_front() {
+                match seg.as_str() {
+                    "" | "." => continue,
+                    ".." => {
+                        if cur.pop().is_none() {
+                            return Err(bad("escapes the project root"));
+                        }
+                        continue;
+                    }
+                    _ => cur.push(seg),
+                }
+                let folded: Vec<String> = cur.iter().map(|s| fold_segment(s)).collect();
+                if let Some(next) = links.get(&folded.join("/")) {
+                    hops += 1;
+                    if hops > MAX_LINK_HOPS {
+                        return Err(bad("goes through too many symlinks"));
+                    }
+                    if next.starts_with(['/', '\\']) {
+                        return Err(bad("goes through an absolute symlink"));
+                    }
+                    cur.pop();
+                    for s in next.split(['/', '\\']).rev() {
+                        pending.push_front(s.to_string());
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -241,7 +313,7 @@ impl Walk<'_> {
     /// Rejects a path equal to, inside, or containing an already emitted
     /// path, comparing case-insensitively (macOS/Windows filesystems).
     fn check_conflicts(&self, rendered: &str, path: &Path) -> Result<(), RenderError> {
-        let lower = rendered.to_lowercase();
+        let lower = fold_path(rendered);
         if let Some(first) = self.sources.get(&lower) {
             return Err(RenderError::Collision {
                 first: first.clone(),
@@ -299,22 +371,50 @@ impl Walk<'_> {
         }
         let mut segments = Vec::new();
         for seg in rendered.split('/') {
-            match seg {
-                "" => return Err(bad("has an empty segment or a leading slash")),
-                "." | ".." => return Err(bad("has a `.` or `..` segment")),
-                _ => {}
+            if seg.is_empty() {
+                return Err(bad("has an empty segment or a leading slash"));
             }
-            if seg.eq_ignore_ascii_case(".git") {
+            if seg.contains(':') {
+                return Err(bad("has a `:` (drive prefix or alternate data stream)"));
+            }
+            let folded = fold_segment(seg);
+            if folded.is_empty() {
+                return Err(bad("has a `.` or `..` segment"));
+            }
+            if folded == ".git" || is_short_git(&folded) {
                 return Err(bad("has a `.git` segment"));
-            }
-            let b = seg.as_bytes();
-            if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
-                return Err(bad("has a drive prefix"));
             }
             segments.push(seg.to_string());
         }
         Ok(Some(segments))
     }
+}
+
+/// Folds a path segment the way case-insensitive filesystems alias it:
+/// drops HFS+ ignorable code points, trailing `.` and spaces, and case.
+fn fold_segment(seg: &str) -> String {
+    let kept: String = seg
+        .chars()
+        .filter(|c| {
+            !matches!(*c, '\u{200c}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
+                | '\u{206a}'..='\u{206f}' | '\u{feff}')
+        })
+        .collect();
+    kept.trim_end_matches(['.', ' ']).to_lowercase()
+}
+
+fn fold_path(path: &str) -> String {
+    path.split('/')
+        .map(fold_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// NTFS 8.3 short name of `.git`: `git~<digits>`.
+fn is_short_git(folded: &str) -> bool {
+    folded
+        .strip_prefix("git~")
+        .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// True when `root` names the repository top (`.`, `./`, empty).
@@ -324,36 +424,23 @@ fn root_is_top(root: &str) -> bool {
         .all(|c| matches!(c, std::path::Component::CurDir))
 }
 
-/// Rejects absolute targets and targets that leave the project root when
-/// resolved lexically from the link's directory `dir` (rendered segments).
-fn check_link_target(path: &Path, dir: &[String], target: &str) -> Result<(), RenderError> {
-    let bad = |reason| RenderError::SymlinkTarget {
-        path: path.to_path_buf(),
-        target: target.to_string(),
-        reason,
-    };
+/// Rejects absolute symlink targets.
+fn check_absolute(path: &Path, target: &str) -> Result<(), RenderError> {
     let b = target.as_bytes();
-    if target.starts_with('/')
-        || target.starts_with('\\')
+    if target.starts_with(['/', '\\'])
         || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
     {
-        return Err(bad("is absolute"));
-    }
-    let mut depth = dir.len();
-    for seg in target.split(['/', '\\']) {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                if depth == 0 {
-                    return Err(bad("escapes the project root"));
-                }
-                depth -= 1;
-            }
-            _ => depth += 1,
-        }
+        return Err(RenderError::SymlinkTarget {
+            path: path.to_path_buf(),
+            target: target.to_string(),
+            reason: "is absolute",
+        });
     }
     Ok(())
 }
+
+/// Longest symlink chain followed before giving up.
+const MAX_LINK_HOPS: usize = 40;
 
 /// Renders every pattern with `ctx` and compiles them into one matcher.
 fn build_rules(
@@ -644,6 +731,68 @@ mod tests {
                 "{bad}: {r:?}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_filesystem_aliases() {
+        for bad in [
+            ".git.",
+            ".git ",
+            "git~1",
+            "GIT~12",
+            ".git::$DATA",
+            ".g\u{200c}it",
+            ".rootstock.toml.",
+            ".rootstock.toml ",
+            ".rootstock\u{feff}.toml",
+            "a/.git...",
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            put(d.path(), "{{ n }}", "x");
+            let r = render(d.path(), &cfg(""), &answers(json!({"n": bad})));
+            assert!(
+                matches!(
+                    r,
+                    Err(RenderError::BadPath { .. } | RenderError::RecordPath { .. })
+                ),
+                "{bad:?}: {r:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_chains_checked() {
+        use std::os::unix::fs::symlink;
+        let run = |links: &[(&str, &str)]| {
+            let d = tempfile::tempdir().unwrap();
+            for (at, target) in links {
+                let p = d.path().join(at);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                symlink(target, p).unwrap();
+            }
+            render(d.path(), &cfg(""), &Answers::new())
+        };
+        let r = run(&[("s", "."), ("l", "s/../x")]);
+        assert!(matches!(r, Err(RenderError::SymlinkTarget { .. })), "{r:?}");
+        let r = run(&[("d/s", ".."), ("l", "d/s/../..")]);
+        assert!(matches!(r, Err(RenderError::SymlinkTarget { .. })), "{r:?}");
+        let r = run(&[("a", "b"), ("b", "a"), ("l", "a/x")]);
+        assert!(matches!(r, Err(RenderError::SymlinkTarget { .. })), "{r:?}");
+        assert!(run(&[("s", "sub"), ("l", "s/file")]).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_symlink_outside_repo_rejected() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("repo");
+        let outside = d.path().join("outside");
+        std::fs::create_dir_all(&repo).unwrap();
+        put(&outside, "secret", "s");
+        std::os::unix::fs::symlink(&outside, repo.join("tpl")).unwrap();
+        let r = render(&repo, &cfg("root = \"tpl\"\n"), &Answers::new());
+        assert!(matches!(r, Err(RenderError::RootOutside { .. })), "{r:?}");
     }
 
     #[test]

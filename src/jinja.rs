@@ -48,8 +48,13 @@ impl Jinja {
         // Default delimiters cannot conflict, so build() does not fail here.
         env.set_syntax(syntax.build().unwrap_or_default());
         env.set_auto_escape_callback(|_| AutoEscape::None);
-        let root = include_root.to_path_buf();
-        env.set_loader(move |name| load_include(&root, name));
+        // Includes may not reach outside the canonical include root, even
+        // through symlinks; a missing root means every include is not found.
+        let root = std::fs::canonicalize(include_root).ok();
+        env.set_loader(move |name| match &root {
+            Some(root) => load_include(root, name),
+            None => Ok(None),
+        });
         env.add_filter("regex_search", regex_search);
         Jinja { env }
     }
@@ -101,7 +106,13 @@ fn load_include(root: &Path, name: &str) -> Result<Option<TemplateSource>, Error
     if path == root {
         return Ok(None);
     }
-    match std::fs::read_to_string(&path) {
+    let Ok(real) = std::fs::canonicalize(&path) else {
+        return Ok(None);
+    };
+    if !real.starts_with(root) {
+        return Ok(None);
+    }
+    match std::fs::read_to_string(&real) {
         Ok(src) => Ok(Some(TemplateSource::new(src))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(Error::new(
@@ -141,6 +152,27 @@ mod tests {
 
     fn plain() -> Jinja {
         Jinja::new(&JinjaOptions::default(), Path::new("."))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn include_symlinks_stay_inside_root() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("inc");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(d.path().join("secret"), "SECRET").unwrap();
+        std::fs::write(root.join("real"), "ok").unwrap();
+        std::os::unix::fs::symlink("../secret", root.join("out")).unwrap();
+        std::os::unix::fs::symlink("real", root.join("in")).unwrap();
+        let j = Jinja::new(&JinjaOptions::default(), &root);
+        let r = |t| j.render_str("t", t, &Answers::new());
+        assert!(r("{% include 'out' %}").is_err());
+        assert_eq!(r("{% include 'in' %}").unwrap(), "ok");
+        let j = Jinja::new(&JinjaOptions::default(), &d.path().join("missing"));
+        assert!(
+            j.render_str("t", "{% include 'x' %}", &Answers::new())
+                .is_err()
+        );
     }
 
     #[test]
