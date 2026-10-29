@@ -42,10 +42,10 @@ impl Prompter for TerminalPrompter {
                 Ok(Value::Bool(p.prompt()?))
             }
             QuestionKind::Str | QuestionKind::Int | QuestionKind::Yaml => {
-                let initial = default.map(|d| display_default(q.kind, d)).transpose()?;
+                let initial = default.map(|d| display_default(q.kind, d));
                 let mut p = inquire::Text::new(message);
                 if let Some(d) = &initial {
-                    p = p.with_default(d);
+                    p = p.with_initial_value(d);
                 }
                 if let Some(h) = &q.help {
                     p = p.with_help_message(h);
@@ -90,12 +90,13 @@ impl Prompter for TerminalPrompter {
 }
 
 /// Text shown as the pre-filled value of a text prompt.
-fn display_default(kind: QuestionKind, value: &Value) -> Result<String> {
-    Ok(match (kind, value) {
-        (QuestionKind::Yaml, v) => serde_norway::to_string(v)?.trim().to_string(),
+fn display_default(kind: QuestionKind, value: &Value) -> String {
+    match (kind, value) {
+        // JSON is valid single-line YAML.
+        (QuestionKind::Yaml, v) => v.to_string(),
         (_, Value::String(s)) => s.clone(),
         (_, v) => v.to_string(),
-    })
+    }
 }
 
 fn choice_values(q: &Question) -> Result<Vec<Value>> {
@@ -407,6 +408,18 @@ name = "pi_models"
 type = "yaml"
 default = { opus = "a", sonnet = "b", haiku = "c" }
 "#;
+
+    #[test]
+    fn display_default_is_single_line_text() {
+        assert_eq!(display_default(QuestionKind::Str, &json!("demo")), "demo");
+        assert_eq!(display_default(QuestionKind::Int, &json!(42)), "42");
+        let y = display_default(QuestionKind::Yaml, &json!({"opus": "a", "sonnet": "b"}));
+        assert!(!y.contains('\n'), "{y}");
+        assert_eq!(
+            serde_norway::from_str::<Value>(&y).unwrap(),
+            json!({"opus": "a", "sonnet": "b"})
+        );
+    }
 
     #[test]
     fn known_answer_wins() {
