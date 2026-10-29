@@ -79,6 +79,21 @@ pub enum RenderError {
     },
 }
 
+/// Canonical include root; it must stay inside the canonical repository.
+pub fn include_root(repo_root: &Path, cfg: &TemplateConfig) -> Result<PathBuf, RenderError> {
+    let joined = repo_root.join(&cfg.include_root);
+    let io = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| RenderError::Io { path, source }
+    };
+    let real_repo = std::fs::canonicalize(repo_root).map_err(io(repo_root))?;
+    let real = std::fs::canonicalize(&joined).map_err(io(&joined))?;
+    if !real.starts_with(&real_repo) {
+        return Err(RenderError::RootOutside { path: joined });
+    }
+    Ok(real)
+}
+
 /// Renders the template under `repo_root/cfg.root` with `ctx`.
 pub fn render_tree(
     repo_root: &Path,
@@ -190,7 +205,8 @@ impl Walk<'_> {
             let mut out = out_rel.to_vec();
             out.extend(segments);
             let rendered = out.join("/");
-            if fold_segment(&out[0]) == RECORD_FILE {
+            let top = fold_segment(&out[0]);
+            if top == RECORD_FILE || is_short_record(&top) {
                 return Err(RenderError::RecordPath { path });
             }
             if self
@@ -252,15 +268,19 @@ impl Walk<'_> {
 
     /// Resolves every symlink target through the emitted tree (following
     /// other emitted links) and rejects any that leaves the project root.
+    /// Runs twice: links matched by exact path, then by folded path.
     fn check_symlinks(&self) -> Result<(), RenderError> {
-        let links: BTreeMap<String, &str> = self
-            .tree
-            .iter()
-            .filter_map(|(p, r)| match &r.entry {
-                Entry::Symlink { target } => Some((fold_path(p), target.as_str())),
-                Entry::File { .. } => None,
-            })
-            .collect();
+        let link_map = |key: fn(&str) -> String| -> BTreeMap<String, &str> {
+            self.tree
+                .iter()
+                .filter_map(|(p, r)| match &r.entry {
+                    Entry::Symlink { target } => Some((key(p), target.as_str())),
+                    Entry::File { .. } => None,
+                })
+                .collect()
+        };
+        let exact = link_map(str::to_string);
+        let folded = link_map(fold_path);
         for (rendered, item) in &self.tree {
             let Entry::Symlink { target } = &item.entry else {
                 continue;
@@ -275,37 +295,13 @@ impl Walk<'_> {
                 target: target.clone(),
                 reason,
             };
-            let mut cur: Vec<String> = rendered.split('/').map(String::from).collect();
-            cur.pop();
-            let mut pending: std::collections::VecDeque<String> =
-                target.split(['/', '\\']).map(String::from).collect();
-            let mut hops = 0;
-            while let Some(seg) = pending.pop_front() {
-                match seg.as_str() {
-                    "" | "." => continue,
-                    ".." => {
-                        if cur.pop().is_none() {
-                            return Err(bad("escapes the project root"));
-                        }
-                        continue;
-                    }
-                    _ => cur.push(seg),
-                }
-                let folded: Vec<String> = cur.iter().map(|s| fold_segment(s)).collect();
-                if let Some(next) = links.get(&folded.join("/")) {
-                    hops += 1;
-                    if hops > MAX_LINK_HOPS {
-                        return Err(bad("goes through too many symlinks"));
-                    }
-                    if next.starts_with(['/', '\\']) {
-                        return Err(bad("goes through an absolute symlink"));
-                    }
-                    cur.pop();
-                    for s in next.split(['/', '\\']).rev() {
-                        pending.push_front(s.to_string());
-                    }
+            for seg in target.split(['/', '\\']) {
+                if !matches!(seg, "" | "." | "..") {
+                    check_segment(seg).map_err(bad)?;
                 }
             }
+            resolve(rendered, target, &exact, str::to_string).map_err(bad)?;
+            resolve(rendered, target, &folded, fold_segment).map_err(bad)?;
         }
         Ok(())
     }
@@ -374,13 +370,8 @@ impl Walk<'_> {
             if seg.is_empty() {
                 return Err(bad("has an empty segment or a leading slash"));
             }
-            if seg.contains(':') {
-                return Err(bad("has a `:` (drive prefix or alternate data stream)"));
-            }
+            check_segment(seg).map_err(bad)?;
             let folded = fold_segment(seg);
-            if folded.is_empty() {
-                return Err(bad("has a `.` or `..` segment"));
-            }
             if folded == ".git" || is_short_git(&folded) {
                 return Err(bad("has a `.git` segment"));
             }
@@ -388,6 +379,67 @@ impl Walk<'_> {
         }
         Ok(Some(segments))
     }
+}
+
+/// Rejects a segment with a `:` or one that folds to nothing (`.`, `..`, `...`).
+fn check_segment(seg: &str) -> Result<(), &'static str> {
+    if seg.contains(':') {
+        return Err("has a `:` (drive prefix or alternate data stream)");
+    }
+    if fold_segment(seg).is_empty() {
+        return Err("has a `.` or `..` segment");
+    }
+    Ok(())
+}
+
+/// Follows `target` from the directory of link `rendered`, expanding emitted
+/// links found in `links` (keyed by `key` of each path segment).
+fn resolve(
+    rendered: &str,
+    target: &str,
+    links: &BTreeMap<String, &str>,
+    key: fn(&str) -> String,
+) -> Result<(), &'static str> {
+    let mut cur: Vec<String> = rendered.split('/').map(String::from).collect();
+    cur.pop();
+    let mut pending: std::collections::VecDeque<String> =
+        target.split(['/', '\\']).map(String::from).collect();
+    let mut hops = 0;
+    while let Some(seg) = pending.pop_front() {
+        match seg.as_str() {
+            "" | "." => continue,
+            ".." => {
+                if cur.pop().is_none() {
+                    return Err("escapes the project root");
+                }
+                continue;
+            }
+            _ => cur.push(seg),
+        }
+        let path: Vec<String> = cur.iter().map(|s| key(s)).collect();
+        if let Some(next) = links.get(&path.join("/")) {
+            hops += 1;
+            if hops > MAX_LINK_HOPS {
+                return Err("goes through too many symlinks");
+            }
+            if next.starts_with(['/', '\\']) {
+                return Err("goes through an absolute symlink");
+            }
+            cur.pop();
+            for s in next.split(['/', '\\']).rev() {
+                pending.push_front(s.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// NTFS 8.3 short name of the record file: `rootst~<digits>.tom`.
+fn is_short_record(folded: &str) -> bool {
+    folded
+        .strip_prefix("rootst~")
+        .and_then(|r| r.strip_suffix(".tom"))
+        .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Folds a path segment the way case-insensitive filesystems alias it:
@@ -503,7 +555,7 @@ mod tests {
         cfg: &TemplateConfig,
         ctx: &Answers,
     ) -> Result<RenderedTree, RenderError> {
-        let jinja = Jinja::new(&cfg.jinja, &root.join(&cfg.include_root));
+        let jinja = Jinja::new(&cfg.jinja, &include_root(root, cfg)?);
         render_tree(root, cfg, &jinja, ctx)
     }
 
@@ -858,6 +910,67 @@ mod tests {
         }
         assert!(link("../shared/x", "a/l").is_ok());
         assert!(link("sub/../x", "l").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn include_root_symlink_outside_rejected() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        put(&d.path().join("outside"), "x", "s");
+        std::os::unix::fs::symlink(d.path().join("outside"), repo.join("inc")).unwrap();
+        let r = include_root(&repo, &cfg("include_root = \"inc\"\n"));
+        assert!(matches!(r, Err(RenderError::RootOutside { .. })), "{r:?}");
+    }
+
+    #[test]
+    fn include_root_inside_ok() {
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "inc/x", "s");
+        let got = include_root(d.path(), &cfg("include_root = \"inc\"\n")).unwrap();
+        assert_eq!(got, std::fs::canonicalize(d.path().join("inc")).unwrap());
+    }
+
+    #[test]
+    fn rejects_short_record_alias() {
+        for bad in ["ROOTST~1.TOM", "rootst~12.tom"] {
+            let d = tempfile::tempdir().unwrap();
+            put(d.path(), "{{ n }}", "x");
+            let r = render(d.path(), &cfg(""), &answers(json!({"n": bad})));
+            assert!(
+                matches!(r, Err(RenderError::RecordPath { .. })),
+                "{bad}: {r:?}"
+            );
+        }
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "sub/rootst~1.tom", "x");
+        assert!(render(d.path(), &cfg(""), &Answers::new()).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_target_names_checked() {
+        for t in [".../x", ".. /x", "a:b", "x/a:b", ". /x"] {
+            let d = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(t, d.path().join("l")).unwrap();
+            let r = render(d.path(), &cfg(""), &Answers::new());
+            assert!(
+                matches!(r, Err(RenderError::SymlinkTarget { .. })),
+                "{t}: {r:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_exact_and_folded_resolution() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        symlink("sub/deep", d.path().join("s")).unwrap();
+        symlink("S/../../..", d.path().join("l")).unwrap();
+        let r = render(d.path(), &cfg(""), &Answers::new());
+        assert!(matches!(r, Err(RenderError::SymlinkTarget { .. })), "{r:?}");
     }
 
     #[test]
