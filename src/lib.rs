@@ -1,6 +1,7 @@
 //! rootstock: create a project from a versioned git template and update it
 //! with a three-way merge.
 
+pub mod answers;
 pub mod cli;
 pub mod config;
 pub mod jinja;

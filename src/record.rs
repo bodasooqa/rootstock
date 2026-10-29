@@ -80,7 +80,10 @@ struct RawRecord {
     inventory: BTreeMap<RelPath, FileClass>,
 }
 
-fn json_to_toml(question: &str, value: &serde_json::Value) -> Result<toml::Value, RecordError> {
+pub(crate) fn json_to_toml(
+    question: &str,
+    value: &serde_json::Value,
+) -> Result<toml::Value, RecordError> {
     let fail = |reason: &str| RecordError::Answer {
         question: question.to_string(),
         reason: reason.to_string(),
@@ -114,7 +117,10 @@ fn json_to_toml(question: &str, value: &serde_json::Value) -> Result<toml::Value
     })
 }
 
-fn toml_to_json(question: &str, value: &toml::Value) -> Result<serde_json::Value, RecordError> {
+pub(crate) fn toml_to_json(
+    question: &str,
+    value: &toml::Value,
+) -> Result<serde_json::Value, RecordError> {
     Ok(match value {
         toml::Value::String(s) => serde_json::Value::String(s.clone()),
         toml::Value::Integer(i) => serde_json::Value::from(*i),
