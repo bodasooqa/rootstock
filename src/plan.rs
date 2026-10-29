@@ -116,11 +116,14 @@ impl Out {
     }
 
     /// Binary rule: keep the project's copy, put the target next to it.
-    fn binary_conflict(&mut self, path: &str, target: &Entry) {
-        self.actions.push(Action::Write {
-            path: format!("{path}{SIDE_FILE_SUFFIX}"),
-            entry: target.clone(),
-        });
+    /// When the side file's name is itself a template path, no side write is emitted.
+    fn binary_conflict(&mut self, path: &str, target: &Entry, side_taken: bool) {
+        if !side_taken {
+            self.actions.push(Action::Write {
+                path: format!("{path}{SIDE_FILE_SUFFIX}"),
+                entry: target.clone(),
+            });
+        }
         self.conflict(path, ConflictKind::Binary);
     }
 }
@@ -134,20 +137,36 @@ fn plan_present(
     target: &Entry,
     project: &Entry,
     label: &str,
+    side_taken: bool,
 ) {
     if same_content(project, target) {
         out.write(path, target.clone(), Some(project));
         return;
     }
-    if let Some(b) = base
-        && same_content(project, b)
-    {
-        out.write(path, target.clone(), Some(project));
-        return;
+    if let Some(b) = base {
+        // The template did not change this path: the project's edits stand.
+        if b == target {
+            return;
+        }
+        if same_content(b, target) {
+            // Only the executable bit changed: keep the project's content, take the bit.
+            if let (Entry::File { bytes, .. }, Entry::File { executable, .. }) = (project, target) {
+                let entry = Entry::File {
+                    bytes: bytes.clone(),
+                    executable: *executable,
+                };
+                out.write(path, entry, Some(project));
+            }
+            return;
+        }
+        if same_content(project, b) {
+            out.write(path, target.clone(), Some(project));
+            return;
+        }
     }
     let involved: Vec<&Entry> = base.into_iter().chain([project, target]).collect();
     if involved.iter().any(|e| is_binary_entry(e)) {
-        out.binary_conflict(path, target);
+        out.binary_conflict(path, target, side_taken);
         return;
     }
     let (Some(pb), Some(tb)) = (file_bytes(project), file_bytes(target)) else {
@@ -195,6 +214,13 @@ fn plan_present(
     }
 }
 
+/// True when one of the actions emitted for a single path writes that path.
+fn wrote_path(actions: &[Action], path: &str) -> bool {
+    actions
+        .iter()
+        .any(|a| matches!(a, Action::Write { path: p, .. } if p == path))
+}
+
 /// Plans an update from `base` to `target` against the project's current files.
 ///
 /// `new` is the same call with an empty base, an empty project and an empty inventory.
@@ -230,6 +256,9 @@ pub fn plan_update(
         };
 
         let in_inventory = inventory.contains_key(path);
+        let side = format!("{path}{SIDE_FILE_SUFFIX}");
+        let side_taken = base.contains_key(&side) || target.contains_key(&side);
+        let actions_before = out.actions.len();
         match t.class {
             FileClass::Starter => {
                 if p.is_none() && b.is_none() && !in_inventory {
@@ -255,11 +284,12 @@ pub fn plan_update(
                     &t.entry,
                     p,
                     target_label,
+                    side_taken,
                 ),
             },
         }
 
-        if in_inventory || p.is_some() || out.actions.iter().any(|a| a.path() == path) {
+        if in_inventory || p.is_some() || wrote_path(&out.actions[actions_before..], path) {
             new_inventory.insert(path.clone(), t.class);
         }
     }
@@ -401,6 +431,7 @@ mod tests {
             vec![conflict("a", ConflictKind::AddedByBoth)]
         );
         assert_eq!(plan.actions.len(), 1);
+        assert_eq!(plan.inventory, inv(&[("a", M)]));
         let Action::Write {
             entry: Entry::File { bytes, .. },
             ..
@@ -425,6 +456,7 @@ mod tests {
         let plan = run(&tree(&[]), &t, &proj(&[]), &inv(&[("a", S)]));
         assert!(plan.actions.is_empty());
         assert!(plan.conflicts.is_empty());
+        assert_eq!(plan.inventory, inv(&[("a", S)]));
     }
 
     #[test]
@@ -511,6 +543,7 @@ mod tests {
             plan.conflicts,
             vec![conflict("a", ConflictKind::DeletedByProject)]
         );
+        assert_eq!(plan.inventory, inv(&[("a", M)]));
     }
 
     #[test]
@@ -598,6 +631,7 @@ mod tests {
         let t = tree(&[("a", file("y\n"), M)]);
         let plan = run(&b, &t, &proj(&[]), &inv(&[("a", S)]));
         assert_eq!(plan.actions, vec![write("a", file("y\n"))]);
+        assert!(plan.conflicts.is_empty());
     }
 
     #[test]
@@ -654,6 +688,66 @@ mod tests {
         let t = tree(&[("a", exec("1\n"), M)]);
         let plan = run(&b, &t, &proj(&[("a", file("1\n"))]), &inv(&[("a", M)]));
         assert_eq!(plan.actions, vec![write("a", exec("1\n"))]);
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn binary_project_edit_template_unchanged_is_clean() {
+        let b = tree(&[("a.bin", bin(1), M)]);
+        let plan = run(&b, &b, &proj(&[("a.bin", bin(9))]), &inv(&[("a.bin", M)]));
+        assert!(plan.actions.is_empty());
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn symlink_project_edit_template_unchanged_is_clean() {
+        let b = tree(&[("l", link("a"), M)]);
+        let plan = run(&b, &b, &proj(&[("l", link("c"))]), &inv(&[("l", M)]));
+        assert!(plan.actions.is_empty());
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn kind_mismatch_template_unchanged_is_clean() {
+        let b = tree(&[("l", link("a"), M)]);
+        let plan = run(&b, &b, &proj(&[("l", file("mine\n"))]), &inv(&[("l", M)]));
+        assert!(plan.actions.is_empty());
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn template_exec_bit_change_keeps_project_content() {
+        let b = tree(&[("a", file("1\n"), M)]);
+        let t = tree(&[("a", exec("1\n"), M)]);
+        let plan = run(&b, &t, &proj(&[("a", file("mine\n"))]), &inv(&[("a", M)]));
+        assert_eq!(plan.actions, vec![write("a", exec("mine\n"))]);
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn side_file_collision_skips_side_write() {
+        let b = tree(&[("a.bin", bin(1), M), ("a.bin.rootstock-new", bin(5), M)]);
+        let t = tree(&[("a.bin", bin(2), M), ("a.bin.rootstock-new", bin(5), M)]);
+        let p = proj(&[("a.bin", bin(3)), ("a.bin.rootstock-new", bin(5))]);
+        let i = inv(&[("a.bin", M), ("a.bin.rootstock-new", M)]);
+        let plan = run(&b, &t, &p, &i);
+        assert!(plan.actions.is_empty());
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("a.bin", ConflictKind::Binary)]
+        );
+    }
+
+    #[test]
+    fn merge_write_takes_target_exec_bit() {
+        let b = tree(&[("a", file("a\nb\nc\nd\ne\nf\ng\n"), M)]);
+        let t = tree(&[("a", exec("A\nb\nc\nd\ne\nf\ng\n"), M)]);
+        let p = proj(&[("a", file("a\nb\nc\nd\ne\nf\nG\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("a", M)]));
+        assert_eq!(
+            plan.actions,
+            vec![write("a", exec("A\nb\nc\nd\ne\nf\nG\n"))]
+        );
         assert!(plan.conflicts.is_empty());
     }
 }
