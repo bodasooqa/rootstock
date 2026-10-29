@@ -2,3 +2,4 @@
 //! with a three-way merge.
 
 pub mod cli;
+pub mod config;
