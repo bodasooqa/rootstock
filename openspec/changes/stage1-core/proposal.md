@@ -17,7 +17,10 @@
 
 ### New Capabilities
 
-Спеки (`specs/<capability>/spec.md`) пишутся по ходу реализации; первая капабилити заводится вместе с задачей 2 плана.
+- `template-format` — конфигурация шаблона, вопросы, рендер файлов и имён, окружение Jinja, классы файлов, хуки (§Template format, §Concepts).
+- `project-creation` — `new`, запись проекта, источники шаблонов, `--git` (§Commands, §Concepts).
+- `project-update` — `update`: предусловия, ответы, таблица обновления, бинарные файлы, права и симлинки, окончания строк, маркеры, коды выхода (§How update works).
+- `status-and-check` — `status` и `check` (§Commands).
 
 ### Modified Capabilities
 
