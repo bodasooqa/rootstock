@@ -15,7 +15,7 @@ use crate::hooks::{check_trust, run_trusted};
 use crate::merge::has_markers;
 use crate::plan::plan_update;
 use crate::record::{self, FileClass, Record};
-use crate::source::{Source, checkout, git, latest, parse_source, run_git};
+use crate::source::{Source, checkout, git, latest, parse_source, parse_subdir, run_git};
 
 /// Arguments of `rootstock update`.
 #[derive(Debug, Clone)]
@@ -93,6 +93,7 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     require_clean_tree(dir)?;
     refuse_leftover_markers(dir, &rec)?;
 
+    let subdir = rec.subdir.as_deref().map(parse_subdir).transpose()?;
     let src = parse_source(&rec.source)?;
     let version = match &opts.to {
         Some(v) => {
@@ -117,8 +118,8 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         });
     }
 
-    let base_side = Side::load(checkout(&src, &rec.commit)?)?;
-    let target_side = Side::load(checkout(&src, &version)?)?;
+    let base_side = Side::load(checkout(&src, subdir.as_deref(), &rec.commit)?)?;
+    let target_side = Side::load(checkout(&src, subdir.as_deref(), &version)?)?;
     let target_cfg = &target_side.cfg;
 
     let mut known = rec.answers.clone();
@@ -150,6 +151,7 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     let record_text = record::to_text(&Record {
         schema: 1,
         source: rec.source.clone(),
+        subdir: subdir.clone(),
         version: version.clone(),
         commit: target_side.commit().to_string(),
         answers: target_collected.recorded,

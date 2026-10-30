@@ -32,6 +32,8 @@ pub type Inventory = BTreeMap<RelPath, FileClass>;
 pub struct Record {
     pub schema: u32,
     pub source: String,
+    /// Template subdirectory of the source; `None` when the template is the source itself.
+    pub subdir: Option<String>,
     pub version: String,
     pub commit: String,
     pub answers: Answers,
@@ -74,6 +76,8 @@ pub enum RecordError {
 struct RawRecord {
     schema: u32,
     source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subdir: Option<String>,
     version: String,
     commit: String,
     #[serde(default)]
@@ -197,6 +201,7 @@ fn parse(path: &Path, text: &str) -> Result<Record, RecordError> {
     Ok(Record {
         schema: raw.schema,
         source: raw.source,
+        subdir: raw.subdir,
         version: raw.version,
         commit: raw.commit,
         answers,
@@ -210,6 +215,7 @@ pub fn to_text(record: &Record) -> Result<String, RecordError> {
     let raw = RawRecord {
         schema: record.schema,
         source: record.source.clone(),
+        subdir: record.subdir.clone(),
         version: record.version.clone(),
         commit: record.commit.clone(),
         answers: record
@@ -279,11 +285,35 @@ mod tests {
         Record {
             schema: 1,
             source: "gh:owner/repo".into(),
+            subdir: None,
             version: "v1.2.3".into(),
             commit: "abc123".into(),
             answers,
             inventory,
         }
+    }
+
+    #[test]
+    fn subdir_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec = Record {
+            subdir: Some("tpl".into()),
+            ..sample()
+        };
+        write(dir.path(), &rec).unwrap();
+        let text = std::fs::read_to_string(dir.path().join(RECORD_FILE)).unwrap();
+        assert!(text.contains("subdir = \"tpl\""), "{text}");
+        assert_eq!(read(dir.path()).unwrap(), rec);
+    }
+
+    #[test]
+    fn record_without_subdir_reads_as_none_and_omits_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = "schema = 1\nsource = \"gh:o/r\"\nversion = \"v1.0.0\"\ncommit = \"abc\"\n";
+        std::fs::write(dir.path().join(RECORD_FILE), old).unwrap();
+        let rec = read(dir.path()).unwrap();
+        assert_eq!(rec.subdir, None);
+        assert!(!to_text(&rec).unwrap().contains("subdir"));
     }
 
     #[test]

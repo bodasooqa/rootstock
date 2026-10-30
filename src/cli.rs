@@ -97,6 +97,9 @@ struct NewArgs {
     /// Template version (tag); the latest release by default.
     #[arg(long, value_name = "VERSION")]
     version: Option<String>,
+    /// Directory of the template inside the source (holds `rootstock.toml`).
+    #[arg(long, value_name = "PATH")]
+    subdir: Option<String>,
     /// Run `git init` in an empty directory.
     #[arg(long)]
     git: bool,
@@ -159,6 +162,7 @@ pub fn run() -> Result<Outcome> {
                 template: args.template,
                 dir: args.dir,
                 version: args.version,
+                subdir: args.subdir,
                 git: args.git,
                 common: args.common.options(),
             });

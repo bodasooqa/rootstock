@@ -184,12 +184,18 @@ fn locate(src: &Source) -> Result<Located> {
 /// The template directory `prefix` inside a checked-out clone: every
 /// component a real directory (no symlink), holding `rootstock.toml`.
 fn template_dir(clone: &Path, prefix: &str, rev: &str) -> Result<PathBuf> {
-    if prefix.is_empty() {
-        return Ok(clone.to_path_buf());
+    template_dir_shown(clone, prefix, prefix, rev)
+}
+
+/// Like `template_dir`, walking `walk` from `base`; errors name `shown`,
+/// the full path of the template from the repository root.
+fn template_dir_shown(base: &Path, walk: &str, shown: &str, rev: &str) -> Result<PathBuf> {
+    if walk.is_empty() {
+        return Ok(base.to_path_buf());
     }
-    let not_found = || anyhow!("template not found at `{prefix}` in {rev}");
-    let mut dir = clone.to_path_buf();
-    for segment in prefix.split('/') {
+    let not_found = || anyhow!("template not found at `{shown}` in {rev}");
+    let mut dir = base.to_path_buf();
+    for segment in walk.split('/') {
         dir.push(segment);
         match std::fs::symlink_metadata(&dir) {
             Ok(meta) if meta.file_type().is_dir() => {}
@@ -206,16 +212,41 @@ fn is_full_sha(rev: &str) -> bool {
     rev.len() == 40 && rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// Parses a user-supplied template subdirectory into a `/`-separated path.
+/// One trailing `/` is dropped; empty, absolute and escaping paths, and
+/// paths with `\`, `:` or NUL, are rejected. Runs before any git access.
+pub fn parse_subdir(s: &str) -> Result<String> {
+    let path = s.strip_suffix('/').unwrap_or(s);
+    let bad = path.is_empty()
+        || path.starts_with('/')
+        || path.contains(['\\', ':', '\0'])
+        || path.split('/').any(|c| matches!(c, "" | "." | ".."));
+    if bad {
+        bail!("invalid template subdirectory `{}`", s.replace('\0', "\\0"));
+    }
+    Ok(path.to_string())
+}
+
 /// Checks out a tag or a full sha of the repository; the checkout's path is
-/// the template directory inside it. A local source with `HEAD` is used as-is.
-pub fn checkout(src: &Source, rev: &str) -> Result<Checkout> {
-    let Located { location, prefix } = locate(src)?;
+/// the template directory inside it, `subdir` below the source's own location.
+/// A local source with `HEAD` is used as-is (no subdir) or at its subdir.
+pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkout> {
+    let Located {
+        location,
+        prefix: offset,
+    } = locate(src)?;
+    let sub = subdir.unwrap_or("");
+    let prefix = match (offset.is_empty(), sub.is_empty()) {
+        (_, true) => offset,
+        (true, false) => sub.to_string(),
+        (false, false) => format!("{offset}/{sub}"),
+    };
     if let (Source::Local(dir), "HEAD") = (src, rev) {
         let dir_str = dir.to_string_lossy();
         let commit = git(&["-C", &dir_str, "rev-parse", "HEAD"])
             .with_context(|| format!("{dir_str} has no commits"))?;
         return Ok(Checkout {
-            path: dir.clone(),
+            path: template_dir_shown(dir, sub, &prefix, rev)?,
             commit,
             _dir: None,
         });

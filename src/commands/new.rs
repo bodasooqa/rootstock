@@ -14,7 +14,7 @@ use crate::hooks::{check_trust, run_trusted};
 use crate::plan::plan_update;
 use crate::record::{self, Inventory, RECORD_FILE, Record};
 use crate::render::RenderedTree;
-use crate::source::{Source, checkout, git, latest, parse_source};
+use crate::source::{Source, checkout, git, latest, parse_source, parse_subdir};
 
 /// Arguments of `rootstock new`.
 #[derive(Debug, Clone)]
@@ -22,6 +22,7 @@ pub struct NewOptions {
     pub template: String,
     pub dir: PathBuf,
     pub version: Option<String>,
+    pub subdir: Option<String>,
     pub git: bool,
     pub common: CommonOptions,
 }
@@ -50,6 +51,8 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         bail!("--git needs an empty directory");
     }
 
+    // Validated before any git access.
+    let subdir = opts.subdir.as_deref().map(parse_subdir).transpose()?;
     let src = parse_source(&opts.template)?;
     let version = match &opts.version {
         Some(v) => {
@@ -58,7 +61,7 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         }
         None => latest(&src)?,
     };
-    let side = Side::load(checkout(&src, &version)?)?;
+    let side = Side::load(checkout(&src, subdir.as_deref(), &version)?)?;
     let cfg = &side.cfg;
     let source = recorded_source(&opts.template, &src)?;
 
@@ -82,6 +85,7 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
     let record_text = record::to_text(&Record {
         schema: 1,
         source,
+        subdir,
         version: version.clone(),
         commit: side.commit().to_string(),
         answers: collected.recorded,

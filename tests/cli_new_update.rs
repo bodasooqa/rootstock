@@ -1020,3 +1020,150 @@ fn leftover_markers_unsafe_inventory_path_exits_1() {
         ));
     assert_untouched(&dir);
 }
+
+const SUB_CONFIG: &str = "schema = 1\nroot = \"files\"\n";
+
+/// A template that lives in `tpl/` of its repository; `docs/` holds no template.
+fn subdir_template() -> TemplateRepo {
+    let repo = TemplateRepo::new();
+    repo.file("tpl/rootstock.toml", SUB_CONFIG)
+        .file("tpl/files/a.txt", "one\n")
+        .file("docs/readme.txt", "docs\n")
+        .tag("v1.0.0");
+    repo
+}
+
+fn file_url(repo: &TemplateRepo) -> String {
+    format!("file://{}", repo.path().display())
+}
+
+fn new_with_subdir(repo: &TemplateRepo, dir: &Path) -> assert_cmd::assert::Assert {
+    rootstock()
+        .args(["new", &file_url(repo)])
+        .arg(dir)
+        .args(["--subdir", "tpl", "--defaults"])
+        .assert()
+}
+
+#[test]
+fn new_subdir_records_it_and_update_follows() {
+    let repo = subdir_template();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    new_with_subdir(&repo, &dir).code(0);
+    assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("subdir = \"tpl\""), "{record}");
+    commit_project(&dir, "init");
+
+    repo.file("tpl/files/a.txt", "two\n").tag("v1.1.0");
+    update(&dir).arg("--defaults").assert().code(0);
+    assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "two\n");
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("subdir = \"tpl\""), "{record}");
+    assert!(record.contains("v1.1.0"), "{record}");
+}
+
+#[test]
+fn new_subdir_with_head_renders_work_tree() {
+    let repo = subdir_template();
+    repo.file("tpl/files/a.txt", "wip\n");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--subdir", "tpl", "--version", "HEAD", "--defaults"])
+        .assert()
+        .code(0);
+    assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "wip\n");
+}
+
+#[test]
+fn new_subdir_escaping_source_exits_1_before_git() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    for bad in ["../x", "/abs"] {
+        // The source does not exist: validation must fail before git is touched.
+        rootstock()
+            .args(["new", "file:///nonexistent/rootstock-repo"])
+            .arg(&dir)
+            .args(["--subdir", bad, "--defaults"])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("invalid template subdirectory"));
+        assert!(!dir.exists());
+    }
+}
+
+#[test]
+fn new_subdir_without_config_exits_1() {
+    let repo = subdir_template();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &file_url(&repo)])
+        .arg(&dir)
+        .args(["--subdir", "docs", "--defaults"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("template not found at `docs`"));
+    assert!(!dir.exists());
+}
+
+#[test]
+fn update_fails_when_subdir_vanishes_in_target() {
+    let repo = subdir_template();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    new_with_subdir(&repo, &dir).code(0);
+    commit_project(&dir, "init");
+    repo.remove("tpl/rootstock.toml").tag("v1.1.0");
+
+    let before_file = fs::read(dir.join("a.txt")).unwrap();
+    let before_record = fs::read(dir.join(".rootstock.toml")).unwrap();
+    update(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("template not found at `tpl`"));
+    assert_eq!(fs::read(dir.join("a.txt")).unwrap(), before_file);
+    assert_eq!(
+        fs::read(dir.join(".rootstock.toml")).unwrap(),
+        before_record
+    );
+}
+
+#[test]
+fn status_works_with_subdir() {
+    let repo = subdir_template();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    new_with_subdir(&repo, &dir).code(0);
+    rootstock()
+        .current_dir(&dir)
+        .arg("status")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("v1.0.0"));
+}
+
+#[test]
+fn update_rejects_hand_edited_bad_subdir() {
+    let repo = subdir_template();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    new_with_subdir(&repo, &dir).code(0);
+    let path = dir.join(".rootstock.toml");
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, text.replace("subdir = \"tpl\"", "subdir = \"../x\"")).unwrap();
+    commit_project(&dir, "init");
+    for cmd in ["update", "status"] {
+        rootstock()
+            .current_dir(&dir)
+            .arg(cmd)
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("invalid template subdirectory"));
+    }
+}

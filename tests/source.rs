@@ -1,6 +1,6 @@
 mod support;
 
-use rootstock::source::{Source, checkout, latest, parse_source, tags};
+use rootstock::source::{Source, checkout, latest, parse_source, parse_subdir, tags};
 use support::TemplateRepo;
 
 fn src(s: &str) -> Source {
@@ -57,7 +57,7 @@ fn checkout_by_tag_and_by_sha() {
     repo.file("a.txt", "two").tag("v2.0.0");
     let src = src(&repo.url());
 
-    let by_tag = checkout(&src, "v1.0.0").unwrap();
+    let by_tag = checkout(&src, None, "v1.0.0").unwrap();
     assert_eq!(
         std::fs::read_to_string(by_tag.path().join("a.txt")).unwrap(),
         "one"
@@ -65,7 +65,7 @@ fn checkout_by_tag_and_by_sha() {
     assert_eq!(by_tag.commit, repo.commit("v1.0.0"));
 
     let sha = repo.commit("v2.0.0");
-    let by_sha = checkout(&src, &sha).unwrap();
+    let by_sha = checkout(&src, None, &sha).unwrap();
     assert_eq!(
         std::fs::read_to_string(by_sha.path().join("a.txt")).unwrap(),
         "two"
@@ -79,7 +79,7 @@ fn local_head_is_working_tree() {
     repo.file("a.txt", "one").tag("v1.0.0");
     repo.file("new.txt", "uncommitted");
     let src = src(&repo.url());
-    let co = checkout(&src, "HEAD").unwrap();
+    let co = checkout(&src, None, "HEAD").unwrap();
     assert_eq!(co.path(), repo.path());
     assert!(co.path().join("new.txt").exists());
     assert_eq!(co.commit, repo.commit("HEAD"));
@@ -90,7 +90,7 @@ fn missing_commit_errors() {
     let repo = TemplateRepo::new();
     repo.file("a.txt", "one").tag("v1.0.0");
     let sha = "0123456789abcdef0123456789abcdef01234567";
-    let err = checkout(&src(&repo.url()), sha).unwrap_err();
+    let err = checkout(&src(&repo.url()), None, sha).unwrap_err();
     assert!(err.to_string().contains(sha), "{err}");
 }
 
@@ -100,7 +100,7 @@ fn option_like_source_is_rejected() {
     let marker_file = marker.path().join("pwned");
     let s = format!("--upload-pack=touch {}", marker_file.display());
     let src = src(&s);
-    assert!(checkout(&src, "v1.0.0").is_err());
+    assert!(checkout(&src, None, "v1.0.0").is_err());
     assert!(tags(&src).is_err());
     assert!(!marker_file.exists());
 }
@@ -109,7 +109,7 @@ fn option_like_source_is_rejected() {
 fn branch_name_is_not_a_version() {
     let repo = TemplateRepo::new();
     repo.file("a.txt", "one").tag("v1.0.0");
-    let err = checkout(&src(&repo.url()), "main").unwrap_err();
+    let err = checkout(&src(&repo.url()), None, "main").unwrap_err();
     assert!(err.to_string().contains("main"), "{err}");
 }
 
@@ -117,7 +117,7 @@ fn branch_name_is_not_a_version() {
 fn annotated_tag_resolves() {
     let repo = TemplateRepo::new();
     repo.file("a.txt", "one").tag_annotated("v1.0.0");
-    let co = checkout(&src(&repo.url()), "v1.0.0").unwrap();
+    let co = checkout(&src(&repo.url()), None, "v1.0.0").unwrap();
     assert_eq!(co.commit, repo.commit("HEAD"));
 }
 
@@ -127,7 +127,7 @@ fn tag_wins_over_same_named_branch() {
     repo.file("a.txt", "one").tag("v1.0.0");
     repo.branch("v1.0.0");
     repo.file("a.txt", "two").tag("v2.0.0");
-    let co = checkout(&src(&repo.url()), "v1.0.0").unwrap();
+    let co = checkout(&src(&repo.url()), None, "v1.0.0").unwrap();
     assert_eq!(
         std::fs::read_to_string(co.path().join("a.txt")).unwrap(),
         "one"
@@ -138,7 +138,7 @@ fn tag_wins_over_same_named_branch() {
 fn local_non_repo_errors() {
     let dir = tempfile::tempdir().unwrap();
     let src = src(&dir.path().to_string_lossy());
-    let err = checkout(&src, "HEAD").unwrap_err();
+    let err = checkout(&src, None, "HEAD").unwrap_err();
     assert!(
         err.to_string().contains(&*dir.path().to_string_lossy()),
         "{err}"
@@ -159,7 +159,7 @@ fn local_subdir_template_checkout() {
     let listed: Vec<String> = tags(&src).unwrap().into_iter().map(|(_, t)| t).collect();
     assert_eq!(listed, vec!["v1.0.0"]);
 
-    let by_tag = checkout(&src, "v1.0.0").unwrap();
+    let by_tag = checkout(&src, None, "v1.0.0").unwrap();
     assert!(
         by_tag.path().ends_with("tpl"),
         "{}",
@@ -173,7 +173,7 @@ fn local_subdir_template_checkout() {
     assert!(!by_tag.path().join("other.txt").exists());
     assert_eq!(by_tag.commit, repo.commit("v1.0.0"));
 
-    let head = checkout(&src, "HEAD").unwrap();
+    let head = checkout(&src, None, "HEAD").unwrap();
     assert_eq!(head.path(), sub);
     assert_eq!(
         std::fs::read_to_string(head.path().join("a.txt")).unwrap(),
@@ -189,12 +189,12 @@ fn local_subdir_missing_at_version_errors() {
     repo.file("tpl/rootstock.toml", "schema = 1\n")
         .tag("v2.0.0");
     let src = src(&repo.path().join("tpl").to_string_lossy());
-    let err = checkout(&src, "v1.0.0").unwrap_err().to_string();
+    let err = checkout(&src, None, "v1.0.0").unwrap_err().to_string();
     assert!(
         err.contains("template not found at `tpl` in v1.0.0"),
         "{err}"
     );
-    assert!(checkout(&src, "v2.0.0").is_ok());
+    assert!(checkout(&src, None, "v2.0.0").is_ok());
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn local_subdir_without_config_at_version_errors() {
     let repo = TemplateRepo::new();
     repo.file("tpl/a.txt", "x").tag("v1.0.0");
     let src = src(&repo.path().join("tpl").to_string_lossy());
-    let err = checkout(&src, "v1.0.0").unwrap_err().to_string();
+    let err = checkout(&src, None, "v1.0.0").unwrap_err().to_string();
     assert!(
         err.contains("template not found at `tpl` in v1.0.0"),
         "{err}"
@@ -221,7 +221,7 @@ fn local_subdir_symlinked_at_version_errors() {
         .file("tpl/rootstock.toml", "schema = 1\n")
         .tag("v2.0.0");
     let src = src(&repo.path().join("tpl").to_string_lossy());
-    let err = checkout(&src, "v1.0.0").unwrap_err().to_string();
+    let err = checkout(&src, None, "v1.0.0").unwrap_err().to_string();
     assert!(
         err.contains("template not found at `tpl` in v1.0.0"),
         "{err}"
@@ -243,4 +243,87 @@ fn tags_drop_non_semver() {
         .map(|(_, t)| t)
         .collect();
     assert_eq!(listed, vec!["v1.0.0"]);
+}
+
+#[test]
+fn parse_subdir_normalizes_and_rejects() {
+    assert_eq!(parse_subdir("tpl").unwrap(), "tpl");
+    assert_eq!(parse_subdir("tpl/").unwrap(), "tpl");
+    assert_eq!(parse_subdir("a/b").unwrap(), "a/b");
+    for bad in [
+        "", "/", "/abs", "a//b", "tpl//", ".", "..", "../x", "a/./b", "a/../b", "a\\b", "c:x",
+        "a\0b",
+    ] {
+        assert!(parse_subdir(bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn remote_checkout_with_subdir() {
+    let repo = TemplateRepo::new();
+    repo.file("other.txt", "outside")
+        .file("tpl/rootstock.toml", "schema = 1\n")
+        .file("tpl/a.txt", "one")
+        .tag("v1.0.0");
+    let url = format!("file://{}", repo.path().display());
+    let src = src(&url);
+    assert!(matches!(src, Source::Git(_)));
+    let co = checkout(&src, Some("tpl"), "v1.0.0").unwrap();
+    assert!(co.path().ends_with("tpl"));
+    assert_eq!(
+        std::fs::read_to_string(co.path().join("a.txt")).unwrap(),
+        "one"
+    );
+    assert_eq!(co.commit, repo.commit("v1.0.0"));
+}
+
+#[test]
+fn local_head_checkout_with_subdir() {
+    let repo = TemplateRepo::new();
+    repo.file("tpl/rootstock.toml", "schema = 1\n")
+        .file("tpl/a.txt", "one")
+        .tag("v1.0.0");
+    repo.file("tpl/a.txt", "two");
+    let co = checkout(&src(&repo.url()), Some("tpl"), "HEAD").unwrap();
+    assert_eq!(co.path(), repo.path().join("tpl"));
+    assert_eq!(
+        std::fs::read_to_string(co.path().join("a.txt")).unwrap(),
+        "two"
+    );
+}
+
+#[test]
+fn local_path_into_subdir_plus_subdir() {
+    let repo = TemplateRepo::new();
+    repo.file("a/b/rootstock.toml", "schema = 1\n")
+        .file("a/b/x.txt", "x")
+        .tag("v1.0.0");
+    let src = src(&repo.path().join("a").to_string_lossy());
+    let co = checkout(&src, Some("b"), "v1.0.0").unwrap();
+    assert!(co.path().ends_with("a/b"), "{}", co.path().display());
+    let head = checkout(&src, Some("b"), "HEAD").unwrap();
+    assert_eq!(head.path(), repo.path().join("a/b"));
+}
+
+#[test]
+fn subdir_without_config_or_through_symlink_errors() {
+    let repo = TemplateRepo::new();
+    repo.file("docs/a.txt", "x")
+        .file("real/rootstock.toml", "schema = 1\n")
+        .symlink("tpl", "real")
+        .tag("v1.0.0");
+    let url = format!("file://{}", repo.path().display());
+    let src = src(&url);
+    for sub in ["docs", "tpl", "missing"] {
+        let err = checkout(&src, Some(sub), "v1.0.0").unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("template not found at `{sub}` in v1.0.0")),
+            "{err}"
+        );
+    }
+    let local = self::src(&repo.url());
+    let err = checkout(&local, Some("docs"), "HEAD")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("template not found at `docs`"), "{err}");
 }

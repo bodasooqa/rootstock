@@ -7,7 +7,7 @@ use regex::Regex;
 use semver::Version;
 
 use crate::record;
-use crate::source::{latest, parse_source};
+use crate::source::{latest, parse_source, parse_subdir};
 
 /// What `status` reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +32,10 @@ fn parse_release(tag: &str) -> Option<Version> {
 
 pub fn run(project: &Path) -> Result<Status> {
     let rec = record::read(project)?;
+    // Status does not check out; the recorded subdir is only validated.
+    if let Some(subdir) = &rec.subdir {
+        parse_subdir(subdir)?;
+    }
     let src = parse_source(&rec.source)?;
     let latest_tag = latest(&src)?;
     let Some(current) = parse_release(&rec.version) else {
