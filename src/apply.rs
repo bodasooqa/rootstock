@@ -324,8 +324,9 @@ fn write_file(parent: &Path, full: &Path, bytes: &[u8], executable: bool) -> any
     Ok(())
 }
 
-/// A new file gets 0o644 or 0o755. A replaced file keeps its bits, except
-/// that each executable bit is set where its read bit is, or cleared.
+/// A new file gets 0o644 or 0o755. A replaced file keeps its permission
+/// bits, except that each executable bit is set where its read bit is, or
+/// cleared. setuid, setgid and sticky never carry over onto template content.
 #[cfg(unix)]
 fn set_mode(
     path: &Path,
@@ -335,7 +336,7 @@ fn set_mode(
     use std::os::unix::fs::PermissionsExt;
     let mode = match existing {
         Some(meta) => {
-            let kept = meta.permissions().mode() & 0o7777 & !0o111;
+            let kept = meta.permissions().mode() & 0o777 & !0o111;
             if executable {
                 kept | ((kept & 0o444) >> 2)
             } else {
@@ -471,6 +472,30 @@ mod tests {
             apply(&plan(vec![write_file("f", b"new", executable)]), root).unwrap();
             assert_eq!(mode_of("f"), expected, "{start:o} exec={executable}");
             assert_eq!(std::fs::read(root.join("f")).unwrap(), b"new");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_drops_setuid_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for (start, executable, expected) in [
+            (0o4755, true, 0o755),
+            (0o2755, true, 0o755),
+            (0o1644, false, 0o644),
+        ] {
+            std::fs::write(root.join("f"), "old").unwrap();
+            std::fs::set_permissions(root.join("f"), std::fs::Permissions::from_mode(start))
+                .unwrap();
+            apply(&plan(vec![write_file("f", b"new", executable)]), root).unwrap();
+            let mode = std::fs::metadata(root.join("f"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
+            assert_eq!(mode, expected, "{start:o} exec={executable}");
         }
     }
 
