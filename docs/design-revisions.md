@@ -4,6 +4,26 @@
 
 ---
 
+## 1.3 · 2026-10-30 · Stage 2 findings, before stage 3
+
+Merged into `docs/design.md`. Decided at the grooming that opens stage 3, on the open questions in `knowledge/open-questions.md`. The owner decided some points directly and handed the rest to the builder ("let's just do it well"); those are marked *my call*.
+
+**The merge shells to `git merge-file`.** §Left to the builder said in-process, "but the builder may change it if conflict output differs from git's". It did: on 3000 random three-way inputs, an in-process diff3 (diffy) disagreed with `git merge-file` on 20 conflict-or-clean verdicts and on 349 conflict bytes. Copier merges with git too, so the stage 2 parity criterion needs git's output. The merge runs with an empty git config, so a user's `merge.conflictStyle` cannot change the markers.
+
+**`check`: "inconsistent with the tree".** The text did not say what it means. The owner decided on checks that need no template checkout: the record does not parse; an inventory path is not a safe relative path; the recorded version is neither a `vX.Y.Z` tag nor `HEAD`. A managed file that is missing is not an error: the project may delete it (§How update works, row "managed | managed | absent").
+
+**The bridge commits the import.** §Stages, item 3, said the bridge "runs `rootstock import-copier` and then `rootstock update`". But the import leaves the tree dirty, and `update` refuses a dirty tree (rule 1). The owner decided that the bridge commits the import as a separate commit of the update PR. Rule 1 stays as it is.
+
+**Changing an answer at the current version** *(my call)*. §Commands promises that `--data` "changes an answer". But step 2 stopped at "already at the target", so an answer could not be changed without a version step. Now step 2 stops there only when no answer changes. Otherwise the update renders the same version twice, with the old answers and with the new ones.
+
+**A Copier template that is itself a Copier project** *(my call)*. Some repositories hold both `copier.yml` and their own `.copier-answers.yml`. On those, `import-copier` refused, because it did not know which side to convert, and no flag chooses the side. Now it converts both sides in one run: each side passes its own checks, and nothing is written until both have.
+
+**Confirmed as built, no text change** *(my call)*:
+- a `blocked` path, being out of the inventory, behaves afterwards as deleted by the project;
+- `--subdir` with a local path into a subdirectory is taken relative to that path.
+
+---
+
 ## 1.2 · 2026-10-30 · Python methods in harness templates
 
 Merged into `docs/design.md`. The owner decided it during stage 2, on a finding of `stage2-import-copier-template`.

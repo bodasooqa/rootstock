@@ -2,7 +2,7 @@
 
 Date: 2026-10-29. Written by Claude from a conversation with the owner (bodasooqa). "The owner decided" marks the owner's decisions; "my call" marks decisions I made that the owner may overturn.
 
-Revisions 1.1 and 1.2 (2026-10-30) are merged into this text; their changes are marked "(1.1)" and "(1.2)", and the reasons are in `docs/design-revisions.md`.
+Revisions 1.1, 1.2 and 1.3 (2026-10-30) are merged into this text; their changes are marked "(1.1)", "(1.2)" and "(1.3)", and the reasons are in `docs/design-revisions.md`.
 
 ## Intent
 
@@ -101,9 +101,9 @@ Python methods on values, as Jinja2 allows them *(owner decided, 1.2)*: the comm
 
 - `rootstock new <template> <dir> [--subdir path] [--version vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust] [--git] [--format text|json]` — creates the project at the given version (default: latest semver tag), writes the record. Does not run `git init` unless the directory is empty and `--git` is passed *(my call)*; `--git` with a non-empty directory is an error *(owner decided, 1.1)*. A non-empty directory is otherwise allowed: a file already there is treated as "— / managed / present" and differing content is an `added-by-both` conflict *(owner decided, 1.1)*. `--format` applies to the conflict list *(1.1)*.
 - `--subdir` names the template directory inside the template repository, for every kind of source; the record keeps it next to the source, so `update` and `status` use it without the flag. A local path may also point straight into the subdirectory. *(Owner decided, 1.1.)*
-- `rootstock update [--to vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust] [--format text|json]` — updates the project in the current directory. `--data` (and `--data-file` *(1.1)*) changes an answer: the base renders with the old answers, the new side with the new ones.
+- `rootstock update [--to vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust] [--format text|json]` — updates the project in the current directory. `--data` (and `--data-file` *(1.1)*) changes an answer: the base renders with the old answers, the new side with the new ones. This works at the current version too: the update then renders the same version with both sets of answers *(my call, 1.3)*.
 - `rootstock status [--format text|json]` — current version, latest available, whether the step is a major bump. Replaces harness's `next-version.sh`.
-- `rootstock check` — fails if any managed file contains unresolved conflict markers or the record is inconsistent with the tree. For CI.
+- `rootstock check` — fails if any managed file contains unresolved conflict markers or the record is inconsistent with the tree. For CI. Inconsistent means: the record does not parse, an inventory path is not a safe relative path, or the recorded version is neither a `vX.Y.Z` tag nor `HEAD`. It needs no template checkout. A missing managed file is not an error *(owner decided, 1.3)*.
 - `rootstock import-copier` — see below.
 
 Template sources: `https://…`, `git@…:…`, `gh:owner/repo` shorthand, and a local path. For a local path, the version is a tag in that repository; `--version HEAD` renders the working tree, for template development, including untracked and ignored files *(owner decided, 1.1)*.
@@ -111,7 +111,7 @@ Template sources: `https://…`, `git@…:…`, `gh:owner/repo` shorthand, and a
 ## How update works
 
 1. **Clean tree required.** If the working tree has uncommitted changes, refuse. Every update can then be reviewed and undone with git. *(My call, after rusticate.)* Likewise, if a managed file still holds conflict markers from an earlier update, refuse with exit 1: merging over unresolved markers would bury them. *(Owner decided, 1.1.)*
-2. **Resolve versions.** Read the record. Target = `--to` or the latest semver tag. Already at the target: exit 0, nothing to do. `--to` may name an older tag than the recorded one *(owner decided, 1.1)*.
+2. **Resolve versions.** Read the record. Target = `--to` or the latest semver tag. Already at the target and no answer changed: exit 0, nothing to do *(1.3)*. `--to` may name an older tag than the recorded one *(owner decided, 1.1)*.
 3. **Ask new questions.** Questions added by the new version take `--data`, then their default under `--defaults`. A new question with no default and no answer is an error when there is no terminal. Without `--defaults` and without a terminal, a new question is an error even when it has a default *(owner decided, 1.1)*.
 4. **Render twice into temporary directories:** the *base* (recorded commit, recorded answers) and the *target* (target commit, current answers). Class rules are evaluated per side with that side's answers.
 5. **Apply per path**, with project = the file on disk:
@@ -150,6 +150,7 @@ Converts once; afterwards Copier is not needed.
 
 - **Template side** (run in a Copier template repository): reads `copier.yml` and writes `rootstock.toml`. Supported subset — exactly what harness uses: question types `bool`/`str`/`yaml`, `choices`, `when`, `validator`, `default`, `help`; `_subdirectory`, `_templates_suffix`, `_envops`, `_exclude`, `_skip_if_exists`, `_tasks`, `_answers_file`, `_min_copier_version`. Mapping: `_skip_if_exists` → `starter`; `_exclude` entries of the form `{% if _copier_operation == 'update' %}…{% endif %}` are dropped as redundant once those paths are starter; other `_exclude` → `exclude`; `_tasks` → hooks with the matching `when`. The template file that renders the Copier answers file (`{{ _copier_conf.answers_file }}.jinja`, content `{{ _copier_answers|to_nice_yaml }}` in harness) is dropped: the record replaces it. Anything else outside the subset (`_jinja_extensions`, `_migrations`, unsupported question types, other uses of `_copier_conf` or `_copier_answers`) stops the import with a list of what is unsupported. It never converts half a template silently.
 - **Project side** (run in a Copier-generated project): reads `.copier-answers.yml`, fetches the template at the recorded `_commit`, converts its `copier.yml` in memory (same rules as the template side), renders it with the recorded answers to build the inventory, writes `.rootstock.toml` pointing at that same commit, and removes `.copier-answers.yml`. The project is now a rootstock project at its old version, and a plain `rootstock update` takes it to a rootstock-format version. Old template tags never need converting.
+- **Both files in one root** — `copier.yml` and the repository's own `.copier-answers.yml`: both sides are converted in one run, and nothing is written until both pass *(my call, 1.3)*.
 
 ## Repository and release
 
@@ -164,7 +165,7 @@ Converts once; afterwards Copier is not needed.
    - the latest harness release, converted, renders byte for byte identical to Copier 9.19's output for every valid combination of the answers `rust`, `frontend`, `monorepo`, `linear`, `telegram`, `orca`, `doc_form` — excluding `.copier-answers.yml` versus `.rootstock.toml`, which are compared by content (same answers, same commit);
    - updating a copy of screener from harness v0.3.3 to the latest release with rootstock (after `import-copier`) gives the same tree as `copier update`, except where Copier's known defects differ (starter files recreated after deletion, settings lost because of the `/**` render); each such difference is listed and justified.
 3. **harness moves over**, in two releases:
-   - **Bridge (last Copier-format minor).** Still `copier.yml`, delivered by Copier as usual. Its `harness-update.yml` learns to read the target tag: if the target ships `rootstock.toml`, it installs rootstock, runs `rootstock import-copier` and then `rootstock update --to <target>`; otherwise it runs Copier as before.
+   - **Bridge (last Copier-format minor).** Still `copier.yml`, delivered by Copier as usual. Its `harness-update.yml` learns to read the target tag: if the target ships `rootstock.toml`, it installs rootstock, runs `rootstock import-copier`, commits the import as a separate commit of the update PR *(owner decided, 1.3)*, and then runs `rootstock update --to <target>`; otherwise it runs Copier as before.
    - **Major.** `rootstock.toml` replaces `copier.yml`; `harness-update.yml` uses only rootstock (`status`, `update`) and maps exit code 2 to the `harness:conflict` label. The bridge workflow delivers it to screener as an ordinary update PR, labelled major.
    - **Order.** The major is tagged only after every known consumer has merged the bridge (today: screener, and rootstock's own repository). A consumer still on a pre-bridge workflow would be offered the major through Copier, which cannot render it; that PR still gets the `harness:major` label, which never merges itself, so the failure is visible, not silent. *(My call.)*
 
@@ -172,7 +173,7 @@ Converts once; afterwards Copier is not needed.
 
 ## Left to the builder
 
-- Crate choice for git access (the `git` CLI or gix), prompts, CLI parsing, the three-way merge (in-process, e.g. a diff3 implementation, rather than shelling to `git merge-file`; *my call*, but the builder may change it if conflict output differs from git's).
+- Crate choice for git access (the `git` CLI or gix), prompts, CLI parsing, the three-way merge. The merge shells to `git merge-file`, with an empty git config, because an in-process diff3 produced different conflicts from git's *(1.3)*.
 - The exact `rootstock.toml` and `.rootstock.toml` schemas, within the concepts above. They must carry a schema version.
 - Caching of fetched templates.
 - Error message wording.
