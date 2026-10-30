@@ -4,6 +4,26 @@
 
 ---
 
+## 1.2 · 2026-10-30 · Python methods in harness templates
+
+Merged into `docs/design.md`. The owner decided it during stage 2, on a finding of `stage2-import-copier-template`.
+
+**harness templates call Python methods that minijinja does not have.** Every harness tag from v0.3.3 to v0.4.5 has two of them:
+- `names.append(name)` in `template/_partials/agents/meta.jinja`, which builds the tool list of every Pi agent;
+- `open_questions_path.endswith('.md')` in `knowledge/README.md.jinja`.
+
+Jinja2 lets a template call any Python method on a value; minijinja has none of them. So the converted harness did not render at all. With those two spots rewritten, it rendered for every combination of `rust`, `frontend` and `doc_form`, and the combination checked byte for byte matched Copier 9.19. The spec says old tags never need converting, and the stage 2 criterion renders v0.3.3 and the latest tag. So rootstock has to render these templates as they are.
+
+Options weighed:
+- a new harness release without the methods: old tags would stay unrenderable, and updating screener from v0.3.3 would be impossible;
+- rewriting the methods while converting: the text of someone else's template would change silently.
+
+The owner chose narrow Jinja2 compatibility in rootstock itself (§Template format, "Filters and tests"):
+- the common string, mapping and list methods;
+- `append` on a list, which in Jinja2 changes the list in place. minijinja values are immutable, so this needs rootstock's own list.
+
+---
+
 ## 1.1 · 2026-10-30 · Stage 1 findings, before stage 2
 
 Merged into `docs/design.md`. The owner decided every point at the grooming that opens stage 2, on the open questions stage 1 left in `knowledge/open-questions.md`.

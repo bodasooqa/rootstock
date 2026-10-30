@@ -2,7 +2,7 @@
 
 Date: 2026-10-29. Written by Claude from a conversation with the owner (bodasooqa). "The owner decided" marks the owner's decisions; "my call" marks decisions I made that the owner may overturn.
 
-Revision 1.1 (2026-10-30) is merged into this text; its changes are marked "(1.1)", and the reasons are in `docs/design-revisions.md`.
+Revisions 1.1 and 1.2 (2026-10-30) are merged into this text; their changes are marked "(1.1)" and "(1.2)", and the reasons are in `docs/design-revisions.md`.
 
 ## Intent
 
@@ -95,6 +95,8 @@ It declares:
 
 Filters and tests: minijinja's built-ins, plus `regex_search` with the semantics of the jinja2-ansible-filters version Copier ships (harness's `project_name` validator uses it). `to_nice_yaml` is not needed: in harness it only renders the Copier answers file, which the converter drops (see import-copier). *(My call; it can be added later for other templates.)*
 
+Python methods on values, as Jinja2 allows them *(owner decided, 1.2)*: the common methods of strings (`startswith`, `endswith`, `lower`, `upper`, `strip`, `split`, `replace`, …), mappings (`items`, `keys`, `values`, `get`) and lists, with Python semantics. `list.append(x)` changes the list in place, as in Python: harness builds a list with `{% set names = [] %}` and `{% set _ = names.append(name) %}`. Every harness tag uses `append` and `endswith`, and old tags are rendered as they are. A method outside this set is a render error, as before. *(The exact set: my call, the builder's.)*
+
 ## Commands
 
 - `rootstock new <template> <dir> [--subdir path] [--version vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust] [--git] [--format text|json]` — creates the project at the given version (default: latest semver tag), writes the record. Does not run `git init` unless the directory is empty and `--git` is passed *(my call)*; `--git` with a non-empty directory is an error *(owner decided, 1.1)*. A non-empty directory is otherwise allowed: a file already there is treated as "— / managed / present" and differing content is an `added-by-both` conflict *(owner decided, 1.1)*. `--format` applies to the conflict list *(1.1)*.
@@ -158,7 +160,7 @@ Converts once; afterwards Copier is not needed.
 ## Stages
 
 1. **Core.** Template format, `new`, `update`, `status`, `check`, managed and starter files, the full update table. **Done when** tests on synthetic templates cover every row of the update table, binary files, permissions, symlinks, line endings, `when` and changed answers.
-2. **Copier import and parity.** `import-copier` on both sides; also `new --subdir`, and includes resolved only against the template directory (the `include_root` key goes away) *(1.1)*. **Done when:**
+2. **Copier import and parity.** `import-copier` on both sides; also `new --subdir`, and includes resolved only against the template directory (the `include_root` key goes away) *(1.1)*; Python methods on values in templates *(1.2)*. **Done when:**
    - the latest harness release, converted, renders byte for byte identical to Copier 9.19's output for every valid combination of the answers `rust`, `frontend`, `monorepo`, `linear`, `telegram`, `orca`, `doc_form` — excluding `.copier-answers.yml` versus `.rootstock.toml`, which are compared by content (same answers, same commit);
    - updating a copy of screener from harness v0.3.3 to the latest release with rootstock (after `import-copier`) gives the same tree as `copier update`, except where Copier's known defects differ (starter files recreated after deletion, settings lost because of the `/**` render); each such difference is listed and justified.
 3. **harness moves over**, in two releases:
