@@ -4,7 +4,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::apply::DiskProject;
+use super::is_version_name;
+use crate::apply::{DiskProject, check_path};
 use crate::merge::has_markers;
 use crate::plan::{ProjectView, SIDE_FILE_SUFFIX};
 use crate::record::{self, FileClass};
@@ -17,7 +18,16 @@ pub fn run(project: &Path) -> Result<Vec<String>> {
     let rec = record::read(project)?;
     let disk = DiskProject::new(project);
     let mut problems: Vec<(String, String)> = Vec::new();
+    if !is_version_name(&rec.version) {
+        // The empty path sorts first.
+        problems.push((String::new(), format!("version {}", rec.version)));
+    }
     for (path, class) in &rec.inventory {
+        if check_path(path).is_err() {
+            // Never read an unsafe path, not even for its side file.
+            problems.push((path.clone(), format!("unsafe-path {path}")));
+            continue;
+        }
         if *class == FileClass::Managed
             && let Some(Entry::File { bytes, .. }) = disk.get(path)
             && has_markers(&bytes)

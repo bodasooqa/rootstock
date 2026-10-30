@@ -76,14 +76,10 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     };
     // HEAD of a local template is a moving ref: the same name may be a new commit.
     let moving = matches!(src, Source::Local(_)) && version == "HEAD";
-    if version == rec.version && !moving {
-        if read_data_file(&opts.common)?.is_some() || !opts.common.data.is_empty() {
-            eprintln!(
-                "already at {version}; --data was not applied (answers change only with a version step)"
-            );
-        } else {
-            eprintln!("already at {version}");
-        }
+    let at_target = version == rec.version && !moving;
+    let has_data = read_data_file(&opts.common)?.is_some() || !opts.common.data.is_empty();
+    if at_target && !has_data {
+        eprintln!("already at {version}");
         return Ok(Report {
             version,
             conflicts: Vec::new(),
@@ -96,7 +92,14 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         checkout(&src, subdir.as_deref(), &rec.commit)?.named(&rec.version),
         &mut err,
     )?;
-    let target_side = Side::load_any(checkout(&src, subdir.as_deref(), &version)?, &mut err)?;
+    // On the current version the target is the recorded commit, so a moved tag
+    // cannot change the `commit` the record keeps.
+    let target_checkout = if at_target {
+        checkout(&src, subdir.as_deref(), &rec.commit)?.named(&version)
+    } else {
+        checkout(&src, subdir.as_deref(), &version)?
+    };
+    let target_side = Side::load_any(target_checkout, &mut err)?;
     let target_cfg = &target_side.cfg;
 
     let mut known = rec.answers.clone();
@@ -105,6 +108,14 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     let base_collected = base_side.collect(&rec.answers, true, &mut NoPrompt)?;
     let mut prompter = super::prompter();
     let target_collected = target_side.collect(&known, opts.common.defaults, prompter.as_mut())?;
+    if at_target && target_collected.recorded == base_collected.recorded {
+        // The given answers equal the recorded ones: nothing to render or write.
+        eprintln!("already at {version}; answers unchanged");
+        return Ok(Report {
+            version,
+            conflicts: Vec::new(),
+        });
+    }
     let base = base_side.render(&base_collected.context)?;
     let target = target_side.render(&target_collected.context)?;
 

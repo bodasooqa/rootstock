@@ -375,18 +375,25 @@ pub(crate) fn refuse_unsupported(plan: &Plan) -> Result<()> {
 /// Refuses a user-given version that is not `v` + semver, or `HEAD` of a
 /// local template. Runs before any checkout.
 pub(crate) fn check_version(version: &str, src: &Source) -> Result<()> {
-    if version == "HEAD" && matches!(src, Source::Local(_)) {
-        return Ok(());
-    }
-    let semver = version
-        .strip_prefix('v')
-        .is_some_and(|rest| semver::Version::parse(rest).is_ok());
-    if !semver {
+    let ok = if version == "HEAD" {
+        matches!(src, Source::Local(_))
+    } else {
+        is_version_name(version)
+    };
+    if !ok {
         return Err(anyhow!(
             "version must be a tag vX.Y.Z (or HEAD for a local template)"
         ));
     }
     Ok(())
+}
+
+/// True for the names a record may hold as a version: `HEAD` or `v` + semver.
+pub(crate) fn is_version_name(version: &str) -> bool {
+    version == "HEAD"
+        || version
+            .strip_prefix('v')
+            .is_some_and(|rest| semver::Version::parse(rest).is_ok())
 }
 
 /// Label of the target side in conflict markers.
