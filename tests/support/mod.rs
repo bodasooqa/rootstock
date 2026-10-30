@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -52,9 +53,32 @@ impl TemplateRepo {
         self
     }
 
+    /// Writes raw bytes, creating parent directories.
+    pub fn bytes(&self, path: &str, content: &[u8]) -> &Self {
+        let full = self.dir.path().join(path);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&full, content).unwrap();
+        self
+    }
+
+    #[cfg(unix)]
     pub fn exec(&self, path: &str) -> &Self {
         let full = self.dir.path().join(path);
         fs::set_permissions(&full, fs::Permissions::from_mode(0o755)).unwrap();
+        self
+    }
+
+    /// Creates (or replaces) a symlink at `path` pointing to `target`.
+    #[cfg(unix)]
+    pub fn symlink(&self, path: &str, target: &str) -> &Self {
+        let full = self.dir.path().join(path);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let _ = fs::remove_file(&full);
+        std::os::unix::fs::symlink(target, &full).unwrap();
         self
     }
 
