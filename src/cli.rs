@@ -43,10 +43,16 @@ enum Command {
     Status(StatusArgs),
     /// Fail if conflict markers or side files are left in the project.
     Check,
-    /// Convert the Copier template in the current directory: write rootstock.toml from copier.yml.
+    /// Import Copier into rootstock, on the side the current directory is.
     ///
-    /// Stops with a list and writes nothing if the template uses anything rootstock
-    /// cannot convert. The Copier answers-file template is removed after the conversion.
+    /// In a template (copier.yml): writes rootstock.toml from copier.yml and removes the
+    /// Copier answers-file template. Stops with a list and writes nothing if the template
+    /// uses anything rootstock cannot convert.
+    ///
+    /// In a project (.copier-answers.yml): needs a clean git work tree. Writes
+    /// .rootstock.toml at the recorded template version, then removes .copier-answers.yml.
+    /// Other project files are not touched and no hooks run. A path that the template
+    /// emits but the project occupies is listed as `blocked` and the exit code is 2.
     ImportCopier,
 }
 
@@ -164,8 +170,18 @@ pub fn run() -> Result<Outcome> {
             bail!("check failed: {} problem(s)", lines.len());
         }
         Command::ImportCopier => {
-            import_copier::run(&current_dir()?, &mut std::io::stderr().lock())?;
-            return Ok(Outcome::Clean);
+            let conflicts = import_copier::run(&current_dir()?, &mut std::io::stderr().lock())?;
+            if conflicts.is_empty() {
+                return Ok(Outcome::Clean);
+            }
+            let mut out = String::new();
+            for c in &conflicts {
+                out.push_str(&format!("{} {}\n", c.kind.as_str(), c.path));
+            }
+            write_stdout(&out)?;
+            let count = conflicts.len();
+            eprintln!("{count} conflict{}", if count == 1 { "" } else { "s" });
+            return Ok(Outcome::Conflicts(conflicts));
         }
         Command::New(args) => {
             let report = new::run(&NewOptions {

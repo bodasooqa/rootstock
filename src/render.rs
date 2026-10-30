@@ -132,6 +132,16 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
+    /// Path of a source relative to the template directory (`cfg.skip` form).
+    fn template_dir_path(&self, src_display: &str) -> String {
+        if root_is_top(&self.cfg.root) {
+            src_display.to_string()
+        } else {
+            let root = self.cfg.root.trim_matches('/').trim_start_matches("./");
+            format!("{root}/{src_display}")
+        }
+    }
+
     /// `src_rel` and `out_rel` are the source and rendered segments of `dir`.
     fn dir(
         &mut self,
@@ -170,6 +180,15 @@ impl Walk<'_> {
             let mut src = src_rel.to_vec();
             src.push(name.to_string());
             let src_display = src.join("/");
+            // Skipped sources are never read: neither name nor content is rendered.
+            if !self.cfg.skip.is_empty()
+                && self
+                    .cfg
+                    .skip
+                    .contains(&self.template_dir_path(&src_display))
+            {
+                continue;
+            }
             if meta.is_dir() {
                 if self.partials.contains(&src_display) {
                     continue;
@@ -697,6 +716,29 @@ mod tests {
     }
 
     #[test]
+    fn skipped_sources_are_not_rendered() {
+        let dir = tempfile::tempdir().unwrap();
+        // Neither the name nor the content of a skipped source may be evaluated.
+        put(
+            dir.path(),
+            "tpl/{{ answers_file }}.jinja",
+            "{{ x|nope_filter }}",
+        );
+        put(dir.path(), "tpl/{{ nope|nope_filter }}.jinja", "x");
+        put(dir.path(), "tpl/keep.txt.jinja", "kept {{ n }}");
+        let mut cfg = cfg("root = \"tpl\"");
+        cfg.skip = vec![
+            "tpl/{{ answers_file }}.jinja".to_string(),
+            "tpl/{{ nope|nope_filter }}.jinja".to_string(),
+        ];
+        let tree = render(dir.path(), &cfg, &answers(serde_json::json!({"n": 1}))).unwrap();
+        assert_eq!(tree.keys().collect::<Vec<_>>(), ["keep.txt"]);
+        // Without the skip the same tree fails to render.
+        cfg.skip.clear();
+        assert!(render(dir.path(), &cfg, &answers(serde_json::json!({"n": 1}))).is_err());
+    }
+
+    #[test]
     fn partials_not_emitted() {
         let d = tempfile::tempdir().unwrap();
         put(d.path(), "_parts/p.txt", "{{ x }}");
@@ -912,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn include_resolves_from_template_dir_under_root() {
+    fn include_resolves_template_dir_path_under_root() {
         let d = tempfile::tempdir().unwrap();
         put(d.path(), "template/_partials/x.jinja", "hi {{ who }}");
         put(

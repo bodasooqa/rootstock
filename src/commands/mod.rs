@@ -6,19 +6,20 @@ pub mod new;
 pub mod status;
 pub mod update;
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 
 use crate::answers::{self, Collected, NoPrompt, Prompter};
-use crate::config::{self, Question, QuestionKind, TemplateConfig};
+use crate::config::{self, CONFIG_FILE, Question, QuestionKind, TemplateConfig};
+use crate::copier::{self, CopierError};
 use crate::jinja::Jinja;
 use crate::plan::{Action, Conflict, Plan};
 use crate::record::{Answers, toml_to_json};
 use crate::render::{self, Entry, RenderedTree};
-use crate::source::{Checkout, Source};
+use crate::source::{Checkout, Source, git, run_git};
 
 /// What a finished command reports back to the CLI.
 #[derive(Debug)]
@@ -195,16 +196,110 @@ pub(crate) struct Side {
     jinja: Jinja,
 }
 
+/// Which of `copier.yml` / `copier.yaml` a template directory holds.
+///
+/// The template is untrusted, so a link or a directory instead of a file is an error.
+pub(crate) fn copier_file(dir: &Path) -> Result<Option<&'static str>> {
+    let mut present = Vec::new();
+    for name in COPIER_FILES {
+        match std::fs::symlink_metadata(dir.join(name)) {
+            Ok(meta) if meta.file_type().is_file() => present.push(name),
+            Ok(_) => bail!("{name} must be a regular file"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(anyhow!(e).context(format!("cannot inspect {name}"))),
+        }
+    }
+    match present.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(*one)),
+        _ => bail!("both copier.yml and copier.yaml exist; keep only one"),
+    }
+}
+
+pub(crate) const COPIER_FILES: [&str; 2] = ["copier.yml", "copier.yaml"];
+
+/// Prints the findings of a failed conversion in the format of the template side.
+pub(crate) fn report_findings(file: &str, findings: &[copier::Finding], err: &mut dyn Write) {
+    // Best effort: the error that follows still ends the run with code 1.
+    let _ = writeln!(err, "{file} uses features rootstock cannot convert:");
+    for finding in findings {
+        let _ = writeln!(err, "  {finding}");
+    }
+}
+
+/// "N unsupported feature(s)" for the error that follows the list.
+pub(crate) fn count_findings(n: usize) -> String {
+    format!("{n} unsupported feature{}", if n == 1 { "" } else { "s" })
+}
+
+/// True when `path` exists (any kind of entry); only "not found" means no.
+pub(crate) fn exists(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(anyhow!(e).context(format!("cannot inspect {}", path.display()))),
+    }
+}
+
+fn has_config(checkout: &Checkout) -> Result<bool> {
+    exists(&checkout.path().join(CONFIG_FILE))
+}
+
 impl Side {
     /// Loads the config of `checkout` and builds the environment once.
+    ///
+    /// A version that has only `copier.yml` is refused with a hint: `new` never
+    /// runs unconverted Copier templates.
     pub fn load(checkout: Checkout) -> Result<Side> {
+        if !has_config(&checkout)? && copier_file(checkout.path())?.is_some() {
+            bail!(
+                "template version {} has copier.yml but no rootstock.toml; run `rootstock import-copier` in the template repository",
+                checkout.commit
+            );
+        }
         let cfg = load_config(&checkout)?;
+        Ok(Side::new(cfg, checkout))
+    }
+
+    /// Like `load`, but a version without `rootstock.toml` that has `copier.yml`
+    /// is converted in memory; nothing is written. Findings go to `err`.
+    pub fn load_any(checkout: Checkout, err: &mut dyn Write) -> Result<Side> {
+        if has_config(&checkout)? {
+            return Side::load(checkout);
+        }
+        let Some(file) = copier_file(checkout.path())? else {
+            return Side::load(checkout);
+        };
+        let yaml = std::fs::read_to_string(checkout.path().join(file))
+            .with_context(|| format!("cannot read {file}"))?;
+        let converted = match copier::convert(&yaml, checkout.path()) {
+            Ok(converted) => converted,
+            Err(CopierError::Unsupported(findings)) => {
+                report_findings(file, &findings, err);
+                bail!(
+                    "{} found in template version {}; nothing was written",
+                    count_findings(findings.len()),
+                    checkout.commit
+                );
+            }
+            Err(e) => {
+                return Err(anyhow!(e).context(format!(
+                    "cannot convert {file} of template version {}",
+                    checkout.commit
+                )));
+            }
+        };
+        // The converter already put the answers-file template into `skip`.
+        Ok(Side::new(converted.config, checkout))
+    }
+
+    fn new(cfg: TemplateConfig, checkout: Checkout) -> Side {
         let jinja = Jinja::new(&cfg.jinja, checkout.path());
-        Ok(Side {
+        Side {
             cfg,
             checkout,
             jinja,
-        })
+        }
     }
 
     pub fn commit(&self) -> &str {
@@ -230,6 +325,35 @@ impl Side {
             ctx,
         )?)
     }
+}
+
+/// Refuses a directory that is not a git work tree or has uncommitted changes.
+pub(crate) fn require_clean_tree(dir: &Path) -> Result<()> {
+    let dir_str = dir.to_string_lossy();
+    // A spawn failure is an error of its own; a non-zero exit carries git's reason.
+    let out = run_git(&["-C", &dir_str, "rev-parse", "--is-inside-work-tree"])?;
+    if !out.status.success() {
+        bail!(
+            "not a git work tree: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    if String::from_utf8_lossy(&out.stdout).trim() != "true" {
+        bail!("not a git work tree");
+    }
+    let status = git(&[
+        "-C",
+        &dir_str,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--",
+        ".",
+    ])?;
+    if !status.is_empty() {
+        bail!("working tree has uncommitted changes; commit or stash first");
+    }
+    Ok(())
 }
 
 /// Refuses, before anything is written, a plan this platform cannot apply:

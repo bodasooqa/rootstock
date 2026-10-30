@@ -17,6 +17,9 @@ rootstock check
 
 cd <copier-template-repo>
 rootstock import-copier
+
+cd <copier-generated-project>
+rootstock import-copier
 ```
 
 - `new` creates the project at the given version (the latest release tag by default) and writes the record `.rootstock.toml`. `<template>` is a URL, `gh:owner/repo` or a local path; `--version HEAD` renders the working tree of a local template. `--subdir` names the template's directory inside the repository, for any kind of source; it is kept in the record, so `update` needs no flag.
@@ -24,7 +27,9 @@ rootstock import-copier
 - `update --to HEAD` on a project created from a local template always runs, since `HEAD` moves. The base of such a project is the commit recorded at `new` time, so uncommitted template edits that `new --version HEAD` rendered show up as project edits.
 - `status` prints `current`, `latest` and `major` (whether the latest release is a major bump), as text or JSON.
 - `check` is for CI: it lists files with unresolved conflict markers (`markers <path>`) and leftover side files (`side-file <path>`) and fails if there are any.
-- `import-copier`, run in a Copier template repository, converts `copier.yml` into `rootstock.toml` next to it and removes the template of Copier's answers file (`{{ _copier_conf.answers_file }}.jinja`), which the record replaces. `copier.yml` itself stays. It supports the subset of Copier that harness uses; anything else stops the import with the full list of what cannot be converted, and nothing is written. Converting a Copier-generated project is not supported yet.
+- `import-copier`, run in a Copier template repository, converts `copier.yml` into `rootstock.toml` next to it and removes the template of Copier's answers file (`{{ _copier_conf.answers_file }}.jinja`), which the record replaces. `copier.yml` itself stays. It supports the subset of Copier that harness uses; anything else stops the import with the full list of what cannot be converted, and nothing is written.
+- `import-copier`, run in a Copier-generated project (a clean git tree with `.copier-answers.yml`), takes the template at the recorded `_commit` tag, converts its `copier.yml` in memory (or uses its `rootstock.toml`, if that tag already has one), renders it with the recorded answers and writes `.rootstock.toml` at that same version; then it removes `.copier-answers.yml`. No other file changes and no hooks run. A path the template emits but the project has taken (a file where the template needs a directory) is left out of the record and listed as `blocked`, with exit code 2. Commit the result before the first `update`. A directory holding both `copier.yml` and `.copier-answers.yml` is refused.
+- `update` also accepts template versions that still carry only `copier.yml` (base or target) and converts them in memory, so old tags never need converting. `new` does not: convert the template first.
 
 Hooks declared by a template run only with `--trust` or after an interactive confirmation.
 
@@ -52,7 +57,7 @@ Stdout carries only command output (conflict lists, status, JSON); everything el
 - `src/source.rs` - template sources, tags, checkouts through `git`
 - `src/apply.rs` - executing a plan on disk
 - `src/hooks.rs` - running hooks with a trust check
-- `src/copier.rs` - converting a Copier `copier.yml` and checking the template tree for what cannot be converted
+- `src/copier.rs` - converting a Copier `copier.yml`, checking the template tree for what cannot be converted, reading `.copier-answers.yml`
 - `src/cli.rs`, `src/commands/{mod,new,update,status,check,import_copier}.rs` - CLI, the terminal dialog and the commands
 - `tests/` - end-to-end scenarios through the binary (`cli_*.rs`), fixtures in `tests/support/`
 - `docs/design.md` - the specification

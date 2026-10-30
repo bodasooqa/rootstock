@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer};
 
+use crate::RelPath;
+
 /// Name of the template configuration file at the template repository root.
 pub const CONFIG_FILE: &str = "rootstock.toml";
 
@@ -74,6 +76,11 @@ pub struct TemplateConfig {
     pub questions: Vec<Question>,
     #[serde(default)]
     pub hooks: Vec<Hook>,
+    /// Template source files that are never rendered, relative to the template
+    /// directory. Set only by the Copier converter; never read from or written to
+    /// `rootstock.toml`.
+    #[serde(skip)]
+    pub skip: Vec<RelPath>,
 }
 
 /// Jinja environment options.
@@ -572,6 +579,16 @@ run = "make fmt"
     #[test]
     fn rejects_unknown_fields() {
         assert!(parse("schema = 1\nbogus = 1", p()).is_err());
+    }
+
+    #[test]
+    fn skip_is_not_a_config_key() {
+        let err = parse("schema = 1\nskip = [\"a.txt\"]", p()).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("unknown field `skip`"),
+            "{err:?}"
+        );
+        assert!(parse("schema = 1", p()).unwrap().skip.is_empty());
     }
 
     #[cfg(unix)]

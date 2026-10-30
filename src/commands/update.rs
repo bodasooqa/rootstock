@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{
     CommonOptions, HookFailed, Report, Side, check_version, interactive, load_data, read_data_file,
-    refuse_unsupported, target_label,
+    refuse_unsupported, require_clean_tree, target_label,
 };
 use crate::answers::NoPrompt;
 use crate::apply::{DiskProject, apply, check_path, readable_parents};
@@ -15,41 +15,13 @@ use crate::hooks::{check_trust, run_trusted};
 use crate::merge::has_markers;
 use crate::plan::plan_update;
 use crate::record::{self, FileClass, Record};
-use crate::source::{Source, checkout, git, latest, parse_source, parse_subdir, run_git};
+use crate::source::{Source, checkout, latest, parse_source, parse_subdir};
 
 /// Arguments of `rootstock update`.
 #[derive(Debug, Clone)]
 pub struct UpdateOptions {
     pub to: Option<String>,
     pub common: CommonOptions,
-}
-
-fn require_clean_tree(dir: &Path) -> Result<()> {
-    let dir_str = dir.to_string_lossy();
-    // A spawn failure is an error of its own; a non-zero exit carries git's reason.
-    let out = run_git(&["-C", &dir_str, "rev-parse", "--is-inside-work-tree"])?;
-    if !out.status.success() {
-        bail!(
-            "not a git work tree: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    if String::from_utf8_lossy(&out.stdout).trim() != "true" {
-        bail!("not a git work tree");
-    }
-    let status = git(&[
-        "-C",
-        &dir_str,
-        "status",
-        "--porcelain",
-        "--untracked-files=all",
-        "--",
-        ".",
-    ])?;
-    if !status.is_empty() {
-        bail!("working tree has uncommitted changes; commit or stash first");
-    }
-    Ok(())
 }
 
 fn refuse_leftover_markers(dir: &Path, rec: &Record) -> Result<()> {
@@ -118,8 +90,10 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         });
     }
 
-    let base_side = Side::load(checkout(&src, subdir.as_deref(), &rec.commit)?)?;
-    let target_side = Side::load(checkout(&src, subdir.as_deref(), &version)?)?;
+    // A version without `rootstock.toml` but with `copier.yml` is converted in memory.
+    let mut err = std::io::stderr();
+    let base_side = Side::load_any(checkout(&src, subdir.as_deref(), &rec.commit)?, &mut err)?;
+    let target_side = Side::load_any(checkout(&src, subdir.as_deref(), &version)?, &mut err)?;
     let target_cfg = &target_side.cfg;
 
     let mut known = rec.answers.clone();

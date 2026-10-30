@@ -8,6 +8,7 @@ use regex::Regex;
 use serde_norway::{Mapping, Value};
 
 use crate::config::{self, ConfigError, TemplateConfig};
+use crate::record::Answers;
 
 const HEADER: &str = "# Converted from copier.yml by rootstock import-copier.\n";
 
@@ -36,6 +37,103 @@ pub struct Converted {
     pub remove: Vec<RelPath>,
 }
 
+/// The parsed `.copier-answers.yml` of a project.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopierAnswers {
+    pub src_path: String,
+    pub commit: String,
+    pub answers: Answers,
+}
+
+/// Parses the text of `.copier-answers.yml`.
+///
+/// The document must be a mapping with string keys. `_src_path` and `_commit`
+/// are required strings and are the only keys starting with `_`. Every other
+/// value must be writable to TOML, so `null` (also nested) is refused.
+pub fn parse_answers(yaml: &str) -> Result<CopierAnswers, CopierError> {
+    let value: Value = serde_norway::from_str(yaml)?;
+    let Value::Mapping(map) = value else {
+        return Err(CopierError::NotMapping);
+    };
+    let mut src_path = None;
+    let mut commit = None;
+    let mut answers = Answers::new();
+    for (k, v) in map {
+        let Some(key) = k.as_str() else {
+            return Err(CopierError::Answers("a key is not a string".to_string()));
+        };
+        match key {
+            "_src_path" | "_commit" => {
+                let Value::String(text) = v else {
+                    return Err(CopierError::Answers(format!("`{key}` must be a string")));
+                };
+                if key == "_src_path" {
+                    src_path = Some(text);
+                } else {
+                    commit = Some(text);
+                }
+            }
+            _ if key.starts_with('_') => {
+                return Err(CopierError::Answers(format!("`{key}`: key not supported")));
+            }
+            _ => {
+                let json = yaml_to_json(&v)
+                    .map_err(|why| CopierError::Answers(format!("`{key}`: {why}")))?;
+                answers.insert(key.to_string(), json);
+            }
+        }
+    }
+    let src_path =
+        src_path.ok_or_else(|| CopierError::Answers("`_src_path` is missing".to_string()))?;
+    let commit = commit.ok_or_else(|| CopierError::Answers("`_commit` is missing".to_string()))?;
+    Ok(CopierAnswers {
+        src_path,
+        commit,
+        answers,
+    })
+}
+
+/// Converts a YAML answer to JSON; refuses what a TOML record cannot hold.
+fn yaml_to_json(value: &Value) -> Result<serde_json::Value, String> {
+    use serde_json::Value as Json;
+    Ok(match value {
+        Value::Null => return Err("null cannot be recorded".to_string()),
+        Value::Bool(b) => Json::Bool(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Json::from(i)
+            } else if n.is_u64() {
+                // TOML integers are 64-bit signed.
+                return Err("integer is too large to be recorded".to_string());
+            } else {
+                n.as_f64()
+                    .and_then(serde_json::Number::from_f64)
+                    .map(Json::Number)
+                    .ok_or_else(|| "number cannot be recorded".to_string())?
+            }
+        }
+        Value::String(s) => Json::String(s.clone()),
+        Value::Sequence(items) => Json::Array(
+            items
+                .iter()
+                .map(yaml_to_json)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Value::Mapping(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                let Some(key) = k.as_str() else {
+                    return Err("a nested key is not a string".to_string());
+                };
+                out.insert(key.to_string(), yaml_to_json(v)?);
+            }
+            Json::Object(out)
+        }
+        // Core YAML tags such as `!!binary` arrive as plain strings; this is any other tag.
+        Value::Tagged(_) => return Err("tagged values cannot be recorded".to_string()),
+    })
+}
+
 /// One thing in the template that rootstock cannot convert.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding(pub String);
@@ -60,6 +158,8 @@ pub enum CopierError {
     },
     #[error("the template uses features rootstock cannot convert")]
     Unsupported(Vec<Finding>),
+    #[error(".copier-answers.yml: {0}")]
+    Answers(String),
     #[error("internal converter error: {0}")]
     Internal(String),
 }
@@ -91,7 +191,8 @@ pub fn convert(yaml: &str, template_dir: &Path) -> Result<Converted, CopierError
             continue;
         };
         match key {
-            "_min_copier_version" | "_answers_file" => {}
+            "_min_copier_version" => {}
+            "_answers_file" => sections.answers_file = Some(v),
             "_subdirectory" => sections.subdirectory = Some(v),
             "_templates_suffix" => sections.suffix = Some(v),
             "_envops" => sections.envops = Some(v),
@@ -102,6 +203,8 @@ pub fn convert(yaml: &str, template_dir: &Path) -> Result<Converted, CopierError
             _ => questions.push((key, v)),
         }
     }
+
+    let answers_file = cx.answers_file(sections.answers_file);
 
     let mut table = toml::Table::new();
     table.insert("schema".into(), toml::Value::Integer(1));
@@ -153,11 +256,6 @@ pub fn convert(yaml: &str, template_dir: &Path) -> Result<Converted, CopierError
         None if top_level => exclude.extend(DEFAULT_EXCLUDE.iter().map(|s| s.to_string())),
         None => {}
     }
-    let mut files = toml::Table::new();
-    files.insert("starter".into(), strings(&skip));
-    files.insert("exclude".into(), strings(&exclude));
-    table.insert("files".into(), toml::Value::Table(files));
-
     let hooks = cx.tasks(sections.tasks);
     if !hooks.is_empty() {
         table.insert("hooks".into(), toml::Value::Array(hooks));
@@ -177,12 +275,22 @@ pub fn convert(yaml: &str, template_dir: &Path) -> Result<Converted, CopierError
         cx.scan_tree(template_dir, &root, &suffix, &mut remove)?;
     }
 
+    if !remove.is_empty() {
+        // A ready answers file in the template root must not reach the project (D7).
+        exclude.push(format!("/{answers_file}"));
+    }
+    let mut files = toml::Table::new();
+    files.insert("starter".into(), strings(&skip));
+    files.insert("exclude".into(), strings(&exclude));
+    table.insert("files".into(), toml::Value::Table(files));
+
     if !cx.findings.is_empty() {
         return Err(CopierError::Unsupported(cx.findings));
     }
     let body = toml::to_string(&table).map_err(|e| CopierError::Internal(e.to_string()))?;
     let text = format!("{HEADER}{body}");
-    let config = config::parse(&text, Path::new(config::CONFIG_FILE))?;
+    let mut config = config::parse(&text, Path::new(config::CONFIG_FILE))?;
+    config.skip = remove.clone();
     Ok(Converted {
         text,
         config,
@@ -198,6 +306,7 @@ struct Sections<'a> {
     exclude: Option<&'a Value>,
     skip: Option<&'a Value>,
     tasks: Option<&'a Value>,
+    answers_file: Option<&'a Value>,
 }
 
 fn strings(items: &[String]) -> toml::Value {
@@ -276,6 +385,33 @@ impl Ctx {
             pat: Patterns::new()?,
             findings: Vec::new(),
         })
+    }
+
+    /// Name of the answers file: `_answers_file`, `.copier-answers.yml` by default.
+    ///
+    /// The name becomes a glob rule, so only `A-Z a-z 0-9 . _ - /` is accepted
+    /// and no component may be `..`; anything else is a finding.
+    fn answers_file(&mut self, value: Option<&Value>) -> String {
+        const DEFAULT: &str = ".copier-answers.yml";
+        let Some(value) = value else {
+            return DEFAULT.to_string();
+        };
+        let name = value.as_str().map(|n| n.trim_start_matches('/'));
+        let plain = |n: &str| {
+            !n.is_empty()
+                && n.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+                && n.split('/').all(|part| part != "..")
+        };
+        match name {
+            Some(n) if plain(n) => n.to_string(),
+            _ => {
+                self.find(
+                    "`_answers_file`: must be a plain relative path (letters, digits, `.`, `_`, `-`, `/`; no `..`)",
+                );
+                DEFAULT.to_string()
+            }
+        }
     }
 
     fn find(&mut self, message: impl Into<String>) {
@@ -1283,7 +1419,11 @@ c:
             ]);
             let c = convert(&format!("_subdirectory: {sub}\n"), dir.path()).unwrap();
             assert_eq!(c.config.root, ".", "{sub}");
-            assert_eq!(c.config.files.exclude, DEFAULT_EXCLUDE, "{sub}");
+            // The defaults, then the rule for the ready answers file (D7).
+            let mut expected: Vec<String> =
+                DEFAULT_EXCLUDE.iter().map(ToString::to_string).collect();
+            expected.push("/.copier-answers.yml".to_string());
+            assert_eq!(c.config.files.exclude, expected, "{sub}");
             assert_eq!(c.remove, ["{{ _copier_conf.answers_file }}.jinja"], "{sub}");
         }
         let dir = tree(&[("template/{{ _copier_conf.answers_file }}.jinja", "x")]);
@@ -1402,5 +1542,172 @@ _skip_if_exists:
             .unwrap();
         assert_eq!(doc_form.kind, QuestionKind::Choice);
         assert_eq!(doc_form.choices.len(), 2);
+    }
+
+    #[test]
+    fn convert_skips_what_it_removes() {
+        let dir = tree(&[
+            ("template/a.txt", "x"),
+            ("template/{{ _copier_conf.answers_file }}.jinja", "y"),
+        ]);
+        let c = convert(TREE_YAML, dir.path()).unwrap();
+        assert_eq!(c.remove, ["template/{{ _copier_conf.answers_file }}.jinja"]);
+        assert_eq!(c.config.skip, c.remove);
+    }
+
+    // ---- .copier-answers.yml ----
+
+    const SCREENER_ANSWERS: &str = "# comment\n_commit: v0.4.5\n_src_path: gh:bodasooqa/harness\nframework: true\nproject_name: screener\ncount: 3\npi_models:\n    haiku: a/b\n    opus: c/d\n";
+
+    #[test]
+    fn answers_of_a_project_are_parsed() {
+        let a = parse_answers(SCREENER_ANSWERS).unwrap();
+        assert_eq!(a.src_path, "gh:bodasooqa/harness");
+        assert_eq!(a.commit, "v0.4.5");
+        assert_eq!(a.answers.len(), 4);
+        assert_eq!(a.answers["project_name"], serde_json::json!("screener"));
+        assert_eq!(a.answers["framework"], serde_json::json!(true));
+        assert_eq!(a.answers["count"], serde_json::json!(3));
+        assert_eq!(
+            a.answers["pi_models"],
+            serde_json::json!({"haiku": "a/b", "opus": "c/d"})
+        );
+        assert!(!a.answers.contains_key("_commit"));
+    }
+
+    fn answers_err(yaml: &str) -> String {
+        parse_answers(yaml).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn answers_without_source_or_commit_are_refused() {
+        assert!(answers_err("_commit: v1.0.0\n").contains("_src_path"));
+        assert!(answers_err("_src_path: x\n").contains("_commit"));
+    }
+
+    #[test]
+    fn answers_with_wrong_types_are_refused() {
+        assert!(answers_err("_src_path: 1\n_commit: v1.0.0\n").contains("_src_path"));
+        assert!(answers_err("_src_path: x\n_commit: [a]\n").contains("_commit"));
+    }
+
+    #[test]
+    fn answers_must_be_a_mapping_with_string_keys() {
+        assert!(!answers_err("- a\n- b\n").is_empty());
+        assert!(!answers_err("").is_empty());
+        assert!(answers_err("_src_path: x\n_commit: v1.0.0\n1: a\n").contains("string"));
+        assert!(!answers_err("a: [\n").is_empty());
+    }
+
+    #[test]
+    fn other_underscore_keys_are_refused() {
+        let e = answers_err("_src_path: x\n_commit: v1.0.0\n_extra: 1\n");
+        assert!(e.contains("_extra"), "{e}");
+    }
+
+    #[test]
+    fn null_answers_are_refused_with_the_key() {
+        let e = answers_err("_src_path: x\n_commit: v1.0.0\nname:\n");
+        assert!(e.contains("name") && e.contains("null"), "{e}");
+        let e = answers_err("_src_path: x\n_commit: v1.0.0\nmap:\n  inner: ~\n");
+        assert!(e.contains("map"), "{e}");
+    }
+
+    // ---- the answers file as a ready file (D7) ----
+
+    fn answers_template_tree(extra: &[(&str, &str)]) -> TempDir {
+        let mut files = vec![("template/{{ _copier_conf.answers_file }}.jinja", "x")];
+        files.extend_from_slice(extra);
+        tree(&files)
+    }
+
+    #[test]
+    fn answers_file_is_excluded_when_its_template_is_found() {
+        let dir = answers_template_tree(&[]);
+        let c = convert(TREE_YAML, dir.path()).unwrap();
+        assert!(
+            c.config
+                .files
+                .exclude
+                .iter()
+                .any(|r| r == "/.copier-answers.yml")
+        );
+        assert!(c.text.contains("/.copier-answers.yml"), "{}", c.text);
+    }
+
+    #[test]
+    fn custom_answers_file_name_is_excluded() {
+        let dir = answers_template_tree(&[]);
+        let yaml = format!("{TREE_YAML}_answers_file: .my-answers.yml\n");
+        let c = convert(&yaml, dir.path()).unwrap();
+        assert!(
+            c.config
+                .files
+                .exclude
+                .iter()
+                .any(|r| r == "/.my-answers.yml")
+        );
+        assert!(
+            !c.config
+                .files
+                .exclude
+                .iter()
+                .any(|r| r == "/.copier-answers.yml")
+        );
+    }
+
+    #[test]
+    fn no_answers_template_means_no_rule() {
+        let dir = tree(&[("template/a.txt", "x")]);
+        let c = convert(TREE_YAML, dir.path()).unwrap();
+        assert!(!c.config.files.exclude.iter().any(|r| r.contains("answers")));
+    }
+
+    #[test]
+    fn integers_beyond_i64_are_refused_with_the_key() {
+        let e = answers_err("_src_path: x\n_commit: v1.0.0\nbig: 9223372036854775808\n");
+        assert!(e.contains("big"), "{e}");
+    }
+
+    #[test]
+    fn core_yaml_tags_arrive_as_strings() {
+        let a = parse_answers("_src_path: x\n_commit: v1.0.0\nb: !!binary aGk=\n").unwrap();
+        assert!(a.answers["b"].is_string());
+    }
+
+    fn answers_file_findings(value: &str) -> Vec<String> {
+        let dir = answers_template_tree(&[]);
+        found_in(&format!("{TREE_YAML}_answers_file: {value}\n"), dir.path())
+    }
+
+    #[test]
+    fn unusable_answers_file_names_are_findings() {
+        for bad in [
+            "'*'",
+            "'answers[1].yml'",
+            "'{{ x }}.yml'",
+            "'../a.yml'",
+            "'a/../b.yml'",
+            "'my answers.yml'",
+            "'a\\b.yml'",
+            "''",
+            "5",
+        ] {
+            has(&answers_file_findings(bad), "_answers_file");
+        }
+    }
+
+    #[test]
+    fn answers_file_in_a_subdirectory_is_excluded() {
+        let dir = answers_template_tree(&[]);
+        let yaml = format!("{TREE_YAML}_answers_file: .config/answers.yml\n");
+        let c = convert(&yaml, dir.path()).unwrap();
+        assert!(
+            c.config
+                .files
+                .exclude
+                .iter()
+                .any(|r| r == "/.config/answers.yml")
+        );
     }
 }

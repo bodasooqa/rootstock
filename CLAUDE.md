@@ -34,7 +34,7 @@ Rust stable, edition 2024, один крейт `rootstock` (lib + bin `rootstock
 | `src/source.rs` | источники шаблонов, теги, checkout'ы через `git` |
 | `src/apply.rs` | выполнение `Plan` на диске |
 | `src/hooks.rs` | запуск хуков с проверкой доверия |
-| `src/copier.rs` | ядро: конвертация `copier.yml` в `rootstock.toml` и проверка дерева шаблона на неподдерживаемое; только чтение |
+| `src/copier.rs` | ядро: конвертация `copier.yml` в `rootstock.toml`, проверка дерева шаблона на неподдерживаемое, разбор `.copier-answers.yml`; только чтение |
 | `src/cli.rs`, `src/commands/{mod,new,update,status,check,import_copier}.rs` | CLI, терминальный диалог (`TerminalPrompter`) и команды |
 | `tests/support/mod.rs` | построитель фикстуры `TemplateRepo` (git-репозиторий с тегами во временном каталоге) |
 | `tests/cli_*.rs` | сквозные сценарии через бинарник |
