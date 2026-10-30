@@ -312,6 +312,60 @@ fn subdirectory_template_root_cannot_leave_the_template_dir() {
     assert!(!dir.exists());
 }
 
+const VERSION_RULE: &str = "version must be a tag vX.Y.Z (or HEAD for a local template)";
+
+#[test]
+fn new_rejects_non_semver_version() {
+    let repo = template_v1();
+    repo.branch("release");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("p");
+    for version in ["main", "foo", "release", "v1.0", "1.0.0", "v01.0.0"] {
+        rootstock()
+            .args(["new", &repo.url()])
+            .arg(&dir)
+            .args(["--defaults", "--version", version])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains(VERSION_RULE));
+        assert!(!dir.exists(), "{version}");
+    }
+    // HEAD only names the working tree of a local template.
+    let url = format!("file://{}", repo.path().display());
+    rootstock()
+        .args(["new", &url])
+        .arg(&dir)
+        .args(["--defaults", "--version", "HEAD"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(VERSION_RULE));
+    assert!(!dir.exists());
+    // A pre-release tag is a version.
+    repo.file("tpl/README.md", README_V2).tag("v1.1.0-rc.1");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--defaults", "--version", "v1.1.0-rc.1"])
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn update_rejects_non_semver_to() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    repo.file("tpl/README.md", README_V2).tag("v1.1.0");
+    repo.branch("next");
+    for to in ["main", "next", "v1.1"] {
+        update(&dir)
+            .args(["--to", to])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains(VERSION_RULE));
+        assert_untouched(&dir);
+    }
+}
+
 #[test]
 fn new_git_requires_empty_dir() {
     let repo = template_v1();

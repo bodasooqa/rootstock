@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use super::{
-    CommonOptions, HookFailed, Report, Side, interactive, load_data, read_data_file,
+    CommonOptions, HookFailed, Report, Side, check_version, interactive, load_data, read_data_file,
     refuse_unsupported, target_label,
 };
 use crate::answers::NoPrompt;
@@ -95,7 +95,10 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
 
     let src = parse_source(&rec.source)?;
     let version = match &opts.to {
-        Some(v) => v.clone(),
+        Some(v) => {
+            check_version(v, &src)?;
+            v.clone()
+        }
         None => latest(&src)?,
     };
     // HEAD of a local template is a moving ref: the same name may be a new commit.

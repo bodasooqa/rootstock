@@ -520,6 +520,15 @@ pub fn plan_update(
         }
     }
 
+    // A starter the template stops emitting stays known, so that a later
+    // version bringing it back does not recreate a file the project deleted.
+    // The old name of a rename pair moved to the new name and is not kept.
+    for (path, class) in inventory {
+        if *class == FileClass::Starter && !target.contains_key(path) && !renamed.contains(&path) {
+            new_inventory.insert(path.clone(), FileClass::Starter);
+        }
+    }
+
     drop_blocked(&mut out, &mut new_inventory, project, &pairs);
     out.actions.sort_by(action_order);
     out.conflicts.sort_by(|a, b| a.path.cmp(&b.path));
@@ -703,6 +712,40 @@ mod tests {
         let b = tree(&[("a", file("x\n"), S)]);
         let plan = run(&b, &t, &proj(&[]), &inv(&[("a", S)]));
         assert_eq!(plan.inventory, inv(&[("a", S)]));
+    }
+
+    #[test]
+    fn starter_kept_in_inventory_when_not_emitted() {
+        // v2 drops the starter the project deleted: the path stays known.
+        let b = tree(&[("a", file("x\n"), S), ("m", file("m\n"), M)]);
+        let t = tree(&[("m", file("m\n"), M)]);
+        let plan = run(
+            &b,
+            &t,
+            &proj(&[("m", file("m\n"))]),
+            &inv(&[("a", S), ("m", M)]),
+        );
+        assert!(plan.actions.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(plan.inventory, inv(&[("a", S), ("m", M)]));
+
+        // v3 re-adds it as starter: `— | starter | absent, in inventory` gives nothing.
+        let t3 = tree(&[("a", file("x3\n"), S), ("m", file("m\n"), M)]);
+        let plan = run(&t, &t3, &proj(&[("m", file("m\n"))]), &plan.inventory);
+        assert!(plan.actions.is_empty(), "{:?}", plan.actions);
+        assert_eq!(plan.inventory, inv(&[("a", S), ("m", M)]));
+
+        // Re-added as managed, the normal rows apply: it is created.
+        let t3 = tree(&[("a", file("x3\n"), M), ("m", file("m\n"), M)]);
+        let kept = inv(&[("a", S), ("m", M)]);
+        let plan = run(&t, &t3, &proj(&[("m", file("m\n"))]), &kept);
+        assert_eq!(plan.actions, vec![write("a", file("x3\n"))]);
+        assert_eq!(plan.inventory, inv(&[("a", M), ("m", M)]));
+
+        // A managed path the template drops is not kept.
+        let b = tree(&[("m", file("m\n"), M)]);
+        let plan = run(&b, &tree(&[]), &proj(&[]), &inv(&[("m", M)]));
+        assert!(plan.inventory.is_empty());
     }
 
     #[test]
@@ -1242,10 +1285,11 @@ mod tests {
 
         // The project deleted the starter: no alias, so the new name is a new
         // starter file and is created (`— | starter | absent, not in inventory`).
+        // The old name is a starter the target no longer emits, so it stays known.
         let plan = plan_update(&b, &t, &Folded(proj(&[])), &inv(&[("Notes.md", S)]), LABEL);
         assert_eq!(plan.actions, vec![write("NOTES.md", file("y\n"))]);
         assert!(plan.conflicts.is_empty());
-        assert_eq!(plan.inventory, inv(&[("NOTES.md", S)]));
+        assert_eq!(plan.inventory, inv(&[("NOTES.md", S), ("Notes.md", S)]));
     }
 
     #[test]

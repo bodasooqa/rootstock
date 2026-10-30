@@ -116,6 +116,41 @@ fn e2e_added_by_both() {
 }
 
 #[test]
+fn e2e_deleted_starter_not_recreated_after_gap() {
+    let repo = template(
+        &config(&["NOTES.md"], &[]),
+        &[("NOTES.md", "notes\n"), ("a.txt", "a\n")],
+    );
+    let (_tmp, dir) = new_project(&repo);
+    fs::remove_file(dir.join("NOTES.md")).unwrap();
+    commit_project(&dir, "drop notes");
+
+    // v2 drops the starter, v3 brings it back.
+    repo.remove("tpl/NOTES.md")
+        .file("tpl/a.txt", "a2\n")
+        .tag("v2.0.0");
+    repo.file("tpl/NOTES.md", "notes v3\n").tag("v3.0.0");
+
+    update(&dir)
+        .args(["--to", "v2.0.0"])
+        .assert()
+        .code(0)
+        .stdout("");
+    assert!(!dir.join("NOTES.md").exists());
+    assert!(record(&dir).contains("\"NOTES.md\" = \"starter\""));
+    commit_project(&dir, "v2");
+
+    update(&dir)
+        .args(["--to", "v3.0.0"])
+        .assert()
+        .code(0)
+        .stdout("");
+    assert!(!dir.join("NOTES.md").exists());
+    assert_eq!(read(&dir, "a.txt"), "a2\n");
+    assert!(record(&dir).contains("version = \"v3.0.0\""));
+}
+
+#[test]
 fn e2e_starter_present_untouched() {
     let repo = template(
         &config(&["NOTES.md"], &[]),

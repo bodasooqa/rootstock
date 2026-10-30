@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use super::{
-    CommonOptions, HookFailed, Report, Side, dir_has_entries, interactive, load_data, prompter,
-    refuse_unsupported, target_label,
+    CommonOptions, HookFailed, Report, Side, check_version, dir_has_entries, interactive,
+    load_data, prompter, refuse_unsupported, target_label,
 };
 use crate::apply::{DiskProject, apply};
 use crate::config::Phase;
@@ -52,7 +52,10 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
 
     let src = parse_source(&opts.template)?;
     let version = match &opts.version {
-        Some(v) => v.clone(),
+        Some(v) => {
+            check_version(v, &src)?;
+            v.clone()
+        }
         None => latest(&src)?,
     };
     let side = Side::load(checkout(&src, &version)?)?;

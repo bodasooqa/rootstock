@@ -17,7 +17,7 @@ use crate::jinja::Jinja;
 use crate::plan::{Action, Conflict, Plan};
 use crate::record::{Answers, toml_to_json};
 use crate::render::{self, Entry, RenderedTree};
-use crate::source::Checkout;
+use crate::source::{Checkout, Source};
 
 /// What a finished command reports back to the CLI.
 #[derive(Debug)]
@@ -246,6 +246,23 @@ pub(crate) fn refuse_unsupported(plan: &Plan) -> Result<()> {
     });
     if has_symlink && !cfg!(unix) {
         return Err(anyhow!("symlinks are not supported on this platform"));
+    }
+    Ok(())
+}
+
+/// Refuses a user-given version that is not `v` + semver, or `HEAD` of a
+/// local template. Runs before any checkout.
+pub(crate) fn check_version(version: &str, src: &Source) -> Result<()> {
+    if version == "HEAD" && matches!(src, Source::Local(_)) {
+        return Ok(());
+    }
+    let semver = version
+        .strip_prefix('v')
+        .is_some_and(|rest| semver::Version::parse(rest).is_ok());
+    if !semver {
+        return Err(anyhow!(
+            "version must be a tag vX.Y.Z (or HEAD for a local template)"
+        ));
     }
     Ok(())
 }
