@@ -7,12 +7,14 @@ use anyhow::{Context, Result, anyhow, bail};
 use semver::Version;
 use tempfile::TempDir;
 
+use crate::config::CONFIG_FILE;
+
 /// Where a template comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     /// A remote URL (or any non-directory string) handed to git verbatim.
     Git(String),
-    /// A local directory holding a git repository.
+    /// A local directory in a git work tree: its root or a subdirectory.
     Local(PathBuf),
 }
 
@@ -85,7 +87,7 @@ pub(crate) fn git(args: &[&str]) -> Result<String> {
 
 /// Lists `vX.Y.Z` tags of the source, ascending by version.
 pub fn tags(src: &Source) -> Result<Vec<(Version, String)>> {
-    let location = checked_location(src)?;
+    let location = locate(src)?.location;
     let out = git(&["ls-remote", "--tags", "--refs", "--", &location])?;
     let mut found: Vec<(Version, String)> = out
         .lines()
@@ -112,7 +114,9 @@ pub fn latest(src: &Source) -> Result<String> {
 /// A checked-out template version; a temporary directory lives as long as the value.
 #[derive(Debug)]
 pub struct Checkout {
+    /// The template directory: the one holding `rootstock.toml`.
     pub path: PathBuf,
+    /// The repository commit.
     pub commit: String,
     _dir: Option<TempDir>,
 }
@@ -123,41 +127,89 @@ impl Checkout {
     }
 }
 
-/// Rejects locations git could read as an option, and local directories
-/// that are not the root of a git work tree.
-fn checked_location(src: &Source) -> Result<String> {
+/// What git reads for a source, and where the template lives inside it.
+struct Located {
+    /// The repository as git receives it.
+    location: String,
+    /// The template directory relative to the repository root, `/`-separated;
+    /// empty when the template is the repository root.
+    prefix: String,
+}
+
+/// Rejects locations git could read as an option. A local directory may be
+/// the root of a git work tree or any directory inside one.
+fn locate(src: &Source) -> Result<Located> {
     let location = src.location();
     if location.starts_with('-') {
         bail!("invalid template source `{location}`");
     }
-    if let Source::Local(dir) = src {
-        let dir_str = dir.to_string_lossy();
-        let out = run_git(&["-C", &dir_str, "rev-parse", "--show-toplevel"])?;
-        if !out.status.success() {
-            bail!(
-                "`{dir_str}` is not a git repository: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        let same = match (Path::new(&top).canonicalize(), dir.canonicalize()) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => false,
-        };
-        if !same {
-            bail!("`{dir_str}` is not the root of a git repository (root is `{top}`)");
+    let Source::Local(dir) = src else {
+        return Ok(Located {
+            location,
+            prefix: String::new(),
+        });
+    };
+    let dir_str = dir.to_string_lossy();
+    let out = run_git(&["-C", &dir_str, "rev-parse", "--show-toplevel"])?;
+    if !out.status.success() {
+        bail!(
+            "`{dir_str}` is not a git repository: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let real_top = Path::new(&top)
+        .canonicalize()
+        .with_context(|| format!("cannot resolve `{top}`"))?;
+    let real_dir = dir
+        .canonicalize()
+        .with_context(|| format!("cannot resolve `{dir_str}`"))?;
+    let rel = real_dir
+        .strip_prefix(&real_top)
+        .map_err(|_| anyhow!("`{dir_str}` is not inside its git repository (root is `{top}`)"))?;
+    let mut segments = Vec::new();
+    for component in rel.components() {
+        let segment = component
+            .as_os_str()
+            .to_str()
+            .ok_or_else(|| anyhow!("`{dir_str}`: path is not valid UTF-8"))?;
+        segments.push(segment);
+    }
+    Ok(Located {
+        location: real_top.to_string_lossy().into_owned(),
+        prefix: segments.join("/"),
+    })
+}
+
+/// The template directory `prefix` inside a checked-out clone: every
+/// component a real directory (no symlink), holding `rootstock.toml`.
+fn template_dir(clone: &Path, prefix: &str, rev: &str) -> Result<PathBuf> {
+    if prefix.is_empty() {
+        return Ok(clone.to_path_buf());
+    }
+    let not_found = || anyhow!("template not found at `{prefix}` in {rev}");
+    let mut dir = clone.to_path_buf();
+    for segment in prefix.split('/') {
+        dir.push(segment);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.file_type().is_dir() => {}
+            _ => return Err(not_found()),
         }
     }
-    Ok(location)
+    match std::fs::symlink_metadata(dir.join(CONFIG_FILE)) {
+        Ok(meta) if meta.file_type().is_file() => Ok(dir),
+        _ => Err(not_found()),
+    }
 }
 
 fn is_full_sha(rev: &str) -> bool {
     rev.len() == 40 && rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// Checks out a tag or a full sha. A local source with `HEAD` is used as-is.
+/// Checks out a tag or a full sha of the repository; the checkout's path is
+/// the template directory inside it. A local source with `HEAD` is used as-is.
 pub fn checkout(src: &Source, rev: &str) -> Result<Checkout> {
-    let location = checked_location(src)?;
+    let Located { location, prefix } = locate(src)?;
     if let (Source::Local(dir), "HEAD") = (src, rev) {
         let dir_str = dir.to_string_lossy();
         let commit = git(&["-C", &dir_str, "rev-parse", "HEAD"])
@@ -193,7 +245,7 @@ pub fn checkout(src: &Source, rev: &str) -> Result<Checkout> {
         &commit,
     ])?;
     Ok(Checkout {
-        path: tmp.path().to_path_buf(),
+        path: template_dir(tmp.path(), &prefix, rev)?,
         commit,
         _dir: Some(tmp),
     })

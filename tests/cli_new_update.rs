@@ -247,6 +247,72 @@ fn update_refuses_credentials_in_recorded_source() {
 }
 
 #[test]
+fn new_and_update_from_repo_subdirectory() {
+    let repo = TemplateRepo::new();
+    repo.file("README.md", "the repository, not the template\n")
+        .file("tpl/rootstock.toml", CONFIG)
+        .file("tpl/tpl/README.md", README_V1)
+        .file("tpl/tpl/src.txt.jinja", "name={{ name }}\n")
+        .file("tpl/tpl/NOTES.md", "notes\n")
+        .tag("v1.0.0");
+    let sub = repo.path().join("tpl");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &sub.to_string_lossy()])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(0);
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).unwrap(),
+        README_V1
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("src.txt")).unwrap(),
+        "name=demo\n"
+    );
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    let recorded = sub.canonicalize().unwrap();
+    assert!(
+        record.contains(&format!("source = \"{}\"", recorded.display())),
+        "{record}"
+    );
+    commit_project(&dir, "init");
+
+    repo.file("tpl/tpl/README.md", README_V2)
+        .file("README.md", "changed outside the template\n")
+        .tag("v1.1.0");
+    update(&dir).assert().code(0);
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).unwrap(),
+        README_V2
+    );
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("version = \"v1.1.0\""), "{record}");
+}
+
+#[cfg(unix)]
+#[test]
+fn subdirectory_template_root_cannot_leave_the_template_dir() {
+    let repo = TemplateRepo::new();
+    repo.file("shared/README.md", "outside the template\n")
+        .file("tpl/rootstock.toml", "schema = 1\nroot = \"files\"\n")
+        .symlink("tpl/files", "../shared")
+        .tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &repo.path().join("tpl").to_string_lossy()])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("resolves outside"));
+    assert!(!dir.exists());
+}
+
+#[test]
 fn new_git_requires_empty_dir() {
     let repo = template_v1();
     let tmp = TempDir::new().unwrap();

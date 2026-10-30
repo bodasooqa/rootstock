@@ -146,11 +146,86 @@ fn local_non_repo_errors() {
 }
 
 #[test]
-fn local_subdir_is_not_a_template_root() {
+fn local_subdir_template_checkout() {
     let repo = TemplateRepo::new();
-    repo.file("sub/a.txt", "x").tag("v1.0.0");
-    let src = src(&repo.path().join("sub").to_string_lossy());
-    assert!(checkout(&src, "HEAD").is_err());
+    repo.file("other.txt", "outside")
+        .file("tpl/rootstock.toml", "schema = 1\n")
+        .file("tpl/a.txt", "one")
+        .tag("v1.0.0");
+    repo.file("tpl/a.txt", "two");
+    let sub = repo.path().join("tpl");
+    let src = src(&sub.to_string_lossy());
+
+    let listed: Vec<String> = tags(&src).unwrap().into_iter().map(|(_, t)| t).collect();
+    assert_eq!(listed, vec!["v1.0.0"]);
+
+    let by_tag = checkout(&src, "v1.0.0").unwrap();
+    assert!(
+        by_tag.path().ends_with("tpl"),
+        "{}",
+        by_tag.path().display()
+    );
+    assert!(by_tag.path().join("rootstock.toml").is_file());
+    assert_eq!(
+        std::fs::read_to_string(by_tag.path().join("a.txt")).unwrap(),
+        "one"
+    );
+    assert!(!by_tag.path().join("other.txt").exists());
+    assert_eq!(by_tag.commit, repo.commit("v1.0.0"));
+
+    let head = checkout(&src, "HEAD").unwrap();
+    assert_eq!(head.path(), sub);
+    assert_eq!(
+        std::fs::read_to_string(head.path().join("a.txt")).unwrap(),
+        "two"
+    );
+    assert_eq!(head.commit, repo.commit("HEAD"));
+}
+
+#[test]
+fn local_subdir_missing_at_version_errors() {
+    let repo = TemplateRepo::new();
+    repo.file("a.txt", "x").tag("v1.0.0");
+    repo.file("tpl/rootstock.toml", "schema = 1\n")
+        .tag("v2.0.0");
+    let src = src(&repo.path().join("tpl").to_string_lossy());
+    let err = checkout(&src, "v1.0.0").unwrap_err().to_string();
+    assert!(
+        err.contains("template not found at `tpl` in v1.0.0"),
+        "{err}"
+    );
+    assert!(checkout(&src, "v2.0.0").is_ok());
+}
+
+#[test]
+fn local_subdir_without_config_at_version_errors() {
+    let repo = TemplateRepo::new();
+    repo.file("tpl/a.txt", "x").tag("v1.0.0");
+    let src = src(&repo.path().join("tpl").to_string_lossy());
+    let err = checkout(&src, "v1.0.0").unwrap_err().to_string();
+    assert!(
+        err.contains("template not found at `tpl` in v1.0.0"),
+        "{err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn local_subdir_symlinked_at_version_errors() {
+    let repo = TemplateRepo::new();
+    repo.file("real/rootstock.toml", "schema = 1\n")
+        .symlink("tpl", "real")
+        .tag("v1.0.0");
+    // At HEAD `tpl` is a real directory, so the source parses as local.
+    repo.remove("tpl")
+        .file("tpl/rootstock.toml", "schema = 1\n")
+        .tag("v2.0.0");
+    let src = src(&repo.path().join("tpl").to_string_lossy());
+    let err = checkout(&src, "v1.0.0").unwrap_err().to_string();
+    assert!(
+        err.contains("template not found at `tpl` in v1.0.0"),
+        "{err}"
+    );
 }
 
 #[test]

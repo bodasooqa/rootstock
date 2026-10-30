@@ -26,7 +26,7 @@ Hooks declared by a template run only with `--trust` or after an interactive con
 
 ## Template format
 
-A template is a git repository with a `rootstock.toml` (`schema = 1`) in its root and release tags `vX.Y.Z`. The config names the directory with the template files (`root`), the questions asked of the user, jinja options, hooks and file rules, for example which files are starter files. Files ending in `.jinja` are rendered with the answers and lose the suffix; path names may contain jinja too. Managed files are kept up to date by `update`; starter files are created once and never touched again. The full description is in `docs/design.md`.
+A template is a git repository with release tags `vX.Y.Z` and a `rootstock.toml` (`schema = 1`) in its root. A local template may also be a subdirectory of a repository; then `rootstock.toml` sits in that subdirectory, and every path in the config is relative to it. The config names the directory with the template files (`root`), the questions asked of the user, jinja options, hooks and file rules, for example which files are starter files. Files ending in `.jinja` are rendered with the answers and lose the suffix; path names may contain jinja too. Managed files are kept up to date by `update`; starter files are created once and never touched again. The full description is in `docs/design.md`.
 
 ## Exit codes
 
