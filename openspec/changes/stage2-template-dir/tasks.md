@@ -46,7 +46,7 @@
 
 ## 5. Документация и проверки
 
-- [ ] 5.1 `README.md`: `--subdir` в быстром старте; абзац о формате шаблона — подкаталог любого источника, подключения от каталога с `rootstock.toml`. Проверка: `git grep -n include_root README.md` пуст.
+- [x] 5.1 `README.md`: `--subdir` в быстром старте; абзац о формате шаблона — подкаталог любого источника, подключения от каталога с `rootstock.toml`. Проверка: `git grep -n include_root README.md` пуст.
 - [ ] 5.2 Полные проверки:
   - `cargo fmt --check`;
   - `cargo clippy --all-targets --all-features -- -D warnings`;
