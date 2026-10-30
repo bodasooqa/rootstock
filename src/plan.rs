@@ -1,12 +1,12 @@
 //! The update planner: a pure function from base render, target render and
 //! the project's current state to the actions and conflicts of an update.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::RelPath;
 use crate::merge::{Merged, is_binary, merge3};
 use crate::record::{FileClass, Inventory};
-use crate::render::{Entry, RenderedTree};
+use crate::render::{Entry, Rendered, RenderedTree, fold_path};
 
 /// Suffix of the side file written next to a conflicting binary file.
 pub const SIDE_FILE_SUFFIX: &str = ".rootstock-new";
@@ -64,6 +64,10 @@ pub struct Conflict {
 }
 
 /// Result of planning: what to do, what conflicts, and the new inventory.
+///
+/// `actions` lists every `Delete`, sorted by path, then every `Write`, sorted
+/// by path: a rename or a file replaced by a directory needs the old path gone
+/// before the new one is written. `conflicts` is sorted by path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub actions: Vec<Action>,
@@ -221,6 +225,99 @@ fn wrote_path(actions: &[Action], path: &str) -> bool {
         .any(|a| matches!(a, Action::Write { path: p, .. } if p == path))
 }
 
+/// Pairs a base-only path with a target-only path of the same fold: a rename
+/// that differs only in case (or in what the filesystem folds away).
+/// Returns target path -> base path. Render rejects folded collisions inside
+/// one tree, so the pairing is one-to-one.
+fn rename_pairs<'a>(
+    base: &'a RenderedTree,
+    target: &'a RenderedTree,
+) -> BTreeMap<&'a RelPath, &'a RelPath> {
+    let added: BTreeMap<String, &RelPath> = target
+        .keys()
+        .filter(|t| !base.contains_key(*t))
+        .map(|t| (fold_path(t), t))
+        .collect();
+    base.keys()
+        .filter(|b| !target.contains_key(*b))
+        .filter_map(|b| added.get(&fold_path(b)).map(|t| (*t, b)))
+        .collect()
+}
+
+/// Plans a rename pair `old` -> `new` as one logical path. The project is read
+/// at `old` only: on a case-insensitive filesystem `new` aliases it.
+#[allow(clippy::too_many_arguments)]
+fn plan_rename(
+    out: &mut Out,
+    new_inventory: &mut Inventory,
+    old: &str,
+    new: &str,
+    b: &Rendered,
+    t: &Rendered,
+    p: Option<Entry>,
+    in_inventory: bool,
+    label: &str,
+    side_taken: bool,
+) {
+    match (&p, t.class) {
+        (None, FileClass::Managed) => {
+            if !same_content(&b.entry, &t.entry) {
+                out.conflict(new, ConflictKind::DeletedByProject);
+            }
+        }
+        (None, FileClass::Starter) => {}
+        (Some(p), FileClass::Starter) => {
+            // A starter's content belongs to the project: only the name follows the template.
+            out.actions.push(Action::Delete {
+                path: old.to_string(),
+            });
+            out.actions.push(Action::Write {
+                path: new.to_string(),
+                entry: p.clone(),
+            });
+        }
+        (Some(p), FileClass::Managed) => {
+            let mut scratch = Out::default();
+            plan_present(
+                &mut scratch,
+                new,
+                Some(&b.entry),
+                &t.entry,
+                p,
+                label,
+                side_taken,
+            );
+            let mut result = p.clone();
+            for action in scratch.actions {
+                match action {
+                    Action::Write { path, entry } if path == new => result = entry,
+                    other => out.actions.push(other),
+                }
+            }
+            out.conflicts.extend(scratch.conflicts);
+            out.actions.push(Action::Delete {
+                path: old.to_string(),
+            });
+            out.actions.push(Action::Write {
+                path: new.to_string(),
+                entry: result,
+            });
+        }
+    }
+    if in_inventory || p.is_some() {
+        new_inventory.insert(new.to_string(), t.class);
+    }
+}
+
+/// Orders actions: every delete by path, then every write by path.
+fn action_order(a: &Action, b: &Action) -> std::cmp::Ordering {
+    let rank = |a: &Action| match a {
+        Action::Delete { .. } => 0,
+        Action::Write { .. } => 1,
+    };
+    rank(a).cmp(&rank(b)).then_with(|| a.path().cmp(b.path()))
+}
+
 /// Plans an update from `base` to `target` against the project's current files.
 ///
 /// `new` is the same call with an empty base, an empty project and an empty inventory.
@@ -234,8 +331,34 @@ pub fn plan_update(
     let mut out = Out::default();
     let mut new_inventory = Inventory::new();
     let paths: BTreeSet<&RelPath> = base.keys().chain(target.keys()).collect();
+    let pairs = rename_pairs(base, target);
+    let renamed: BTreeSet<&RelPath> = pairs.values().copied().collect();
 
     for path in paths {
+        if renamed.contains(path) {
+            continue;
+        }
+        if let Some(old) = pairs.get(path) {
+            let (Some(b), Some(t)) = (base.get(*old), target.get(path)) else {
+                continue;
+            };
+            let side = format!("{path}{SIDE_FILE_SUFFIX}");
+            let side_taken = base.contains_key(&side) || target.contains_key(&side);
+            let in_inventory = inventory.contains_key(*old) || inventory.contains_key(path);
+            plan_rename(
+                &mut out,
+                &mut new_inventory,
+                old,
+                path,
+                b,
+                t,
+                project.get(old),
+                in_inventory,
+                target_label,
+                side_taken,
+            );
+            continue;
+        }
         let b = base.get(path);
         let t = target.get(path);
         let p = project.get(path);
@@ -294,7 +417,7 @@ pub fn plan_update(
         }
     }
 
-    out.actions.sort_by(|a, b| a.path().cmp(b.path()));
+    out.actions.sort_by(action_order);
     out.conflicts.sort_by(|a, b| a.path.cmp(&b.path));
     Plan {
         actions: out.actions,
@@ -735,6 +858,128 @@ mod tests {
         assert_eq!(
             plan.conflicts,
             vec![conflict("a.bin", ConflictKind::Binary)]
+        );
+    }
+
+    /// A project on a case-insensitive filesystem: lookups ignore ASCII case.
+    struct Folded(BTreeMap<String, Entry>);
+
+    impl ProjectView for Folded {
+        fn get(&self, path: &str) -> Option<Entry> {
+            let want = path.to_lowercase();
+            self.0
+                .iter()
+                .find(|(k, _)| k.to_lowercase() == want)
+                .map(|(_, v)| v.clone())
+        }
+    }
+
+    fn delete(path: &str) -> Action {
+        Action::Delete { path: path.into() }
+    }
+
+    #[test]
+    fn case_rename_unedited() {
+        let b = tree(&[("Readme.md", file("x\n"), M)]);
+        let t = tree(&[("README.md", file("y\n"), M)]);
+        let p = Folded(proj(&[("Readme.md", file("x\n"))]));
+        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        assert_eq!(
+            plan.actions,
+            vec![delete("Readme.md"), write("README.md", file("y\n"))]
+        );
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(plan.inventory, inv(&[("README.md", M)]));
+
+        // Same content: the name still changes.
+        let t = tree(&[("README.md", file("x\n"), M)]);
+        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        assert_eq!(
+            plan.actions,
+            vec![delete("Readme.md"), write("README.md", file("x\n"))]
+        );
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn case_rename_edited_merges() {
+        let b = tree(&[("Readme.md", file("a\nb\nc\nd\ne\nf\ng\n"), M)]);
+        let t = tree(&[("README.md", file("A\nb\nc\nd\ne\nf\ng\n"), M)]);
+        let p = Folded(proj(&[("Readme.md", file("a\nb\nc\nd\ne\nf\nG\n"))]));
+        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        assert_eq!(
+            plan.actions,
+            vec![
+                delete("Readme.md"),
+                write("README.md", file("A\nb\nc\nd\ne\nf\nG\n"))
+            ]
+        );
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(plan.inventory, inv(&[("README.md", M)]));
+
+        // The template did not change the content: the project's edit moves to the new name.
+        let t = tree(&[("README.md", file("a\nb\nc\nd\ne\nf\ng\n"), M)]);
+        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        assert_eq!(
+            plan.actions,
+            vec![
+                delete("Readme.md"),
+                write("README.md", file("a\nb\nc\nd\ne\nf\nG\n"))
+            ]
+        );
+    }
+
+    #[test]
+    fn case_rename_deleted_by_project() {
+        let b = tree(&[("Readme.md", file("x\n"), M)]);
+        let t = tree(&[("README.md", file("y\n"), M)]);
+        let p = Folded(proj(&[]));
+        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        assert!(plan.actions.is_empty());
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("README.md", ConflictKind::DeletedByProject)]
+        );
+        assert_eq!(plan.inventory, inv(&[("README.md", M)]));
+
+        let t = tree(&[("README.md", file("x\n"), M)]);
+        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        assert!(plan.actions.is_empty());
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn case_rename_starter_keeps_project_content() {
+        let b = tree(&[("Notes.md", file("x\n"), S)]);
+        let t = tree(&[("NOTES.md", file("y\n"), S)]);
+        let p = Folded(proj(&[("Notes.md", file("mine\n"))]));
+        let plan = plan_update(&b, &t, &p, &inv(&[("Notes.md", S)]), LABEL);
+        assert_eq!(
+            plan.actions,
+            vec![delete("Notes.md"), write("NOTES.md", file("mine\n"))]
+        );
+        assert_eq!(plan.inventory, inv(&[("NOTES.md", S)]));
+
+        let plan = plan_update(&b, &t, &Folded(proj(&[])), &inv(&[("Notes.md", S)]), LABEL);
+        assert!(plan.actions.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(plan.inventory, inv(&[("NOTES.md", S)]));
+    }
+
+    #[test]
+    fn deletes_precede_writes() {
+        let b = tree(&[("b", file("1\n"), M), ("docs/x", file("x\n"), M)]);
+        let t = tree(&[("a", file("2\n"), M), ("docs", file("d\n"), M)]);
+        let p = proj(&[("b", file("1\n")), ("docs/x", file("x\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("b", M), ("docs/x", M)]));
+        assert_eq!(
+            plan.actions,
+            vec![
+                delete("b"),
+                delete("docs/x"),
+                write("a", file("2\n")),
+                write("docs", file("d\n")),
+            ]
         );
     }
 

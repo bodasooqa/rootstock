@@ -472,7 +472,9 @@ fn fold_segment(seg: &str) -> String {
     kept.trim_end_matches(['.', ' ']).to_lowercase()
 }
 
-fn fold_path(path: &str) -> String {
+/// Folds every segment of `path` with `fold_segment`: two paths with the same
+/// fold name one file on a case-insensitive filesystem.
+pub(crate) fn fold_path(path: &str) -> String {
     path.split('/')
         .map(fold_segment)
         .collect::<Vec<_>>()
