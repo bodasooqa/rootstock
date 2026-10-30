@@ -32,6 +32,34 @@ pub enum FileMode {
 /// A path absent from the map is read from the disk.
 pub type Modes = BTreeMap<RelPath, FileMode>;
 
+/// A link target as rootstock keeps it: with `/` only. Windows reports a link
+/// made by `symlink_file` with `\`; Git for Windows writes `/` as `\` too, so
+/// the two spellings are one target.
+pub fn target_from_os(target: &str) -> String {
+    if cfg!(windows) {
+        backslashes_to_slashes(target)
+    } else {
+        target.to_string()
+    }
+}
+
+/// The spelling of a stored link target for the system call that makes the link.
+pub fn target_to_os(target: &str) -> String {
+    if cfg!(windows) {
+        slashes_to_backslashes(target)
+    } else {
+        target.to_string()
+    }
+}
+
+fn backslashes_to_slashes(target: &str) -> String {
+    target.replace('\\', "/")
+}
+
+fn slashes_to_backslashes(target: &str) -> String {
+    target.replace('/', "\\")
+}
+
 /// A rendered path with its class.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rendered {
@@ -271,11 +299,12 @@ impl Walk<'_> {
                     source,
                 };
                 let target = if file_type.is_symlink() {
-                    std::fs::read_link(&path)
+                    let target = std::fs::read_link(&path)
                         .map_err(io)?
                         .into_os_string()
                         .into_string()
-                        .map_err(|_| RenderError::NonUtf8Link { path: path.clone() })?
+                        .map_err(|_| RenderError::NonUtf8Link { path: path.clone() })?;
+                    target_from_os(&target)
                 } else {
                     // Git without the right to make links writes the target as a file.
                     String::from_utf8(std::fs::read(&path).map_err(io)?)
@@ -663,6 +692,17 @@ mod tests {
     }
 
     #[test]
+    fn link_targets_are_kept_with_slashes() {
+        assert_eq!(backslashes_to_slashes("a\\b/c"), "a/b/c");
+        assert_eq!(slashes_to_backslashes("a\\b/c"), "a\\b\\c");
+        // Unix keeps its targets verbatim: `\` is an ordinary character there.
+        let expected = if cfg!(windows) { "a/b" } else { "a\\b" };
+        assert_eq!(target_from_os("a\\b"), expected);
+        let expected = if cfg!(windows) { "a\\b" } else { "a/b" };
+        assert_eq!(target_to_os("a/b"), expected);
+    }
+
+    #[test]
     fn mode_key_follows_the_template_root() {
         let d = tempfile::tempdir().unwrap();
         put(d.path(), "tpl/run.sh", "x");
@@ -825,12 +865,12 @@ mod tests {
             "tpl/{{ answers_file }}.jinja",
             "{{ x|nope_filter }}",
         );
-        put(dir.path(), "tpl/{{ nope|nope_filter }}.jinja", "x");
+        put(dir.path(), "tpl/{{ nope_fn() }}.jinja", "x");
         put(dir.path(), "tpl/keep.txt.jinja", "kept {{ n }}");
         let mut cfg = cfg("root = \"tpl\"");
         cfg.skip = vec![
             "tpl/{{ answers_file }}.jinja".to_string(),
-            "tpl/{{ nope|nope_filter }}.jinja".to_string(),
+            "tpl/{{ nope_fn() }}.jinja".to_string(),
         ];
         let tree = render(dir.path(), &cfg, &answers(serde_json::json!({"n": 1}))).unwrap();
         assert_eq!(tree.keys().collect::<Vec<_>>(), ["keep.txt"]);

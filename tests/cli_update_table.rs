@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use support::{TemplateRepo, commit_project};
+use support::{TemplateRepo, commit_project, git_in, make_symlink};
 use tempfile::TempDir;
 
 /// Template config with the given starter and exclude rules.
@@ -276,66 +276,168 @@ fn e2e_binary_unedited_replaced() {
     assert!(!dir.join("img.bin.rootstock-new").exists());
 }
 
-#[cfg(unix)]
+/// Whether the project file is executable: on the disk where it has a bit,
+/// in the git index of the project where it has not (Windows).
+fn is_executable(dir: &Path, path: &str) -> bool {
+    if cfg!(unix) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            return fs::metadata(dir.join(path)).unwrap().permissions().mode() & 0o111 != 0;
+        }
+    }
+    let listing = git_in(dir, &["ls-files", "-s", "--", &format!(":(literal){path}")]);
+    listing.starts_with("100755")
+}
+
+/// The target of a link in the project, spelled with `/` as rootstock keeps it.
+fn link_target(dir: &Path, path: &str) -> String {
+    fs::read_link(dir.join(path))
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// Removes a link whichever kind it is (a directory link needs `remove_dir` on Windows).
+fn remove_link(path: &Path) {
+    if fs::remove_file(path).is_err() {
+        fs::remove_dir(path).unwrap();
+    }
+}
+
+/// `rootstock new` at `version` into a fresh directory; the project is not committed.
+fn new_at(repo: &TemplateRepo, version: &str) -> (TempDir, PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--defaults", "--version", version])
+        .assert()
+        .code(0);
+    (tmp, dir)
+}
+
 #[test]
 fn e2e_exec_bit_follows_template() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = template(&config(&[], &[]), &[("run.sh", "echo hi\n")]);
     let (_tmp, dir) = new_project(&repo);
-    let mode = |dir: &Path| {
-        fs::metadata(dir.join("run.sh"))
-            .unwrap()
-            .permissions()
-            .mode()
-    };
-    assert_eq!(mode(&dir) & 0o111, 0);
+    assert!(!is_executable(&dir, "run.sh"));
     repo.exec("tpl/run.sh").tag("v1.1.0");
     update(&dir).assert().code(0).stdout("");
-    assert_eq!(mode(&dir) & 0o111, 0o111);
+    assert!(is_executable(&dir, "run.sh"));
     assert_eq!(read(&dir, "run.sh"), "echo hi\n");
 }
 
-#[cfg(unix)]
+#[test]
+fn e2e_exec_bit_removed_by_template() {
+    let repo = template(&config(&[], &[]), &[("run.sh", "echo hi\n")]);
+    repo.exec("tpl/run.sh").tag("v1.0.1");
+    let (_tmp, dir) = new_at(&repo, "v1.0.1");
+    commit_project(&dir, "init");
+    assert!(is_executable(&dir, "run.sh"));
+    repo.unexec("tpl/run.sh").tag("v1.1.0");
+    update(&dir).assert().code(0).stdout("");
+    assert!(!is_executable(&dir, "run.sh"));
+    assert_eq!(read(&dir, "run.sh"), "echo hi\n");
+}
+
+#[test]
+fn e2e_exec_bit_in_a_project_inside_a_repository() {
+    let repo = template(
+        &config(&[], &[]),
+        &[("run.sh", "echo hi\n"), ("other.sh", "echo o\n")],
+    );
+    let tmp = TempDir::new().unwrap();
+    let top = tmp.path().join("mono");
+    fs::create_dir_all(top.join("pkg")).unwrap();
+    git_in(&top, &["init", "-q", "-b", "main"]);
+    // A neighbour of the project in the same repository must stay untouched.
+    fs::create_dir_all(top.join("neighbour")).unwrap();
+    fs::write(top.join("neighbour/run.sh"), "echo n\n").unwrap();
+    let dir = top.join("pkg");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--defaults", "--version", "v1.0.0"])
+        .assert()
+        .code(0);
+    commit_project(&top, "init");
+    repo.exec("tpl/run.sh").tag("v1.1.0");
+    update(&dir).assert().code(0).stdout("");
+    assert!(is_executable(&top, "pkg/run.sh"));
+    assert!(!is_executable(&top, "pkg/other.sh"));
+    assert!(!is_executable(&top, "neighbour/run.sh"));
+}
+
+#[test]
+fn e2e_exec_bit_of_a_name_with_glob_characters() {
+    // `x[1].sh` is a glob that matches `x1.sh`: only the named file may change.
+    let repo = template(
+        &config(&[], &[]),
+        &[("x1.sh", "echo 1\n"), ("x[1].sh", "echo b\n")],
+    );
+    let (_tmp, dir) = new_project(&repo);
+    repo.exec("tpl/x[1].sh").tag("v1.1.0");
+    update(&dir).assert().code(0).stdout("");
+    assert!(is_executable(&dir, "x[1].sh"));
+    assert!(!is_executable(&dir, "x1.sh"));
+}
+
 #[test]
 fn e2e_symlink_retargeted() {
     let repo = template(&config(&[], &[]), &[("a.txt", "a\n"), ("b.txt", "b\n")]);
     repo.symlink("tpl/link", "a.txt").tag("v1.0.1");
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("proj");
-    rootstock()
-        .args(["new", &repo.url()])
-        .arg(&dir)
-        .args(["--defaults", "--version", "v1.0.1"])
-        .assert()
-        .code(0);
+    let (_tmp, dir) = new_at(&repo, "v1.0.1");
     commit_project(&dir, "init");
     repo.symlink("tpl/link", "b.txt").tag("v1.1.0");
     update(&dir).assert().code(0).stdout("");
-    assert_eq!(fs::read_link(dir.join("link")).unwrap(), Path::new("b.txt"));
+    assert_eq!(link_target(&dir, "link"), "b.txt");
 }
 
-#[cfg(unix)]
+#[test]
+fn e2e_symlink_target_in_a_subdirectory() {
+    let repo = template(
+        &config(&[], &[]),
+        &[("sub/a.txt", "a\n"), ("sub/b.txt", "b\n")],
+    );
+    repo.symlink("tpl/link", "sub/a.txt").tag("v1.0.1");
+    let (_tmp, dir) = new_at(&repo, "v1.0.1");
+    commit_project(&dir, "init");
+    // Whatever the system spells it like, the target is `sub/a.txt` to rootstock.
+    assert_eq!(link_target(&dir, "link"), "sub/a.txt");
+    repo.symlink("tpl/link", "sub/b.txt").tag("v1.1.0");
+    update(&dir).assert().code(0).stdout("");
+    assert_eq!(link_target(&dir, "link"), "sub/b.txt");
+}
+
+#[test]
+fn e2e_symlink_to_a_directory_retargeted() {
+    let repo = template(
+        &config(&[], &[]),
+        &[("da/f.txt", "a\n"), ("db/f.txt", "b\n")],
+    );
+    repo.symlink("tpl/dirlink", "da").tag("v1.0.1");
+    let (_tmp, dir) = new_at(&repo, "v1.0.1");
+    commit_project(&dir, "init");
+    assert_eq!(read(&dir, "dirlink/f.txt"), "a\n");
+    repo.symlink("tpl/dirlink", "db").tag("v1.1.0");
+    update(&dir).assert().code(0).stdout("");
+    assert_eq!(link_target(&dir, "dirlink"), "db");
+    assert_eq!(read(&dir, "dirlink/f.txt"), "b\n");
+}
+
 #[test]
 fn e2e_symlink_diverged() {
     let repo = template(&config(&[], &[]), &[("a.txt", "a\n"), ("b.txt", "b\n")]);
     repo.symlink("tpl/link", "a.txt").tag("v1.0.1");
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("proj");
-    rootstock()
-        .args(["new", &repo.url()])
-        .arg(&dir)
-        .args(["--defaults", "--version", "v1.0.1"])
-        .assert()
-        .code(0);
-    fs::remove_file(dir.join("link")).unwrap();
-    std::os::unix::fs::symlink("mine.txt", dir.join("link")).unwrap();
+    let (_tmp, dir) = new_at(&repo, "v1.0.1");
+    remove_link(&dir.join("link"));
+    make_symlink("mine.txt", &dir.join("link"));
     commit_project(&dir, "retarget");
     repo.symlink("tpl/link", "b.txt").tag("v1.1.0");
     update(&dir).assert().code(2).stdout("symlink link\n");
-    assert_eq!(
-        fs::read_link(dir.join("link")).unwrap(),
-        Path::new("mine.txt")
-    );
+    assert_eq!(link_target(&dir, "link"), "mine.txt");
 }
 
 #[test]

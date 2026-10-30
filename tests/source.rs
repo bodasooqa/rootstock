@@ -377,6 +377,22 @@ fn modes_of_local_head_come_from_the_index() {
     assert!(!co.modes.contains_key("untracked.txt"));
 }
 
+/// On Unix the working tree decides what a path is; the index gives the bit only.
+#[cfg(unix)]
+#[test]
+fn local_head_takes_the_kind_of_a_path_from_the_disk_on_unix() {
+    use rootstock::render::FileMode;
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\n")
+        .file("real.txt", "x");
+    repo.tree_symlink("link", "real.txt").tag_staged("v1.0.0");
+    // The index calls `link` a symlink; the disk holds a plain file.
+    repo.file("link", "plain file\n");
+    let co = checkout(&src(&repo.url()), None, "HEAD").unwrap();
+    assert!(!co.modes.contains_key("link"));
+    assert_eq!(co.modes.get("real.txt"), Some(&FileMode::File));
+}
+
 #[test]
 fn modes_of_local_head_in_a_subdirectory() {
     use rootstock::render::FileMode;

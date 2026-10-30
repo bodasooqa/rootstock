@@ -1604,6 +1604,26 @@ fn new_keeps_lf_when_git_converts_line_endings() {
 }
 
 #[test]
+fn new_keeps_lf_for_text_auto_attributes_when_eol_is_crlf() {
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\n")
+        .file(".gitattributes", "* text=auto\n")
+        .file("lf.txt", "one\ntwo\n")
+        .tag("v1.0.0");
+    let (_cfg, global) = git_global("[core]\n\teol = crlf\n");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(0);
+    assert_eq!(fs::read(dir.join("lf.txt")).unwrap(), b"one\ntwo\n");
+}
+
+#[test]
 fn new_emits_a_link_the_checkout_wrote_as_a_file() {
     let repo = TemplateRepo::new();
     repo.file("rootstock.toml", "schema = 1\n")

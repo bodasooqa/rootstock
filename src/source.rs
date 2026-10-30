@@ -292,10 +292,15 @@ pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkou
         let commit = git(&["-C", &dir_str, "rev-parse", "HEAD"])
             .with_context(|| format!("{dir_str} has no commits"))?;
         let path = template_dir_shown(dir, sub, &prefix, rev)?;
-        let modes = git_modes(
+        let mut modes = git_modes(
             &["-C", &dir_str, "ls-files", "-s", "-z", "--full-name"],
             &prefix,
         )?;
+        if cfg!(unix) {
+            // The working tree is what is rendered: on Unix a path is a link only
+            // if the disk says so; the index supplies the executable bit alone.
+            modes.retain(|_, mode| *mode != FileMode::Symlink);
+        }
         return Ok(Checkout {
             path,
             commit,
@@ -314,6 +319,9 @@ pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkou
         // The user's or the system's `autocrlf` must not change the template's bytes.
         "--config",
         "core.autocrlf=false",
+        // `text=auto` in the template's attributes would otherwise follow the platform.
+        "--config",
+        "core.eol=lf",
         "--",
         &location,
         &tmp_str,

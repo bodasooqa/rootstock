@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use super::{
-    CommonOptions, HookFailed, Report, Side, check_version, dir_has_entries, interactive,
-    load_data, prompter, refuse_unsupported, target_label,
+    CommonOptions, HookFailed, Report, Side, check_version, dir_has_entries, index_failure,
+    interactive, load_data, prompter, refuse_unsupported, target_label,
 };
-use crate::apply::{DiskProject, GitMerge, apply, set_index_modes};
+use crate::apply::{DiskProject, GitMerge, apply, check_symlinks_allowed, set_index_modes};
 use crate::config::Phase;
 use crate::hooks::{check_trust, find_shell, run_trusted};
 use crate::plan::plan_update;
@@ -93,8 +93,9 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         answers: collected.recorded,
         inventory: plan.inventory.clone(),
     })?;
-    // Found with the other checks: no `sh` means nothing is written.
+    // Found with the other checks: no `sh` and no links mean nothing is written.
     let shell = find_shell(&cfg.hooks, Phase::New)?;
+    check_symlinks_allowed(&plan, dir)?;
     // Asked last among the steps that can fail, so no one trusts a run that then errors.
     check_trust(&cfg.hooks, Phase::New, opts.common.trust, interactive())?;
 
@@ -112,15 +113,21 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         .context("files were written; the record was not written")?;
     if opts.git {
         init_git(dir).context("project created; git init failed")?;
-        // Only now is there an index to hold the executable bits.
-        set_index_modes(&plan, dir).context("project created; the git index was not updated")?;
     }
+    // Only now is there an index to hold the executable bits (a project in a
+    // repository has one already). A path git refuses does not stop the command:
+    // it is reported once the rest is done.
+    let failed =
+        set_index_modes(&plan, dir).context("project created; the git index could not be read")?;
     eprintln!(
         "created {} from {} {}",
         dir.display(),
         opts.template,
         report.version
     );
+    if let Some(e) = index_failure(&failed) {
+        return Err(HookFailed::new(report, e).into());
+    }
     Ok(report)
 }
 

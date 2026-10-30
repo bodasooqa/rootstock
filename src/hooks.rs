@@ -1,6 +1,5 @@
 //! Runs template hooks in the project directory, gated by trust.
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -56,37 +55,34 @@ pub fn find_shell(hooks: &[Hook], phase: Phase) -> anyhow::Result<Option<Shell>>
         // The system resolves `sh` from `PATH` when the hook starts.
         return Ok(Some(Shell(PathBuf::from(SHELL_NAME))));
     }
-    // Without git there is no exec path to search; `PATH` alone still counts.
-    let exec_path = crate::source::git(&["--exec-path"]).ok();
-    let path_var = std::env::var_os("PATH").unwrap_or_default();
-    locate_shell(
-        &path_var,
-        exec_path.as_deref().map(Path::new),
-        SHELL_NAME,
-        &|candidate| candidate.is_file(),
-    )
-    .map(Some)
-    .ok_or_else(|| {
-        anyhow::anyhow!("hooks need `sh` from Git for Windows; none was found next to git")
-    })
+    // `PATH` is not searched: it may hold another `sh.exe` (MSYS2, Cygwin, busybox).
+    let exec_path = crate::source::git(&["--exec-path"]).map_err(|e| format!("{e:#}"));
+    let found = exec_path
+        .as_ref()
+        .ok()
+        .and_then(|exec| locate_shell(Path::new(exec), SHELL_NAME, &|path| path.is_file()));
+    found
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!(shell_missing(exec_path.err().as_deref())))
 }
 
-/// Looks for the shell `name` in the `PATH` entries, then in the `bin` and
-/// `usr/bin` directories of every ancestor of git's exec path (Git for Windows
-/// keeps `sh.exe` there, outside `PATH`). `is_file` tells what exists.
-fn locate_shell(
-    path_var: &OsStr,
-    exec_path: Option<&Path>,
-    name: &str,
-    is_file: &dyn Fn(&Path) -> bool,
-) -> Option<Shell> {
-    let in_path = std::env::split_paths(path_var).map(|dir| dir.join(name));
-    let beside_git = exec_path.into_iter().flat_map(|exec| {
-        exec.ancestors()
-            .flat_map(|dir| [dir.join("bin").join(name), dir.join("usr/bin").join(name)])
-    });
-    in_path
-        .chain(beside_git)
+/// The text of the error for a missing shell; `git_failure` is why git's
+/// exec path could not be read, if that is the cause.
+fn shell_missing(git_failure: Option<&str>) -> String {
+    let base = "hooks need `sh` from Git for Windows; none was found next to git";
+    match git_failure {
+        Some(reason) => format!("{base} (`git --exec-path` failed: {reason})"),
+        None => base.to_string(),
+    }
+}
+
+/// Looks for the shell `name` in the `bin` and `usr/bin` directories of every
+/// ancestor of git's exec path, nearest first (Git for Windows keeps `sh.exe`
+/// there). `is_file` tells what exists.
+fn locate_shell(exec_path: &Path, name: &str, is_file: &dyn Fn(&Path) -> bool) -> Option<Shell> {
+    exec_path
+        .ancestors()
+        .flat_map(|dir| [dir.join("bin").join(name), dir.join("usr/bin").join(name)])
         .find(|candidate| is_file(candidate))
         .map(Shell)
 }
@@ -156,44 +152,42 @@ mod tests {
     }
 
     #[test]
-    fn shell_is_taken_from_path_first() {
-        let in_path = Path::new("/tools").join("sh.exe");
-        let beside_git = Path::new("/g/Git").join("bin").join("sh.exe");
-        let files = [in_path.clone(), beside_git];
-        let path_var = std::env::join_paths(["/other", "/tools"]).unwrap();
-        let exec = Path::new("/g/Git/mingw64/libexec/git-core");
-        let found = locate_shell(&path_var, Some(exec), "sh.exe", &existing(&files));
-        assert_eq!(found, Some(Shell(in_path)));
-    }
-
-    #[test]
     fn shell_is_searched_beside_git_up_the_exec_path() {
         let exec = Path::new("/g/Git/mingw64/libexec/git-core");
-        let path_var = std::env::join_paths(["/other"]).unwrap();
         // `bin` wins over `usr/bin` in the same ancestor; a nearer ancestor wins.
         let bin = Path::new("/g/Git").join("bin").join("sh.exe");
         let usr = Path::new("/g/Git").join("usr/bin").join("sh.exe");
         let files = [usr.clone(), bin.clone()];
-        let found = locate_shell(&path_var, Some(exec), "sh.exe", &existing(&files));
+        let found = locate_shell(exec, "sh.exe", &existing(&files));
         assert_eq!(found, Some(Shell(bin)));
         let files = [usr.clone()];
-        let found = locate_shell(&path_var, Some(exec), "sh.exe", &existing(&files));
+        let found = locate_shell(exec, "sh.exe", &existing(&files));
         assert_eq!(found, Some(Shell(usr)));
         let near = Path::new("/g/Git/mingw64").join("bin").join("sh.exe");
         let files = [near.clone(), Path::new("/g/Git").join("bin").join("sh.exe")];
-        let found = locate_shell(&path_var, Some(exec), "sh.exe", &existing(&files));
+        let found = locate_shell(exec, "sh.exe", &existing(&files));
         assert_eq!(found, Some(Shell(near)));
     }
 
     #[test]
-    fn missing_shell_is_none() {
-        let path_var = std::env::join_paths(["/other"]).unwrap();
+    fn a_shell_outside_the_git_tree_is_not_found() {
+        // Another `sh.exe` (in `PATH`, say) is not next to git: only ancestors count.
         let exec = Path::new("/g/Git/mingw64/libexec/git-core");
+        let elsewhere = [Path::new("/tools").join("sh.exe")];
+        assert_eq!(locate_shell(exec, "sh.exe", &existing(&elsewhere)), None);
+        assert_eq!(locate_shell(exec, "sh.exe", &|_| false), None);
+    }
+
+    #[test]
+    fn missing_shell_error_names_why_git_failed() {
+        let plain = shell_missing(None);
         assert_eq!(
-            locate_shell(&path_var, Some(exec), "sh.exe", &|_| false),
-            None
+            plain,
+            "hooks need `sh` from Git for Windows; none was found next to git"
         );
-        assert_eq!(locate_shell(&path_var, None, "sh.exe", &|_| false), None);
+        let with_reason = shell_missing(Some("cannot run git"));
+        assert!(with_reason.starts_with(&plain), "{with_reason}");
+        assert!(with_reason.contains("cannot run git"), "{with_reason}");
     }
 
     #[test]
@@ -223,15 +217,13 @@ mod tests {
     fn hooks_run_in_order_in_project_dir() {
         let dir = tempfile::tempdir().unwrap();
         let hooks = [
-            hook("pwd > where; echo one > order", &[Phase::New]),
+            hook("echo one > order", &[Phase::New]),
             hook("echo two >> order", &[Phase::New, Phase::Update]),
         ];
         run_hooks(&hooks, Phase::New, dir.path(), true, false).unwrap();
+        // A relative path lands in the project directory: that is the working directory.
         let order = std::fs::read_to_string(dir.path().join("order")).unwrap();
         assert_eq!(order, "one\ntwo\n");
-        let where_ = std::fs::read_to_string(dir.path().join("where")).unwrap();
-        let expected = std::fs::canonicalize(dir.path()).unwrap();
-        assert_eq!(std::fs::canonicalize(where_.trim()).unwrap(), expected);
     }
 
     #[test]

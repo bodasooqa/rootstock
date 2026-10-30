@@ -76,6 +76,18 @@ impl TemplateRepo {
         self
     }
 
+    /// Takes the executable bit off the file, in the index and where the disk has one.
+    pub fn unexec(&self, path: &str) -> &Self {
+        #[cfg(unix)]
+        {
+            let full = self.dir.path().join(path);
+            fs::set_permissions(&full, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        self.git(&["add", "--", path]);
+        self.git(&["update-index", "--chmod=-x", "--", path]);
+        self
+    }
+
     /// Records a symlink in the git tree without touching the disk: the way
     /// to build a `120000` entry on any OS, whatever `core.symlinks` says.
     pub fn tree_symlink(&self, path: &str, target: &str) -> &Self {
@@ -171,13 +183,13 @@ impl TemplateRepo {
 }
 
 #[cfg(unix)]
-fn make_symlink(target: &str, link: &Path) {
+pub fn make_symlink(target: &str, link: &Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
 }
 
 /// Windows makes a directory link or a file link; the target decides which.
 #[cfg(windows)]
-fn make_symlink(target: &str, link: &Path) {
+pub fn make_symlink(target: &str, link: &Path) {
     let resolved = link.parent().unwrap().join(target);
     if resolved.is_dir() {
         std::os::windows::fs::symlink_dir(target, link).unwrap();

@@ -43,6 +43,19 @@ impl HookFailed {
     }
 }
 
+/// The error for paths whose executable bit git refused to record in the
+/// index (`` `path`: reason `` each); `None` when there are none. The command
+/// raises it after its hooks and its output, so the user sees what was done.
+pub(crate) fn index_failure(failed: &[String]) -> Option<anyhow::Error> {
+    if failed.is_empty() {
+        return None;
+    }
+    Some(anyhow!(
+        "files and the record were written; the executable bit of these paths is not in the git index: {}",
+        failed.join("; ")
+    ))
+}
+
 /// Flags shared by `new` and `update`.
 #[derive(Debug, Clone, Default)]
 pub struct CommonOptions {

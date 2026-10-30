@@ -37,11 +37,11 @@ Hooks declared by a template run only with `--trust` or after an interactive con
 
 rootstock builds and runs on Windows, with three things to know:
 
-- Hooks run under `sh`. On Windows rootstock uses `sh.exe` from [Git for Windows](https://gitforwindows.org/): found in `PATH`, or next to `git`. If a template has hooks to run and none is found, the command stops before writing anything. Hook commands must be POSIX shell.
-- Windows files have no executable bit, so rootstock keeps it in the git index: the executable bit of a template file is read from the git tree, and in a project that is a git work tree rootstock sets the bit in the index (`git update-index --chmod`, or `git add --chmod=+x` for a new file). `new --git` does it too, right after `git init`. A project that is not a git work tree gets no bit.
-- Symbolic links need Developer Mode (Settings, then System, then For developers) or an administrator shell. Without them a template with links stops before the first file is written.
+- Hooks run under `sh`. On Windows rootstock uses the `sh.exe` of [Git for Windows](https://gitforwindows.org/), found next to `git` (it looks up from `git --exec-path`). If a template has hooks to run and none is found, the command stops before writing anything. Hook commands must be POSIX shell.
+- Windows files have no executable bit, so rootstock keeps it in the git index: the executable bit of a template file is read from the git tree. In a project that is a git work tree (a project in a subdirectory of a repository counts) rootstock changes only the mode of a tracked file in the index, never its content; a new executable file is added to the index (`git add --chmod=+x`). `new --git` does it right after `git init`. Paths that `.gitignore` covers, paths inside submodules and files already gone are skipped. A project that is not a git work tree gets no bit. If git refuses a path, the command finishes its work, then exits with code 1 and lists the paths.
+- Symbolic links need Developer Mode (Settings, then System, then For developers) or an administrator shell. A command stops before writing anything only when the plan writes a link and the system refuses to make one.
 
-Template files are read from the git tree with `core.autocrlf` turned off, so line endings of a template are never changed by your git configuration.
+Template files are read from the git tree with `core.autocrlf=false` and `core.eol=lf`, so line endings of a template are never changed by your git configuration. A `.gitattributes` of the template that asks for `eol=crlf` still applies.
 
 ## Template format
 

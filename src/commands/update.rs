@@ -5,11 +5,14 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use super::{
-    CommonOptions, HookFailed, Report, Side, check_version, interactive, load_data, read_data_file,
-    refuse_unsupported, require_clean_tree, target_label,
+    CommonOptions, HookFailed, Report, Side, check_version, index_failure, interactive, load_data,
+    read_data_file, refuse_unsupported, require_clean_tree, target_label,
 };
 use crate::answers::NoPrompt;
-use crate::apply::{DiskProject, GitMerge, apply, check_path, readable_parents};
+use crate::apply::{
+    DiskProject, GitMerge, apply, check_path, check_symlinks_allowed, readable_parents,
+    set_index_modes,
+};
 use crate::config::Phase;
 use crate::hooks::{check_trust, find_shell, run_trusted};
 use crate::merge::has_markers;
@@ -142,8 +145,9 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         answers: target_collected.recorded,
         inventory: plan.inventory.clone(),
     })?;
-    // Found with the other checks: no `sh` means nothing is written.
+    // Found with the other checks: no `sh` and no links mean nothing is written.
     let shell = find_shell(&target_cfg.hooks, Phase::Update)?;
+    check_symlinks_allowed(&plan, dir)?;
     // Asked last among the steps that can fail, so no one trusts a run that then errors.
     check_trust(
         &target_cfg.hooks,
@@ -153,16 +157,26 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     )?;
 
     apply(&plan, dir)?;
+    // Before the hooks, which may rely on the index. A path git refuses is
+    // reported at the end, after the hooks and the output.
+    let failed = set_index_modes(&plan, dir)
+        .context("files were written; the git index could not be read")?;
     let report = Report {
         version,
         conflicts: plan.conflicts,
     };
     if let Err(e) = run_trusted(&target_cfg.hooks, Phase::Update, dir, shell.as_ref()) {
-        let e = e.context("files were written; hooks failed; the record was not updated");
+        let mut e = e.context("files were written; hooks failed; the record was not updated");
+        if let Some(index) = index_failure(&failed) {
+            e = e.context(format!("{index:#}"));
+        }
         return Err(HookFailed::new(report, e).into());
     }
     record::write_text(dir, &record_text)
         .context("files were written; the record was not updated")?;
     eprintln!("updated to {}", report.version);
+    if let Some(e) = index_failure(&failed) {
+        return Err(HookFailed::new(report, e).into());
+    }
     Ok(report)
 }
