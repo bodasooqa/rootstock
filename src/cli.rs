@@ -4,11 +4,13 @@ use std::path::PathBuf;
 
 use std::io::Write;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::commands::check;
 use crate::commands::new::{self, NewOptions};
+use crate::commands::status::{self, Status};
 use crate::commands::update::{self, UpdateOptions};
 use crate::commands::{CommonOptions, Report};
 use crate::plan::Conflict;
@@ -36,6 +38,17 @@ enum Command {
     New(NewArgs),
     /// Update the project in the current directory to a newer template version.
     Update(UpdateArgs),
+    /// Show the current and the latest template version.
+    Status(StatusArgs),
+    /// Fail if conflict markers or side files are left in the project.
+    Check,
+}
+
+#[derive(Debug, Args)]
+struct StatusArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value = "text")]
+    format: Format,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -126,6 +139,21 @@ pub fn run() -> Result<Outcome> {
         }
     };
     let (report, format) = match cli.command {
+        Command::Status(args) => {
+            let status = status::run(&current_dir()?)?;
+            return print_status(&status, args.format).map(|()| Outcome::Clean);
+        }
+        Command::Check => {
+            let lines = check::run(&current_dir()?)?;
+            if lines.is_empty() {
+                return Ok(Outcome::Clean);
+            }
+            let mut out = lines.join("\n");
+            out.push('\n');
+            write_stdout(&out)?;
+            // Reported as an error so that main maps it to exit code 1.
+            bail!("check failed: {} problem(s)", lines.len());
+        }
         Command::New(args) => {
             let report = new::run(&NewOptions {
                 template: args.template,
@@ -138,7 +166,7 @@ pub fn run() -> Result<Outcome> {
         }
         Command::Update(args) => {
             let report = update::run(
-                &std::env::current_dir().context("cannot determine the current directory")?,
+                &current_dir()?,
                 &UpdateOptions {
                     to: args.to,
                     common: args.common.options(),
@@ -175,6 +203,32 @@ fn print_report(report: &Report, format: Format) -> Result<()> {
             out.push('\n');
         }
     }
+    write_stdout(&out)
+}
+
+fn current_dir() -> Result<PathBuf> {
+    std::env::current_dir().context("cannot determine the current directory")
+}
+
+fn print_status(status: &Status, format: Format) -> Result<()> {
+    let out = match format {
+        Format::Text => format!(
+            "current {}\nlatest {}\nmajor {}\n",
+            status.current, status.latest, status.major
+        ),
+        Format::Json => {
+            let value = serde_json::json!({
+                "current": status.current,
+                "latest": status.latest,
+                "major": status.major,
+            });
+            format!("{}\n", serde_json::to_string(&value)?)
+        }
+    };
+    write_stdout(&out)
+}
+
+fn write_stdout(out: &str) -> Result<()> {
     // The work is already done: a closed pipe must not change the exit code.
     match std::io::stdout().lock().write_all(out.as_bytes()) {
         Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => Err(e.into()),

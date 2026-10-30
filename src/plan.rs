@@ -9,7 +9,7 @@ use crate::record::{FileClass, Inventory};
 use crate::render::{Entry, RenderedTree};
 
 /// Suffix of the side file written next to a conflicting binary file.
-const SIDE_FILE_SUFFIX: &str = ".rootstock-new";
+pub const SIDE_FILE_SUFFIX: &str = ".rootstock-new";
 
 /// Read access to the project's current files; `None` means the path is absent.
 pub trait ProjectView {

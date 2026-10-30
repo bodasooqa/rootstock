@@ -1,6 +1,8 @@
 //! The `new` and `update` commands and the steps they share.
 
+pub mod check;
 pub mod new;
+pub mod status;
 pub mod update;
 
 use std::io::IsTerminal;
