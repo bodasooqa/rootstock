@@ -179,7 +179,8 @@ pub fn run() -> Result<Outcome> {
     if report.conflicts.is_empty() {
         Ok(Outcome::Clean)
     } else {
-        eprintln!("{} conflicts", report.conflicts.len());
+        let count = report.conflicts.len();
+        eprintln!("{count} conflict{}", if count == 1 { "" } else { "s" });
         Ok(Outcome::Conflicts(report.conflicts))
     }
 }

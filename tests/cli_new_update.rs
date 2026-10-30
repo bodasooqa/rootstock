@@ -665,6 +665,67 @@ fn new_head_records_head() {
 }
 
 #[test]
+fn update_to_head_always_runs() {
+    let repo = template_v1();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("p");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--version", "HEAD", "--defaults"])
+        .assert()
+        .code(0);
+    commit_project(&dir, "init");
+    repo.file("tpl/README.md", README_V2);
+    repo.git(&["commit", "-q", "-am", "untagged change"]);
+    update(&dir)
+        .args(["--to", "HEAD"])
+        .assert()
+        .code(0)
+        .stderr(predicate::str::contains("updated to HEAD"));
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).unwrap(),
+        README_V2
+    );
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains(&repo.commit("HEAD")), "{record}");
+}
+
+#[test]
+fn conflict_count_pluralized() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    fs::write(
+        dir.join("README.md"),
+        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nL8-project\n",
+    )
+    .unwrap();
+    commit_project(&dir, "edit");
+    repo.file("tpl/README.md", README_V2).tag("v1.1.0");
+    update(&dir)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("\n1 conflict\n"));
+
+    let (_tmp2, dir) = new_project(&repo);
+    fs::write(
+        dir.join("README.md"),
+        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nL8-project\n",
+    )
+    .unwrap();
+    fs::write(dir.join("src.txt"), "mine\n").unwrap();
+    commit_project(&dir, "edit");
+    repo.file("tpl/README.md", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nL8-v3\n")
+        .file("tpl/src.txt.jinja", "name={{ name }} v3\n")
+        .tag("v1.2.0");
+    update(&dir)
+        .args(["--to", "v1.2.0"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("\n2 conflicts\n"));
+}
+
+#[test]
 fn new_stdout_empty() {
     let repo = template_v1();
     let tmp = TempDir::new().unwrap();

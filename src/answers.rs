@@ -16,7 +16,13 @@ pub trait Prompter {
 pub struct NoPrompt;
 
 impl Prompter for NoPrompt {
-    fn ask(&mut self, q: &Question, _default: Option<&Value>) -> Result<Value> {
+    fn ask(&mut self, q: &Question, default: Option<&Value>) -> Result<Value> {
+        if default.is_some() {
+            bail!(
+                "question `{0}` needs an answer: rerun with --defaults or pass --data {0}=...",
+                q.name
+            )
+        }
         bail!(
             "question `{0}` has no answer and no default; pass --data {0}=...",
             q.name
@@ -592,6 +598,18 @@ choices = ["a", "b", "c"]
             let err = parse_data(&c, &[pair.to_string()]).unwrap_err().to_string();
             assert!(err.contains(needle), "{pair}: {err}");
         }
+    }
+
+    #[test]
+    fn noprompt_with_default_suggests_defaults() {
+        let c = cfg("[[questions]]\nname = \"name\"\ntype = \"str\"\ndefault = \"demo\"\n");
+        let err = collect(&c, &jinja(&c), &Answers::new(), false, &mut NoPrompt)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "question `name` needs an answer: rerun with --defaults or pass --data name=..."
+        );
     }
 
     #[test]

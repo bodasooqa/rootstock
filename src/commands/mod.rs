@@ -13,9 +13,9 @@ use anyhow::{Context, Result, anyhow};
 use crate::answers::{self, Collected, NoPrompt, Prompter, TerminalPrompter};
 use crate::config::{self, TemplateConfig};
 use crate::jinja::Jinja;
-use crate::plan::Conflict;
+use crate::plan::{Action, Conflict, Plan};
 use crate::record::{Answers, toml_to_json};
-use crate::render::{self, RenderedTree};
+use crate::render::{self, Entry, RenderedTree};
 use crate::source::Checkout;
 
 /// What a finished command reports back to the CLI.
@@ -130,6 +130,24 @@ impl Side {
             ctx,
         )?)
     }
+}
+
+/// Refuses, before anything is written, a plan this platform cannot apply:
+/// symlink writes where symlinks are not supported.
+pub(crate) fn refuse_unsupported(plan: &Plan) -> Result<()> {
+    let has_symlink = plan.actions.iter().any(|a| {
+        matches!(
+            a,
+            Action::Write {
+                entry: Entry::Symlink { .. },
+                ..
+            }
+        )
+    });
+    if has_symlink && !cfg!(unix) {
+        return Err(anyhow!("symlinks are not supported on this platform"));
+    }
+    Ok(())
 }
 
 /// Label of the target side in conflict markers.

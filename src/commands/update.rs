@@ -4,7 +4,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use super::{CommonOptions, Report, Side, interactive, load_data, read_data_file, target_label};
+use super::{
+    CommonOptions, Report, Side, interactive, load_data, read_data_file, refuse_unsupported,
+    target_label,
+};
 use crate::answers::NoPrompt;
 use crate::apply::{DiskProject, apply, check_path, existing_parents};
 use crate::config::Phase;
@@ -12,7 +15,7 @@ use crate::hooks::{check_trust, run_trusted};
 use crate::merge::has_markers;
 use crate::plan::plan_update;
 use crate::record::{self, FileClass, Record};
-use crate::source::{checkout, git, latest, parse_source, run_git};
+use crate::source::{Source, checkout, git, latest, parse_source, run_git};
 
 /// Arguments of `rootstock update`.
 #[derive(Debug, Clone)]
@@ -92,7 +95,9 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         Some(v) => v.clone(),
         None => latest(&src)?,
     };
-    if version == rec.version {
+    // HEAD of a local template is a moving ref: the same name may be a new commit.
+    let moving = matches!(src, Source::Local(_)) && version == "HEAD";
+    if version == rec.version && !moving {
         if read_data_file(&opts.common)?.is_some() || !opts.common.data.is_empty() {
             eprintln!(
                 "already at {version}; --data was not applied (answers change only with a version step)"
@@ -134,6 +139,7 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         interactive(),
     )?;
     project.finish()?;
+    refuse_unsupported(&plan)?;
     // Every fallible step runs before the first write (design rule 11).
     let record_text = record::to_text(&Record {
         schema: 1,

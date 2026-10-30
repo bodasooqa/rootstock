@@ -9,15 +9,16 @@ Status: Stage 1 (core) done.
 ```sh
 cargo build --release          # binary: target/release/rootstock
 
-rootstock new <template> <dir> [--version vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust] [--git]
+rootstock new <template> <dir> [--version vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust] [--git] [--format text|json]
 cd <dir>
 rootstock status [--format text|json]
-rootstock update [--to vX.Y.Z] [--data k=v]... [--defaults] [--trust] [--format text|json]
+rootstock update [--to vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust] [--format text|json]
 rootstock check
 ```
 
 - `new` creates the project at the given version (the latest release tag by default) and writes the record `.rootstock.toml`. `<template>` is a URL, `gh:owner/repo` or a local path; `--version HEAD` renders the working tree of a local template.
-- `update` merges the template changes between the recorded version and the target into the project with a three-way merge. Conflicts are left as markers (`<<<<<<< project`, `=======`, `>>>>>>> template <version>`); binary files get a `.rootstock-new` side file next to them.
+- `update` merges the template changes between the recorded version and the target into the project with a three-way merge. Conflicts are left as markers (`<<<<<<< project`, `=======`, `>>>>>>> template <version>`); binary files get a `.rootstock-new` side file next to them. `--data` (and `--data-file`) changes an answer: the base is rendered with the recorded answers, the target with the new ones.
+- `update --to HEAD` on a project created from a local template always runs, since `HEAD` moves. The base of such a project is the commit recorded at `new` time, so uncommitted template edits that `new --version HEAD` rendered show up as project edits.
 - `status` prints `current`, `latest` and `major` (whether the latest release is a major bump), as text or JSON.
 - `check` is for CI: it lists files with unresolved conflict markers (`markers <path>`) and leftover side files (`side-file <path>`) and fails if there are any.
 

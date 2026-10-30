@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use super::{
-    CommonOptions, Report, Side, dir_has_entries, interactive, load_data, prompter, target_label,
+    CommonOptions, Report, Side, dir_has_entries, interactive, load_data, prompter,
+    refuse_unsupported, target_label,
 };
 use crate::apply::{DiskProject, apply};
 use crate::config::Phase;
@@ -73,6 +74,7 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
     );
     check_trust(&cfg.hooks, Phase::New, opts.common.trust, interactive())?;
     project.finish()?;
+    refuse_unsupported(&plan)?;
     // Every fallible step runs before the first write (design rule 11).
     let record_text = record::to_text(&Record {
         schema: 1,

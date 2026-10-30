@@ -285,12 +285,16 @@ pub(crate) fn existing_parents(
     Ok(walk_parents(root, path, Walk::Existing, symlink_message)?.map(|_| ()))
 }
 
-/// Rejects paths that could leave the root: empty, absolute, or with `""`, `.`, `..` segments.
+/// Rejects paths that could leave the root or mean something else on Windows:
+/// empty, absolute, any `\`, a `:` in a segment (drive prefix, alternate data
+/// stream), or `""`, `.`, `..` segments.
 pub(crate) fn check_path(path: &str) -> anyhow::Result<()> {
     let bad = path.is_empty()
         || path.starts_with('/')
-        || path.starts_with('\\')
-        || path.split('/').any(|s| matches!(s, "" | "." | ".."));
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|s| matches!(s, "" | "." | "..") || s.contains(':'));
     if bad {
         anyhow::bail!("unsafe path `{path}`");
     }
@@ -570,6 +574,16 @@ mod tests {
         let view = DiskProject::new(&root);
         assert_eq!(view.get("../x"), None);
         assert!(view.finish().is_err());
+    }
+
+    #[test]
+    fn check_path_rejects_backslash_and_colon() {
+        for bad in ["a\\b", "\\x", "a/b\\c", "c:x", "a/b:c", "C:"] {
+            assert!(check_path(bad).is_err(), "{bad} accepted");
+        }
+        for good in ["a", "a/b.c", "a-b/c_d"] {
+            check_path(good).unwrap();
+        }
     }
 
     #[cfg(unix)]

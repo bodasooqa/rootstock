@@ -49,12 +49,12 @@ pub fn merge3(base: &[u8], project: &[u8], target: &[u8], target_label: &str) ->
         .set_incomplete_hunk_style(IncompleteHunkStyle::Git);
     match options.merge_bytes(base, project, target) {
         Ok(clean) => Merged::Clean(clean),
-        Err(raw) => Merged::Conflict(relabel(&raw, len, project, target_label)),
+        Err(raw) => Merged::Conflict(relabel(&raw, len, project, target, target_label)),
     }
 }
 
 /// Rewrites only the marker lines diffy emitted (unambiguous because `len` is safe).
-fn relabel(raw: &[u8], len: usize, project: &[u8], target_label: &str) -> Vec<u8> {
+fn relabel(raw: &[u8], len: usize, project: &[u8], target: &[u8], target_label: &str) -> Vec<u8> {
     let eol: &[u8] = if project.windows(2).any(|w| w == b"\r\n") {
         b"\r\n"
     } else {
@@ -64,7 +64,24 @@ fn relabel(raw: &[u8], len: usize, project: &[u8], target_label: &str) -> Vec<u8
     let sep = [vec![b'='; len], b"\n".to_vec()].concat();
     let close = [vec![b'>'; len], b" theirs\n".to_vec()].concat();
     let mut out = Vec::with_capacity(raw.len() + target_label.len());
-    for line in raw.split_inclusive(|&b| b == b'\n') {
+    let lines: Vec<&[u8]> = raw.split_inclusive(|&b| b == b'\n').collect();
+    for (i, &line) in lines.iter().enumerate() {
+        // diffy ends a side without a final newline with `\n` before the next marker;
+        // in a CRLF project that break must be `\r\n` too.
+        let next = lines.get(i + 1).copied();
+        let incomplete = (next == Some(sep.as_slice()) && !project.ends_with(b"\n"))
+            || (next == Some(close.as_slice()) && !target.ends_with(b"\n"));
+        if eol == b"\r\n"
+            && incomplete
+            && line.ends_with(b"\n")
+            && !line.ends_with(b"\r\n")
+            && line != open.as_slice()
+            && line != sep.as_slice()
+        {
+            out.extend_from_slice(&line[..line.len() - 1]);
+            out.extend_from_slice(b"\r\n");
+            continue;
+        }
         if line == open.as_slice() {
             out.extend_from_slice(b"<<<<<<< project");
         } else if line == sep.as_slice() {
@@ -198,6 +215,21 @@ mod tests {
         assert_eq!(clean, Merged::Clean(b"A\nb\nC".to_vec()));
         let out = conflict(merge3(b"a\nb", b"a\nx", b"a\ny", "t"));
         assert_eq!(out, "a\n<<<<<<< project\nx\n=======\ny\n>>>>>>> t\n");
+    }
+
+    #[test]
+    fn crlf_incomplete_side_gets_crlf() {
+        let out = conflict(merge3(b"a\r\nb", b"a\r\nx", b"a\r\ny", "t"));
+        assert_eq!(
+            out,
+            "a\r\n<<<<<<< project\r\nx\r\n=======\r\ny\r\n>>>>>>> t\r\n"
+        );
+        // A side that ends with its own line break keeps it as is.
+        let out = conflict(merge3(b"a\r\nb\r\n", b"a\r\nx\r\n", b"a\r\ny", "t"));
+        assert_eq!(
+            out,
+            "a\r\n<<<<<<< project\r\nx\r\n=======\r\ny\r\n>>>>>>> t\r\n"
+        );
     }
 
     #[test]
