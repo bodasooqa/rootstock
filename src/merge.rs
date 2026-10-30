@@ -17,12 +17,12 @@ pub enum Merged {
 
 /// True when the bytes contain NUL in the first 8000 bytes or are not valid UTF-8.
 pub fn is_binary(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(BINARY_SCAN_LEN)];
-    head.contains(&0) || std::str::from_utf8(bytes).is_err()
+    bytes.iter().take(BINARY_SCAN_LEN).any(|&b| b == 0) || std::str::from_utf8(bytes).is_err()
 }
 
 fn starts_with_run(line: &[u8], ch: u8, len: usize) -> bool {
-    line.len() >= len && line[..len].iter().all(|&b| b == ch)
+    line.get(..len)
+        .is_some_and(|head| head.iter().all(|&b| b == ch))
 }
 
 fn safe_marker_len(inputs: &[&[u8]]) -> usize {
@@ -73,12 +73,12 @@ fn relabel(raw: &[u8], len: usize, project: &[u8], target: &[u8], target_label: 
             || (next == Some(close.as_slice()) && !target.ends_with(b"\n"));
         if eol == b"\r\n"
             && incomplete
-            && line.ends_with(b"\n")
             && !line.ends_with(b"\r\n")
             && line != open.as_slice()
             && line != sep.as_slice()
+            && let Some(body) = line.strip_suffix(b"\n")
         {
-            out.extend_from_slice(&line[..line.len() - 1]);
+            out.extend_from_slice(body);
             out.extend_from_slice(b"\r\n");
             continue;
         }

@@ -313,22 +313,47 @@ pub(crate) fn check_path(path: &str) -> anyhow::Result<()> {
 
 fn write_file(parent: &Path, full: &Path, bytes: &[u8], executable: bool) -> anyhow::Result<()> {
     use std::io::Write;
+    // A regular file being replaced lends its permission bits to the new one.
+    let existing = std::fs::symlink_metadata(full)
+        .ok()
+        .filter(|meta| meta.file_type().is_file());
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(bytes)?;
-    set_mode(tmp.path(), executable)?;
+    set_mode(tmp.path(), executable, existing.as_ref())?;
     tmp.persist(full).map_err(|e| e.error)?;
     Ok(())
 }
 
+/// A new file gets 0o644 or 0o755. A replaced file keeps its bits, except
+/// that each executable bit is set where its read bit is, or cleared.
 #[cfg(unix)]
-fn set_mode(path: &Path, executable: bool) -> std::io::Result<()> {
+fn set_mode(
+    path: &Path,
+    executable: bool,
+    existing: Option<&std::fs::Metadata>,
+) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let mode = if executable { 0o755 } else { 0o644 };
+    let mode = match existing {
+        Some(meta) => {
+            let kept = meta.permissions().mode() & 0o7777 & !0o111;
+            if executable {
+                kept | ((kept & 0o444) >> 2)
+            } else {
+                kept
+            }
+        }
+        None if executable => 0o755,
+        None => 0o644,
+    };
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
 #[cfg(not(unix))]
-fn set_mode(_path: &Path, _executable: bool) -> std::io::Result<()> {
+fn set_mode(
+    _path: &Path,
+    _executable: bool,
+    _existing: Option<&std::fs::Metadata>,
+) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -417,6 +442,36 @@ mod tests {
                 .unwrap(),
             "plain.txt"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_keeps_existing_mode_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mode_of = |p: &str| {
+            std::fs::metadata(root.join(p))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+        for (start, executable, expected) in [
+            (0o600, false, 0o600),
+            (0o600, true, 0o700),
+            (0o700, false, 0o600),
+            (0o640, true, 0o750),
+            (0o644, true, 0o755),
+            (0o755, false, 0o644),
+        ] {
+            std::fs::write(root.join("f"), "old").unwrap();
+            std::fs::set_permissions(root.join("f"), std::fs::Permissions::from_mode(start))
+                .unwrap();
+            apply(&plan(vec![write_file("f", b"new", executable)]), root).unwrap();
+            assert_eq!(mode_of("f"), expected, "{start:o} exec={executable}");
+            assert_eq!(std::fs::read(root.join("f")).unwrap(), b"new");
+        }
     }
 
     #[test]

@@ -41,6 +41,8 @@ pub enum RenderError {
     NonUtf8Content { path: PathBuf },
     #[error("{}: symlink target is not valid UTF-8", path.display())]
     NonUtf8Link { path: PathBuf },
+    #[error("`{}` is not a regular file", path.display())]
+    NotRegular { path: PathBuf },
     #[error("{}", path.display())]
     Jinja { path: PathBuf, source: JinjaError },
     #[error("{}: rendered path {rendered:?} is not allowed: {reason}", path.display())]
@@ -175,6 +177,11 @@ impl Walk<'_> {
                 path: path.clone(),
                 source,
             })?;
+            let file_type = meta.file_type();
+            if !(file_type.is_file() || file_type.is_dir() || file_type.is_symlink()) {
+                // A FIFO, socket or device: reading it could block or never end.
+                return Err(RenderError::NotRegular { path });
+            }
             let mut src = src_rel.to_vec();
             src.push(name.to_string());
             let src_display = src.join("/");
@@ -190,22 +197,29 @@ impl Walk<'_> {
                 self.dir(&path, &src, &out)?;
                 continue;
             }
-            let templated = meta.is_file()
-                && !self.cfg.suffix.is_empty()
-                && name.ends_with(&self.cfg.suffix)
-                && name.len() > self.cfg.suffix.len();
-            let source_name = if templated {
-                &name[..name.len() - self.cfg.suffix.len()]
+            let stripped = if meta.is_file() && !self.cfg.suffix.is_empty() {
+                name.strip_suffix(self.cfg.suffix.as_str())
+                    .filter(|rest| !rest.is_empty())
             } else {
-                name
+                None
             };
+            let templated = stripped.is_some();
+            let source_name = stripped.unwrap_or(name);
             let Some(segments) = self.name(&path, &src_display, source_name)? else {
                 continue;
             };
             let mut out = out_rel.to_vec();
             out.extend(segments);
             let rendered = out.join("/");
-            let top = fold_segment(&out[0]);
+            // `name` yields at least one segment, so `out` is never empty.
+            let Some(first) = out.first() else {
+                return Err(RenderError::BadPath {
+                    path,
+                    rendered,
+                    reason: "is empty",
+                });
+            };
+            let top = fold_segment(first);
             if top == RECORD_FILE || is_short_record(&top) {
                 return Err(RenderError::RecordPath { path });
             }
@@ -340,10 +354,12 @@ impl Walk<'_> {
             outer: outer.to_string(),
             inner: inner.to_string(),
         };
-        for (i, _) in lower.match_indices('/') {
-            if let Some(first) = self.sources.get(&lower[..i]) {
-                return Err(conflict(&lower[..i], rendered, first));
+        let mut ancestor = lower.as_str();
+        while let Some((parent, _)) = ancestor.rsplit_once('/') {
+            if let Some(first) = self.sources.get(parent) {
+                return Err(conflict(parent, rendered, first));
             }
+            ancestor = parent;
         }
         let prefix = format!("{lower}/");
         if let Some((key, first)) = self.sources.range(prefix.clone()..).next()
@@ -497,10 +513,8 @@ fn root_is_top(root: &str) -> bool {
 
 /// Rejects absolute symlink targets.
 fn check_absolute(path: &Path, target: &str) -> Result<(), RenderError> {
-    let b = target.as_bytes();
-    if target.starts_with(['/', '\\'])
-        || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
-    {
+    let drive = matches!(target.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic());
+    if target.starts_with(['/', '\\']) || drive {
         return Err(RenderError::SymlinkTarget {
             path: path.to_path_buf(),
             target: target.to_string(),
@@ -647,6 +661,32 @@ mod tests {
         assert!(file(&t, "run.sh").1);
         assert!(file(&t, "copy.sh").1);
         assert!(!file(&t, "plain").1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn render_rejects_fifo() {
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "a.txt", "x");
+        let fifo = d.path().join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let root = d.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        // A read of the FIFO would block forever; the render runs aside.
+        std::thread::spawn(move || {
+            let result = render(&root, &cfg(""), &Answers::new()).map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("render blocked on a FIFO");
+        let err = result.unwrap_err();
+        assert!(err.contains("is not a regular file"), "{err}");
+        assert!(err.contains("pipe"), "{err}");
     }
 
     #[cfg(unix)]

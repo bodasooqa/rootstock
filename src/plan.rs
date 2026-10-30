@@ -524,7 +524,8 @@ pub fn plan_update(
             },
         }
 
-        if in_inventory || p.is_some() || wrote_path(&out.actions[actions_before..], path) {
+        let new_actions = out.actions.get(actions_before..).unwrap_or_default();
+        if in_inventory || p.is_some() || wrote_path(new_actions, path) {
             new_inventory.insert(path.clone(), t.class);
         }
     }
