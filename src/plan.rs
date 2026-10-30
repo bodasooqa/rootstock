@@ -236,12 +236,18 @@ fn wrote_path(actions: &[Action], path: &str) -> bool {
 
 /// Pairs a base-only path with a target-only path of the same fold: a rename
 /// that differs only in case (or in what the filesystem folds away).
-/// Returns target path -> base path. Render rejects folded collisions inside
-/// one tree, so the pairing is one-to-one.
+/// Returns target path -> (base path, project entry at the base path).
+/// Render rejects folded collisions inside one tree, so the pairing is one-to-one.
+///
+/// A pair is kept only when the project has nothing at the new name, or the
+/// same entry as at the old name (one file aliased by a case-insensitive
+/// filesystem). Two distinct project files are planned as two paths, so the
+/// file at the new name is never overwritten by the old one.
 fn rename_pairs<'a>(
     base: &'a RenderedTree,
     target: &'a RenderedTree,
-) -> BTreeMap<&'a RelPath, &'a RelPath> {
+    project: &dyn ProjectView,
+) -> BTreeMap<&'a RelPath, (&'a RelPath, Option<Entry>)> {
     let added: BTreeMap<String, &RelPath> = target
         .keys()
         .filter(|t| !base.contains_key(*t))
@@ -250,11 +256,16 @@ fn rename_pairs<'a>(
     base.keys()
         .filter(|b| !target.contains_key(*b))
         .filter_map(|b| added.get(&fold_path(b)).map(|t| (*t, b)))
+        .filter_map(|(t, b)| {
+            let at_old = project.get(b);
+            let at_new = project.get(t);
+            (at_new.is_none() || at_new == at_old).then_some((t, (b, at_old)))
+        })
         .collect()
 }
 
-/// Plans a rename pair `old` -> `new` as one logical path. The project is read
-/// at `old` only: on a case-insensitive filesystem `new` aliases it.
+/// Plans a rename pair `old` -> `new` as one logical path; `p` is the project's
+/// entry at `old`, which on a case-insensitive filesystem `new` aliases.
 #[allow(clippy::too_many_arguments)]
 fn plan_rename(
     out: &mut Out,
@@ -370,7 +381,7 @@ fn drop_blocked(
     out: &mut Out,
     inventory: &mut Inventory,
     project: &dyn ProjectView,
-    pairs: &BTreeMap<&RelPath, &RelPath>,
+    pairs: &BTreeMap<&RelPath, (&RelPath, Option<Entry>)>,
 ) {
     let mut occupancy = Occupancy {
         project,
@@ -393,7 +404,7 @@ fn drop_blocked(
         let Some(index) = blocked else { break };
         let path = out.actions.remove(index).path().to_string();
         inventory.remove(&path);
-        if let Some(old) = pairs.get(&path) {
+        if let Some((old, _)) = pairs.get(&path) {
             out.actions
                 .retain(|a| !matches!(a, Action::Delete { path: p } if p == *old));
         }
@@ -423,14 +434,14 @@ pub fn plan_update(
     let mut out = Out::default();
     let mut new_inventory = Inventory::new();
     let paths: BTreeSet<&RelPath> = base.keys().chain(target.keys()).collect();
-    let pairs = rename_pairs(base, target);
-    let renamed: BTreeSet<&RelPath> = pairs.values().copied().collect();
+    let mut pairs = rename_pairs(base, target, project);
+    let renamed: BTreeSet<&RelPath> = pairs.values().map(|(old, _)| *old).collect();
 
     for path in paths {
         if renamed.contains(path) {
             continue;
         }
-        if let Some(old) = pairs.get(path) {
+        if let Some((old, at_old)) = pairs.get_mut(path) {
             let (Some(b), Some(t)) = (base.get(*old), target.get(path)) else {
                 continue;
             };
@@ -444,7 +455,7 @@ pub fn plan_update(
                 path,
                 b,
                 t,
-                project.get(old),
+                at_old.take(),
                 in_inventory,
                 target_label,
                 side_taken,
@@ -1165,6 +1176,66 @@ mod tests {
         assert!(plan.actions.is_empty());
         assert!(plan.conflicts.is_empty());
         assert_eq!(plan.inventory, inv(&[("NOTES.md", S)]));
+    }
+
+    #[test]
+    fn case_rename_distinct_project_file_not_overwritten() {
+        // A case-sensitive project holds both names as distinct files.
+        let b = tree(&[("Readme.md", file("x\n"), M)]);
+        let t = tree(&[("README.md", file("y\n"), M)]);
+        let p = proj(&[("Readme.md", file("x\n")), ("README.md", file("mine\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("Readme.md", M)]));
+        // The only write to README.md is the added-by-both merge, which keeps "mine".
+        assert_eq!(
+            plan.actions,
+            vec![
+                delete("Readme.md"),
+                write(
+                    "README.md",
+                    file("<<<<<<< project\nmine\n=======\ny\n>>>>>>> template v1.1.0\n")
+                ),
+            ]
+        );
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("README.md", ConflictKind::AddedByBoth)]
+        );
+        assert_eq!(plan.inventory, inv(&[("README.md", M)]));
+
+        // Equal to the target: nothing to write; the old name is still removed.
+        let p = proj(&[("Readme.md", file("edited\n")), ("README.md", file("y\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("Readme.md", M)]));
+        assert!(plan.actions.is_empty(), "{:?}", plan.actions);
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("Readme.md", ConflictKind::RemovedByTemplate)]
+        );
+    }
+
+    #[test]
+    fn case_rename_only_new_exists() {
+        let b = tree(&[("Readme.md", file("x\n"), M)]);
+        let t = tree(&[("README.md", file("y\n"), M)]);
+        let p = proj(&[("README.md", file("mine\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("Readme.md", M)]));
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("README.md", ConflictKind::AddedByBoth)]
+        );
+        assert!(
+            plan.actions
+                .iter()
+                .all(|a| !matches!(a, Action::Delete { .. })),
+            "{:?}",
+            plan.actions
+        );
+        assert_eq!(plan.inventory, inv(&[("README.md", M)]));
+
+        let p = proj(&[("README.md", file("y\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("Readme.md", M)]));
+        assert!(plan.actions.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(plan.inventory, inv(&[("README.md", M)]));
     }
 
     #[test]
