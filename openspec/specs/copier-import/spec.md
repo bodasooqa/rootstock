@@ -1,7 +1,7 @@
 # copier-import Specification
 
 ## Purpose
-Одноразовый перевод шаблонов и проектов Copier на rootstock (ТЗ: §import-copier). Сторона шаблона читает `copier.yml` и пишет `rootstock.toml`; всё вне поддерживаемого подмножества останавливает импорт со списком неподдерживаемого.
+Одноразовый перевод шаблонов и проектов Copier на rootstock (ТЗ: §import-copier). Сторона шаблона читает `copier.yml` и пишет `rootstock.toml`. Сторона проекта читает `.copier-answers.yml` и пишет `.rootstock.toml` на той же версии. `update` конвертирует старые теги в формате Copier в памяти. Всё вне поддерживаемого подмножества останавливает импорт со списком неподдерживаемого.
 
 ## Requirements
 
