@@ -8,7 +8,7 @@ rootstock — CLI на Rust (один бинарник, аналог Copier): с
 
 ## Стек проекта
 
-Rust stable, edition 2024, один крейт `rootstock` (lib + bin `rootstock`), лицензия MIT OR Apache-2.0. Библиотеки: clap (derive), serde, toml, serde_json, serde_norway (YAML), minijinja, regex, ignore, semver, diffy, inquire, thiserror, anyhow, tempfile; в тестах assert_cmd и predicates. Git — через CLI `git` (`std::process::Command`), не libgit2.
+Rust stable, edition 2024, один крейт `rootstock` (lib + bin `rootstock`), лицензия MIT OR Apache-2.0. Библиотеки: clap (derive), serde, toml, serde_json, serde_norway (YAML), minijinja, minijinja-contrib (`pycompat`), regex, ignore, semver, diffy, inquire, thiserror, anyhow, tempfile; в тестах assert_cmd и predicates. Git — через CLI `git` (`std::process::Command`), не libgit2.
 
 Правила проекта, которые **переопределяют** общие правила процесса:
 

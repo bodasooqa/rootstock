@@ -406,6 +406,22 @@ default = "{{ project_name }}-app"
     }
 
     #[test]
+    fn default_may_call_python_methods() {
+        let c = cfg(r#"
+[[questions]]
+name = "project_name"
+type = "str"
+[[questions]]
+name = "slug"
+type = "str"
+default = "{{ project_name.lower().replace(' ', '-') }}"
+"#);
+        let k = known(&[("project_name", json!("My App"))]);
+        let out = collect(&c, &jinja(&c), &k, true, &mut NoPrompt).unwrap();
+        assert_eq!(out.recorded["slug"], json!("my-app"));
+    }
+
+    #[test]
     fn when_false_not_recorded_but_in_context() {
         let c = cfg(HARNESS);
         let k = known(&[("project_name", json!("demo")), ("linear", json!(false))]);

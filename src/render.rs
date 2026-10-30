@@ -725,6 +725,21 @@ mod tests {
     }
 
     #[test]
+    fn starter_rule_may_call_python_methods() {
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "docs/a.md", "a");
+        put(d.path(), "other.md", "o");
+        let c = cfg(
+            "[files]\nstarter = [\"{% if spec_path.endswith('/') %}{{ spec_path }}**{% endif %}\"]\n",
+        );
+        let t = render(d.path(), &c, &answers(json!({"spec_path": "docs/"}))).unwrap();
+        assert_eq!(t["docs/a.md"].class, FileClass::Starter);
+        assert_eq!(t["other.md"].class, FileClass::Managed);
+        let t = render(d.path(), &c, &answers(json!({"spec_path": "docs"}))).unwrap();
+        assert_eq!(t["docs/a.md"].class, FileClass::Managed);
+    }
+
+    #[test]
     fn starter_rule_empty_answer_ignored() {
         let d = tempfile::tempdir().unwrap();
         put(d.path(), "docs/spec/a.md", "a");

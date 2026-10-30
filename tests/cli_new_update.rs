@@ -106,6 +106,27 @@ fn new_noninteractive_missing_answer_exits_1() {
 }
 
 #[test]
+fn new_append_on_plain_list_exits_1_with_hint() {
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\nroot = \"tpl\"\n")
+        .file(
+            "tpl/a.txt.jinja",
+            "{% set x = [1] %}{% set _ = x.append(2) %}\n",
+        )
+        .tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("p");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("`append` works only on a list"));
+    assert!(!dir.exists(), "nothing may be written");
+}
+
+#[test]
 fn new_config_parse_error_printed_once() {
     let repo = TemplateRepo::new();
     repo.file("rootstock.toml", "schema = 1\nroot = [ \"tpl\"\n")

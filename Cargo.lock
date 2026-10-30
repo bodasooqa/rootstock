@@ -456,6 +456,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijinja-contrib"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d593e87f5ce73ecea651ec60cdfa410479ae7e4ad6f060bb048ca56c8294d3cb"
+dependencies = [
+ "minijinja",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -620,6 +629,7 @@ dependencies = [
  "ignore",
  "inquire",
  "minijinja",
+ "minijinja-contrib",
  "predicates",
  "regex",
  "semver",
