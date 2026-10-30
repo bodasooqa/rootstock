@@ -50,9 +50,12 @@
 2. `parse_source(_src_path)`. Локальный относительный путь берётся от каталога проекта, а в запись идёт абсолютным, как у `new` (`recorded_source`). `gh:` и URL записываются как есть.
 3. `check_version(_commit)` без `HEAD`, затем `checkout(src, None, _commit)` и `Side::load_any` (D5).
 4. Лишние ключи ответов (D3). Затем `side.collect(answers, use_defaults = true, NoPrompt)` — тот же путь, что у базы в `update`.
-5. Рендер с `collected.context`. Инвентарь — `plan_update(пусто, рендер, DiskProject, пустой инвентарь).inventory`, как у `new`: все выданные пути, кроме `blocked`. Действия плана не выполняются, `project.finish()` проверяется.
+5. Рендер с `collected.context`. Инвентарь — `plan_update(пусто, рендер, DiskProject, пустой инвентарь).inventory`, как у `new`: все выданные пути, кроме `blocked`. Действия плана не выполняются, `project.finish()` проверяется. Из конфликтов плана сохраняются только `blocked`: их путь rootstock вести не будет, а это требует человека (правило 11 ТЗ). Остальные конфликты пустой базы (`added-by-both`) — это правки проекта, о них импорт молчит.
 6. `record::to_text(Record { schema: 1, source, subdir: None, version: _commit, commit: checkout.commit, answers: collected.recorded, inventory })`.
 7. Запись `.rootstock.toml` (`record::write_text`), затем удаление `.copier-answers.yml`. Ошибка удаления: «.rootstock.toml is already written, but cannot remove .copier-answers.yml». В stderr — `wrote .rootstock.toml` и `removed .copier-answers.yml`.
+8. Конфликты `blocked` печатаются в stdout строками `blocked <path>`, как текстовый список `new`, и дают код 2. `import_copier::run` возвращает их списком, у стороны шаблона список пуст.
+
+Ошибки шагов 3–5 несут источник: `_commit` и `.copier-answers.yml` у проверки версии и ответов, версию у рендера. Проверки «файла нет» различают `NotFound` и прочие ошибки: прочие — ошибка, а не «нет файла». Так сделано и для `rootstock.toml` в `load_any`.
 
 Хуки не запускаются, файлы проекта не трогаются.
 - *Почему.* ТЗ: «The project is now a rootstock project at its old version». Проект уже содержит рендер этой версии, сделанный Copier'ом. Запускать задачи `copy` повторно — значит менять проект, о чём импорт не просил.
@@ -62,7 +65,7 @@
 - Результат: `CopierAnswers { src_path: String, commit: String, answers: Answers }`, где `Answers` — тот же `BTreeMap<String, serde_json::Value>`, что у записи.
 - Документ MUST быть YAML-словарём со строковыми ключами. `_src_path` и `_commit` обязательны и должны быть строками.
 - Прочие ключи на `_` — ошибка: Copier пишет только эти два.
-- Значения переводятся из YAML в JSON. Значение, которое нельзя записать в TOML (`null`), — ошибка с именем ключа.
+- Значения переводятся из YAML в JSON. Значение, которое нельзя записать в TOML, — ошибка с именем ключа: `null`, целое вне `i64`, `NaN`, теги.
 
 Сверка с вопросами — в команде, после конвертации:
 - ключ, которого нет среди `cfg.questions`, — ошибка «.copier-answers.yml: `<key>` is not a question of the template at <version>»;
@@ -93,6 +96,10 @@
 - Из `rootstock.toml` поле не читается (`deny_unknown_fields` по-прежнему отвергает такой ключ) и в него не пишется.
 - *Почему.* Шаблон файла ответов harness рендерит `to_nice_yaml`, которого в rootstock нет. Удалить файл из checkout'а нельзя: `checkout` локального `HEAD` — рабочее дерево шаблона.
 - *Отвергнуто.* Правило `exclude`: оно сверяется с отрендеренным путём, а имя `{{ _copier_conf.answers_file }}` рендерится в пустую строку, ещё не дойдя до правил.
+
+**D7. Готовый файл ответов в корне шаблона исключается.** Если конвертер нашёл шаблон файла ответов, он добавляет в `files.exclude` правило `/<_answers_file>`, по умолчанию `/.copier-answers.yml`. Правило попадает и в записанный `rootstock.toml` стороны шаблона. Имя попадает в правило как glob, поэтому `_answers_file` вне набора `A–Z a–z 0–9 . _ - /` даёт находку, как и любой компонент `..`: и Jinja в имени, и символы glob (`*`, `?`, `[`, `!`, `#`), и пробелы.
+- *Почему.* Шаблон, который сам сгенерирован Copier'ом и не использует `_subdirectory`, несёт в корне свой `.copier-answers.yml`. Без правила рендер выдал бы его managed-файлом: импорт записал бы его в инвентарь и тут же удалил. Каждый следующий `update` давал бы `deleted-by-project`. Нашёл rust-reviewer, воспроизведено.
+- *Отвергнуто.* Отдельное исключение только на стороне проекта: сконвертированный на диске шаблон выдал бы тот же файл в `new`.
 
 ## Risks / Trade-offs
 
