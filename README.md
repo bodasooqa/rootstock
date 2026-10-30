@@ -2,7 +2,7 @@
 
 rootstock is a command-line tool, written in Rust and shipped as a single binary, that creates a project from a versioned git template and later updates that project to newer versions of the template without losing the project's own edits.
 
-Status: Stage 1 (core) done; Stage 2 (Copier import and parity) in progress.
+Status: Stage 1 (core) and Stage 2 (Copier import and parity) done; Stage 3 (harness migration) next.
 
 ## Quick start
 
