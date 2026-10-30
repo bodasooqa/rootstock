@@ -1,7 +1,7 @@
 # copier-import Specification
 
 ## Purpose
-TBD - created by archiving change stage2-import-copier-template. Update Purpose after archive.
+Одноразовый перевод шаблонов и проектов Copier на rootstock (ТЗ: §import-copier). Сторона шаблона читает `copier.yml` и пишет `rootstock.toml`; всё вне поддерживаемого подмножества останавливает импорт со списком неподдерживаемого.
 
 ## Requirements
 
