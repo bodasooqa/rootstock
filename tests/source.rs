@@ -327,3 +327,16 @@ fn subdir_without_config_or_through_symlink_errors() {
         .to_string();
     assert!(err.contains("template not found at `docs`"), "{err}");
 }
+
+#[cfg(unix)]
+#[test]
+fn local_head_subdir_symlink_errors() {
+    let repo = TemplateRepo::new();
+    repo.file("real/rootstock.toml", "schema = 1\n")
+        .symlink("tpl", "real")
+        .tag("v1.0.0");
+    let err = checkout(&src(&repo.url()), Some("tpl"), "HEAD")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("template not found at `tpl`"), "{err}");
+}

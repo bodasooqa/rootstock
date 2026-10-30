@@ -1167,3 +1167,51 @@ fn update_rejects_hand_edited_bad_subdir() {
             .stderr(predicate::str::contains("invalid template subdirectory"));
     }
 }
+
+#[test]
+fn new_subdir_without_version_uses_latest_tag() {
+    let repo = subdir_template();
+    repo.file("tpl/files/a.txt", "newer\n").tag("v1.1.0");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    new_with_subdir(&repo, &dir).code(0);
+    assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "newer\n");
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("version = \"v1.1.0\""), "{record}");
+}
+
+#[test]
+fn new_bad_subdir_leaves_existing_dir_untouched() {
+    let repo = subdir_template();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("keep.txt"), b"mine\r\n").unwrap();
+    rootstock()
+        .args(["new", &file_url(&repo)])
+        .arg(&dir)
+        .args(["--subdir", "docs", "--defaults"])
+        .assert()
+        .code(1);
+    assert_eq!(fs::read(dir.join("keep.txt")).unwrap(), b"mine\r\n");
+    assert!(!dir.join(".rootstock.toml").exists());
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+}
+
+#[test]
+fn new_rejects_removed_include_root_key() {
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\ninclude_root = \".\"\n")
+        .file("a.txt", "a\n")
+        .tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("include_root"));
+    assert!(!dir.exists());
+}
