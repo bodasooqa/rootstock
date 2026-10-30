@@ -2,7 +2,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 use crate::RelPath;
 use crate::merge::{Merge3, Merged};
@@ -459,11 +458,7 @@ impl GitMerge {
         write("target", target)?;
         // An empty git config keeps the user's `merge.*` settings out of the result.
         write("gitconfig", b"")?;
-        let mut cmd = Command::new(&self.program);
-        for var in crate::source::GIT_LOCAL_ENV {
-            cmd.env_remove(var);
-        }
-        let out = cmd
+        let out = crate::source::git_command(&self.program)
             .current_dir(dir.path())
             .args(["-c", "merge.conflictStyle=merge"])
             .args(["merge-file", "-p", "-L", "project", "-L", "base", "-L"])
@@ -471,7 +466,6 @@ impl GitMerge {
             .args(["project", "base", "target"])
             .env("GIT_CONFIG_GLOBAL", dir.path().join("gitconfig"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .stdin(Stdio::null())
             .output()
             .map_err(|e| {
                 Failure::Spawn(format!(
@@ -1131,5 +1125,22 @@ mod tests {
         assert!(err.contains("`dir/f.txt`"), "{err}");
         assert!(err.contains("failed to run"), "{err}");
         assert_eq!(err.matches("failed to run").count(), 1, "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_git_exit_is_reported_with_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-git");
+        std::fs::write(&script, "#!/bin/sh\necho boom >&2\nexit 255\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let merge = GitMerge::with_program(&script.to_string_lossy());
+        let out = merge.merge3("dir/f.txt", b"a\n", b"p\n", b"t\n", "t");
+        assert_eq!(out, Merged::Conflict(b"p\n".to_vec()));
+        let err = merge.finish().unwrap_err().to_string();
+        assert!(err.contains("`dir/f.txt`"), "{err}");
+        assert!(err.contains("exit 255"), "{err}");
+        assert!(err.contains("boom"), "{err}");
     }
 }

@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::answers::{self, Collected, NoPrompt, Prompter};
 use crate::config::{self, CONFIG_FILE, Question, QuestionKind, TemplateConfig};
-use crate::copier::{self, CopierError};
+use crate::copier::{self, COPIER_FILES, CopierError};
 use crate::jinja::Jinja;
 use crate::plan::{Action, Conflict, Plan};
 use crate::record::{Answers, toml_to_json};
@@ -216,8 +216,6 @@ pub(crate) fn copier_file(dir: &Path) -> Result<Option<&'static str>> {
     }
 }
 
-pub(crate) const COPIER_FILES: [&str; 2] = ["copier.yml", "copier.yaml"];
-
 /// Prints the findings of a failed conversion in the format of the template side.
 pub(crate) fn report_findings(file: &str, findings: &[copier::Finding], err: &mut dyn Write) {
     // Best effort: the error that follows still ends the run with code 1.
@@ -254,7 +252,7 @@ impl Side {
         if !has_config(&checkout)? && copier_file(checkout.path())?.is_some() {
             bail!(
                 "template version {} has copier.yml but no rootstock.toml; run `rootstock import-copier` in the template repository",
-                checkout.commit
+                checkout.version
             );
         }
         let cfg = load_config(&checkout)?;
@@ -279,13 +277,13 @@ impl Side {
                 bail!(
                     "{} found in template version {}; nothing was written",
                     count_findings(findings.len()),
-                    checkout.commit
+                    checkout.version
                 );
             }
             Err(e) => {
                 return Err(anyhow!(e).context(format!(
                     "cannot convert {file} of template version {}",
-                    checkout.commit
+                    checkout.version
                 )));
             }
         };

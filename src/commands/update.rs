@@ -92,7 +92,10 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
 
     // A version without `rootstock.toml` but with `copier.yml` is converted in memory.
     let mut err = std::io::stderr();
-    let base_side = Side::load_any(checkout(&src, subdir.as_deref(), &rec.commit)?, &mut err)?;
+    let base_side = Side::load_any(
+        checkout(&src, subdir.as_deref(), &rec.commit)?.named(&rec.version),
+        &mut err,
+    )?;
     let target_side = Side::load_any(checkout(&src, subdir.as_deref(), &version)?, &mut err)?;
     let target_cfg = &target_side.cfg;
 
@@ -115,12 +118,6 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         &merge,
         &target_label(&version),
     );
-    check_trust(
-        &target_cfg.hooks,
-        Phase::Update,
-        opts.common.trust,
-        interactive(),
-    )?;
     project.finish()?;
     merge.finish()?;
     refuse_unsupported(&plan)?;
@@ -134,6 +131,13 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         answers: target_collected.recorded,
         inventory: plan.inventory.clone(),
     })?;
+    // Asked last among the steps that can fail, so no one trusts a run that then errors.
+    check_trust(
+        &target_cfg.hooks,
+        Phase::Update,
+        opts.common.trust,
+        interactive(),
+    )?;
 
     apply(&plan, dir)?;
     let report = Report {

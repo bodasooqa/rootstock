@@ -10,6 +10,9 @@ use serde_norway::{Mapping, Value};
 use crate::config::{self, ConfigError, TemplateConfig};
 use crate::record::Answers;
 
+/// Names under which a Copier template keeps its configuration.
+pub const COPIER_FILES: [&str; 2] = ["copier.yml", "copier.yaml"];
+
 const HEADER: &str = "# Converted from copier.yml by rootstock import-copier.\n";
 
 /// Suffix of templated files when `_templates_suffix` is absent (same in Copier and rootstock).
@@ -912,7 +915,7 @@ impl Ctx {
             if name == ".git" {
                 continue;
             }
-            if at_root && root_is_template_dir && (name == "copier.yml" || name == "copier.yaml") {
+            if at_root && root_is_template_dir && COPIER_FILES.contains(&name.as_str()) {
                 continue;
             }
             let path = dir.join(&os_name);

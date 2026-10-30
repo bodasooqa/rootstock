@@ -80,7 +80,6 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         &merge,
         &target_label(&version),
     );
-    check_trust(&cfg.hooks, Phase::New, opts.common.trust, interactive())?;
     project.finish()?;
     merge.finish()?;
     refuse_unsupported(&plan)?;
@@ -94,6 +93,8 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         answers: collected.recorded,
         inventory: plan.inventory.clone(),
     })?;
+    // Asked last among the steps that can fail, so no one trusts a run that then errors.
+    check_trust(&cfg.hooks, Phase::New, opts.common.trust, interactive())?;
 
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     apply(&plan, dir)?;

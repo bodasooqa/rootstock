@@ -8,6 +8,7 @@ use semver::Version;
 use tempfile::TempDir;
 
 use crate::config::CONFIG_FILE;
+use crate::copier::COPIER_FILES;
 
 /// Where a template comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,20 +80,26 @@ pub(crate) const GIT_LOCAL_ENV: &[&str] = &[
     "GIT_COMMON_DIR",
 ];
 
-/// Runs `git` and returns its output; stdin is never inherited.
-pub(crate) fn run_git(args: &[&str]) -> Result<std::process::Output> {
-    let mut cmd = Command::new("git");
+/// A `program` command (normally `git`) without inherited repository-local
+/// variables and with stdin closed.
+pub(crate) fn git_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
     for var in GIT_LOCAL_ENV {
         cmd.env_remove(var);
     }
+    cmd.stdin(Stdio::null());
     cmd
+}
+
+/// Runs `git` and returns its output; stdin is never inherited.
+pub(crate) fn run_git(args: &[&str]) -> Result<std::process::Output> {
+    git_command("git")
         // Repository hooks must never run on behalf of a template.
         .args(["-c", "core.hooksPath=/dev/null"])
         // The `ext::` transport runs arbitrary commands.
         .args(["-c", "protocol.ext.allow=never"])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
         .output()
         .with_context(|| format!("failed to run git {}", args.join(" ")))
 }
@@ -143,10 +150,18 @@ pub struct Checkout {
     pub path: PathBuf,
     /// The repository commit.
     pub commit: String,
+    /// The version as the user knows it (a tag or `HEAD`); used in messages.
+    pub version: String,
     _dir: Option<TempDir>,
 }
 
 impl Checkout {
+    /// Replaces the version named in messages (for a checkout made by commit).
+    pub fn named(mut self, version: &str) -> Self {
+        self.version = version.to_string();
+        self
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -227,10 +242,13 @@ fn template_dir_shown(base: &Path, walk: &str, shown: &str, rev: &str) -> Result
             _ => return Err(not_found()),
         }
     }
-    match std::fs::symlink_metadata(dir.join(CONFIG_FILE)) {
-        Ok(meta) if meta.file_type().is_file() => Ok(dir),
-        _ => Err(not_found()),
-    }
+    // A Copier-only directory is found too: the caller decides what to do with it.
+    let found = std::iter::once(CONFIG_FILE)
+        .chain(COPIER_FILES)
+        .any(|name| {
+            std::fs::symlink_metadata(dir.join(name)).is_ok_and(|meta| meta.file_type().is_file())
+        });
+    if found { Ok(dir) } else { Err(not_found()) }
 }
 
 fn is_full_sha(rev: &str) -> bool {
@@ -273,6 +291,7 @@ pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkou
         return Ok(Checkout {
             path: template_dir_shown(dir, sub, &prefix, rev)?,
             commit,
+            version: rev.to_string(),
             _dir: None,
         });
     }
@@ -303,6 +322,7 @@ pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkou
     Ok(Checkout {
         path: template_dir(tmp.path(), &prefix, rev)?,
         commit,
+        version: rev.to_string(),
         _dir: Some(tmp),
     })
 }

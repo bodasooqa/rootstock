@@ -313,6 +313,110 @@ fn new_and_update_from_repo_subdirectory() {
     assert!(record.contains("version = \"v1.1.0\""), "{record}");
 }
 
+/// A repository whose `tpl/` holds only a Copier template, tagged v1.0.0.
+fn copier_subdir_repo() -> TemplateRepo {
+    let repo = TemplateRepo::new();
+    repo.file("tpl/copier.yml", "_subdirectory: tpl\n")
+        .file("tpl/tpl/README.md", README_V1)
+        .tag("v1.0.0");
+    repo
+}
+
+#[test]
+fn new_from_a_copier_only_subdirectory_hints_import_copier() {
+    let repo = copier_subdir_repo();
+    let tmp = TempDir::new().unwrap();
+    let hint = predicate::str::contains("run `rootstock import-copier`");
+    // The version in the message is the tag the user knows, not a sha.
+    let named = predicate::str::contains("template version v1.0.0 has copier.yml");
+    rootstock()
+        .args(["new", &repo.path().join("tpl").to_string_lossy()])
+        .arg(tmp.path().join("a"))
+        .arg("--defaults")
+        .assert()
+        .code(1)
+        .stderr(hint.clone())
+        .stderr(named.clone());
+    rootstock()
+        .args(["new", &repo.url(), "--subdir", "tpl"])
+        .arg(tmp.path().join("b"))
+        .arg("--defaults")
+        .assert()
+        .code(1)
+        .stderr(hint)
+        .stderr(named);
+}
+
+#[test]
+fn update_converts_a_copier_only_subdirectory_in_memory() {
+    let repo = TemplateRepo::new();
+    repo.file("tpl/rootstock.toml", "schema = 1\nroot = \"tpl\"\n")
+        .file("tpl/tpl/README.md", README_V1)
+        .tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &repo.url(), "--subdir", "tpl"])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(0);
+    commit_project(&dir, "init");
+    repo.remove("tpl/rootstock.toml")
+        .file("tpl/copier.yml", "_subdirectory: tpl\n")
+        .file("tpl/tpl/README.md", README_V2)
+        .tag("v1.1.0");
+    update(&dir).assert().code(0);
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).unwrap(),
+        README_V2
+    );
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("version = \"v1.1.0\""), "{record}");
+    assert!(record.contains("subdir = \"tpl\""), "{record}");
+}
+
+#[cfg(unix)]
+#[test]
+fn update_fails_cleanly_when_git_merge_file_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_repo, _tmp, dir) = conflicting_project();
+    let before_readme = fs::read(dir.join("README.md")).unwrap();
+    let before_record = fs::read(dir.join(".rootstock.toml")).unwrap();
+    let real = std::process::Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap().trim().to_string();
+    let bin = TempDir::new().unwrap();
+    let wrapper = bin.path().join("git");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = merge-file ] && {{ echo boom >&2; exit 255; }}; done\nexec {real} \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.path().display(),
+        std::env::var("PATH").unwrap()
+    );
+    update(&dir)
+        .env("PATH", path)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("`README.md`"))
+        .stderr(predicate::str::contains("exit 255"));
+    assert_eq!(fs::read(dir.join("README.md")).unwrap(), before_readme);
+    assert_eq!(
+        fs::read(dir.join(".rootstock.toml")).unwrap(),
+        before_record
+    );
+    assert_eq!(git_in(&dir, &["status", "--porcelain"]), "");
+}
+
 #[cfg(unix)]
 #[test]
 fn subdirectory_template_root_cannot_leave_the_template_dir() {
