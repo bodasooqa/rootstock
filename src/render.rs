@@ -72,28 +72,13 @@ pub enum RenderError {
         target: String,
         reason: &'static str,
     },
-    #[error("{}: template root resolves outside the repository", path.display())]
+    #[error("{}: template root resolves outside the template directory", path.display())]
     RootOutside { path: PathBuf },
     #[error("invalid file rule {pattern:?}")]
     BadPattern {
         pattern: String,
         source: ignore::Error,
     },
-}
-
-/// Canonical include root; it must stay inside the canonical repository.
-pub fn include_root(repo_root: &Path, cfg: &TemplateConfig) -> Result<PathBuf, RenderError> {
-    let joined = repo_root.join(&cfg.include_root);
-    let io = |path: &Path| {
-        let path = path.to_path_buf();
-        move |source| RenderError::Io { path, source }
-    };
-    let real_repo = std::fs::canonicalize(repo_root).map_err(io(repo_root))?;
-    let real = std::fs::canonicalize(&joined).map_err(io(&joined))?;
-    if !real.starts_with(&real_repo) {
-        return Err(RenderError::RootOutside { path: joined });
-    }
-    Ok(real)
 }
 
 /// Renders the template under `repo_root/cfg.root` with `ctx`.
@@ -588,7 +573,7 @@ mod tests {
         cfg: &TemplateConfig,
         ctx: &Answers,
     ) -> Result<RenderedTree, RenderError> {
-        let jinja = Jinja::new(&cfg.jinja, &include_root(root, cfg)?);
+        let jinja = Jinja::new(&cfg.jinja, root);
         render_tree(root, cfg, &jinja, ctx)
     }
 
@@ -904,6 +889,30 @@ mod tests {
         std::os::unix::fs::symlink(&outside, repo.join("tpl")).unwrap();
         let r = render(&repo, &cfg("root = \"tpl\"\n"), &Answers::new());
         assert!(matches!(r, Err(RenderError::RootOutside { .. })), "{r:?}");
+        let msg = r.unwrap_err().to_string();
+        assert!(
+            msg.ends_with("template root resolves outside the template directory"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn include_resolves_from_template_dir_under_root() {
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "template/_partials/x.jinja", "hi {{ who }}");
+        put(
+            d.path(),
+            "template/main.txt.jinja",
+            "{% include 'template/_partials/x.jinja' %}!",
+        );
+        let t = render(
+            d.path(),
+            &cfg("root = \"template\"\npartials = [\"_partials\"]\n"),
+            &answers(json!({"who": "you"})),
+        )
+        .unwrap();
+        assert_eq!(file(&t, "main.txt").0, "hi you!");
+        assert_eq!(t.len(), 1, "{:?}", t.keys());
     }
 
     #[test]
@@ -969,26 +978,6 @@ mod tests {
         }
         assert!(link("../shared/x", "a/l").is_ok());
         assert!(link("sub/../x", "l").is_ok());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn include_root_symlink_outside_rejected() {
-        let d = tempfile::tempdir().unwrap();
-        let repo = d.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        put(&d.path().join("outside"), "x", "s");
-        std::os::unix::fs::symlink(d.path().join("outside"), repo.join("inc")).unwrap();
-        let r = include_root(&repo, &cfg("include_root = \"inc\"\n"));
-        assert!(matches!(r, Err(RenderError::RootOutside { .. })), "{r:?}");
-    }
-
-    #[test]
-    fn include_root_inside_ok() {
-        let d = tempfile::tempdir().unwrap();
-        put(d.path(), "inc/x", "s");
-        let got = include_root(d.path(), &cfg("include_root = \"inc\"\n")).unwrap();
-        assert_eq!(got, std::fs::canonicalize(d.path().join("inc")).unwrap());
     }
 
     #[test]

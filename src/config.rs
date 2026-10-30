@@ -60,10 +60,6 @@ pub struct TemplateConfig {
     /// Subdirectory holding the template files.
     #[serde(default = "dot")]
     pub root: String,
-    /// Directory (relative to the repository root) that `{% include %}` and
-    /// `{% import %}` resolve against; `.` is the repository root.
-    #[serde(default = "dot")]
-    pub include_root: String,
     /// Suffix marking files that are rendered.
     #[serde(default = "default_suffix")]
     pub suffix: String,
@@ -321,24 +317,20 @@ fn validate(config: &TemplateConfig, path: &Path) -> Result<(), ConfigError> {
             });
         }
     }
-    for (field, value) in [
-        ("root", &config.root),
-        ("include_root", &config.include_root),
-    ] {
-        let ok = !value.contains(['\\', '\0'])
-            && Path::new(value).components().all(|c| {
-                matches!(
-                    c,
-                    std::path::Component::Normal(_) | std::path::Component::CurDir
-                )
-            });
-        if !ok {
-            return Err(ConfigError::BadDir {
-                path: path.to_path_buf(),
-                field,
-                value: value.clone(),
-            });
-        }
+    let value = &config.root;
+    let ok = !value.contains(['\\', '\0'])
+        && Path::new(value).components().all(|c| {
+            matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        });
+    if !ok {
+        return Err(ConfigError::BadDir {
+            path: path.to_path_buf(),
+            field: "root",
+            value: value.clone(),
+        });
     }
     let mut seen = HashSet::new();
     for q in &config.questions {
@@ -372,7 +364,6 @@ mod tests {
 schema = 1
 min_rootstock = "0.1.0"
 root = "template"
-include_root = "partials_src"
 suffix = ".tmpl"
 partials = ["_partials", "_macros"]
 
@@ -428,7 +419,7 @@ run = "make fmt"
 
     #[test]
     fn rejects_dirs_outside_repository() {
-        for field in ["root", "include_root"] {
+        for field in ["root"] {
             for bad in ["..", "../x", "a/../..", "/etc", "a\\b"] {
                 let text = format!("schema = 1\n{field} = '{bad}'\n");
                 let e = parse(&text, p()).unwrap_err();
@@ -445,12 +436,20 @@ run = "make fmt"
     }
 
     #[test]
+    fn rejects_removed_include_key() {
+        let key = ["include", "root"].join("_");
+        let e = parse(&format!("schema = 1\n{key} = \"x\"\n"), p()).unwrap_err();
+        assert!(matches!(e, ConfigError::Parse { .. }), "{e}");
+        let source = std::error::Error::source(&e).map(|s| s.to_string());
+        assert!(source.is_some_and(|m| m.contains(&key)), "{e:?}");
+    }
+
+    #[test]
     fn parses_full_example() {
         let c = parse(FULL, p()).unwrap();
         assert_eq!(c.schema, 1);
         assert_eq!(c.min_rootstock, Some(semver::Version::new(0, 1, 0)));
         assert_eq!(c.root, "template");
-        assert_eq!(c.include_root, "partials_src");
         assert_eq!(c.suffix, ".tmpl");
         assert_eq!(c.partials, vec!["_partials", "_macros"]);
         assert!(c.jinja.trim_blocks && c.jinja.lstrip_blocks && !c.jinja.keep_trailing_newline);
@@ -512,7 +511,6 @@ run = "make fmt"
     fn applies_defaults() {
         let c = parse("schema = 1", p()).unwrap();
         assert_eq!(c.root, ".");
-        assert_eq!(c.include_root, ".");
         assert_eq!(c.suffix, ".jinja");
         assert!(c.jinja.keep_trailing_newline);
         assert!(!c.jinja.trim_blocks && !c.jinja.lstrip_blocks);

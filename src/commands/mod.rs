@@ -198,8 +198,7 @@ impl Side {
     /// Loads the config of `checkout` and builds the environment once.
     pub fn load(checkout: Checkout) -> Result<Side> {
         let cfg = load_config(&checkout)?;
-        let root = render::include_root(checkout.path(), &cfg)?;
-        let jinja = Jinja::new(&cfg.jinja, &root);
+        let jinja = Jinja::new(&cfg.jinja, checkout.path());
         Ok(Side {
             cfg,
             checkout,

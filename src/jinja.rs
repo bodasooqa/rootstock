@@ -47,8 +47,8 @@ pub struct Jinja {
 }
 
 impl Jinja {
-    /// `include` and `import` names resolve relative to `include_root`.
-    pub fn new(opts: &JinjaOptions, include_root: &Path) -> Jinja {
+    /// `include` and `import` names resolve relative to `template_dir`, the directory holding `rootstock.toml`.
+    pub fn new(opts: &JinjaOptions, template_dir: &Path) -> Jinja {
         let mut env = Environment::new();
         let mut syntax = SyntaxConfig::builder();
         syntax
@@ -58,9 +58,9 @@ impl Jinja {
         // Default delimiters cannot conflict, so build() does not fail here.
         env.set_syntax(syntax.build().unwrap_or_default());
         env.set_auto_escape_callback(|_| AutoEscape::None);
-        // Includes may not reach outside the canonical include root, even
+        // Includes may not reach outside the canonical template directory, even
         // through symlinks; a missing root means every include is not found.
-        let root = std::fs::canonicalize(include_root).ok();
+        let root = std::fs::canonicalize(template_dir).ok();
         env.set_loader(move |name| match &root {
             Some(root) => load_include(root, name),
             None => Ok(None),
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn include_resolves_from_include_root() {
+    fn include_resolves_from_template_dir() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("template/_partials");
         std::fs::create_dir_all(&p).unwrap();

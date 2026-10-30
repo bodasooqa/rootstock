@@ -1,12 +1,12 @@
 ## 1. Подключения от каталога шаблона (design D5, D6)
 
-- [ ] 1.1 Падающие тесты:
+- [x] 1.1 Падающие тесты:
   - в `src/config.rs` `rootstock.toml` с ключом `include_root` отклоняется как неизвестный ключ;
   - в `src/render.rs` файл под `root = "template"` подключает `template/_partials/x.jinja` от каталога шаблона;
   - `RootOutside` говорит «outside the template directory».
 
   Проверка: `cargo test` красный ровно на новых тестах.
-- [ ] 1.2 Удалить `TemplateConfig.include_root` и `render::include_root` с его тестами. `Side::load` передаёт в `Jinja::new` каталог checkout'а; doc-комментарии `jinja.rs` и `config.rs` переписать; текст `RootOutside` поправить. Проверка: `cargo test` зелёный, `git grep include_root -- src tests` пуст.
+- [x] 1.2 Удалить `TemplateConfig.include_root` и `render::include_root` с его тестами. `Side::load` передаёт в `Jinja::new` каталог checkout'а; doc-комментарии `jinja.rs` и `config.rs` переписать; текст `RootOutside` поправить. Проверка: `cargo test` зелёный, `git grep include_root -- src tests` пуст.
 
 ## 2. Подкаталог в источнике (design D1, D3, D4)
 
