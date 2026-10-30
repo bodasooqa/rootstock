@@ -2,7 +2,7 @@
 
 Date: 2026-10-29. Written by Claude from a conversation with the owner (bodasooqa). "The owner decided" marks the owner's decisions; "my call" marks decisions I made that the owner may overturn.
 
-Revisions 1.1, 1.2 and 1.3 (2026-10-30) are merged into this text; their changes are marked "(1.1)", "(1.2)" and "(1.3)", and the reasons are in `docs/design-revisions.md`.
+Revisions 1.1 to 1.4 (2026-10-30) are merged into this text; their changes are marked "(1.1)" to "(1.4)", and the reasons are in `docs/design-revisions.md`.
 
 ## Intent
 
@@ -59,7 +59,7 @@ Taken from the owner's own words about harness: **conflicts on update are a norm
 
 ## Constraints
 
-- Rust stable, edition 2024. One binary. Linux, macOS and Windows builds.
+- Rust stable, edition 2024. One binary. Linux, macOS and Windows builds. On Windows, rootstock behaves as on Unix: the executable bit and symlinks come from the template's git tree, and hooks run in a POSIX shell (see Hooks and update rule 7) *(owner decided, 1.4)*.
 - Templating: Jinja syntax via [minijinja](https://github.com/mitsuhiko/minijinja), so harness file contents carry over with little or no change.
 - Templates come from git repositories; versions are git tags.
 - English everywhere public: README, docs, CLI messages, code comments, **commit messages**. **No `Co-Authored-By: Claude` line in commits.** *(Owner decided.)* The repository's own agent tooling (`CLAUDE.md`, `knowledge/`), generated from harness, stays in Russian like harness itself.
@@ -90,7 +90,7 @@ It declares:
 - **Class rules** — gitignore-style glob lists for `starter` and `exclude`, evaluated against the rendered path. A pattern may contain Jinja over the answers (harness's `{{ spec_path }}/**`). Patterns render with the answers on every step, including the base render during update. This avoids the Copier bug where `_skip_if_exists` rendered without answers turned `{{ spec_path }}/**` into `/**`.
 - **Includes** — `{% include %}` and `{% import %}` resolve against the template directory, not the template root, as in Copier: harness's `template/_partials/…` paths carry over unchanged. The include base is not configurable. *(Owner decided, 1.1.)* A configurable list of partial directories is excluded from output.
 - **Paths and links** *(owner decided, 1.1)*. A rendered path containing `\`, `:` or a NUL byte is refused. A template symlink is refused at render when its path or target is not ASCII, its target is absolute, contains `~`, or points outside the project.
-- **Hooks** — shell commands with a `when` of `new`, `update` or both, run in the project directory after files are written. Hooks run only with `--trust` or after an interactive confirmation, since they execute arbitrary commands.
+- **Hooks** — shell commands with a `when` of `new`, `update` or both, run in the project directory after files are written. Hooks run only with `--trust` or after an interactive confirmation, since they execute arbitrary commands. A hook runs as `sh -c <command>`. On Windows, `sh` is the one shipped with Git for Windows, found next to `git`; without it a command with hooks to run is an error before anything is written *(owner decided, 1.4)*.
 - **Minimum rootstock version.**
 
 Filters and tests: minijinja's built-ins, plus `regex_search` with the semantics of the jinja2-ansible-filters version Copier ships (harness's `project_name` validator uses it). `to_nice_yaml` is not needed: in harness it only renders the Copier answers file, which the converter drops (see import-copier). *(My call; it can be added later for other templates.)*
@@ -135,7 +135,7 @@ Template sources: `https://…`, `git@…:…`, `gh:owner/repo` shorthand, and a
    | any | excluded or not emitted | — | as "managed → —" if it was managed, nothing if starter |
 
 6. **Binary files** (managed): if the project's copy equals the base, replace it; otherwise keep the project's copy, write the target next to it as `<name>.rootstock-new`, and report a conflict. A binary file the template did not change (base = target) is left as the project has it, with no side file and no conflict; otherwise every update would report it again. If the template itself emits `<name>.rootstock-new`, no side file is written and the conflict is still reported. A file is binary when its first 8000 bytes contain a NUL or it is not valid UTF-8. *(Owner decided, 1.1.)*
-7. **Permissions and links.** The executable bit follows the template file (rendered or copied). Symlinks are reproduced as symlinks, never followed. Like a binary file, a symlink the template did not change is left as the project has it. Links that differ in target, or a file on one side and a link on the other, that cannot be resolved by the table are a `symlink` conflict, and the project's entry is kept. *(Owner decided, 1.1.)*
+7. **Permissions and links.** The executable bit follows the template file (rendered or copied). Symlinks are reproduced as symlinks, never followed. Both are read from the template's git tree (mode `100755`, `120000`), not from the checkout on disk, so they do not depend on the file system; untracked files of a `HEAD` render take them from disk. Where the file system has no executable bit (Windows), rootstock sets it in the project's git index (`git update-index --chmod=+x`) when the project is a git repository, and reads the project's executable bit from that index. A symlink the operating system refuses to create (Windows without developer mode) is an error before anything is written, naming how to allow it *(owner decided, 1.4)*. Like a binary file, a symlink the template did not change is left as the project has it. Links that differ in target, or a file on one side and a link on the other, that cannot be resolved by the table are a `symlink` conflict, and the project's entry is kept. *(Owner decided, 1.1.)*
 8. **Bytes in, bytes out.** No line-ending conversion. The merge works on lines but preserves the file's line endings and final newline.
 9. **Conflict markers** are git-style (`<<<<<<< project`, `=======`, `>>>>>>> template vX.Y.Z`), so `git diff --check`, editors and harness's `conflict-markers.sh` see them.
 10. **Run update hooks**, then write the new record: new version, current answers, new inventory. Hooks that need trust, without `--trust` and without a terminal to confirm, stop the whole command before anything is written *(owner decided, 1.1)*.
