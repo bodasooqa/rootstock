@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use support::{TemplateRepo, commit_project, git_in, make_symlink};
+use support::{TemplateRepo, commit_project, git_in, make_symlink, remove_link};
 use tempfile::TempDir;
 
 /// Template config with the given starter and exclude rules.
@@ -297,13 +297,6 @@ fn link_target(dir: &Path, path: &str) -> String {
         .unwrap()
         .to_string_lossy()
         .replace('\\', "/")
-}
-
-/// Removes a link whichever kind it is (a directory link needs `remove_dir` on Windows).
-fn remove_link(path: &Path) {
-    if fs::remove_file(path).is_err() {
-        fs::remove_dir(path).unwrap();
-    }
 }
 
 /// `rootstock new` at `version` into a fresh directory; the project is not committed.

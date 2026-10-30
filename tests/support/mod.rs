@@ -127,13 +127,15 @@ impl TemplateRepo {
         if let Some(parent) = full.parent() {
             fs::create_dir_all(parent).unwrap();
         }
-        let _ = fs::remove_file(&full);
+        if fs::symlink_metadata(&full).is_ok() {
+            remove_link(&full);
+        }
         make_symlink(target, &full);
         self
     }
 
     pub fn remove(&self, path: &str) -> &Self {
-        fs::remove_file(self.dir.path().join(path)).unwrap();
+        remove_link(&self.dir.path().join(path));
         self
     }
 
@@ -179,6 +181,13 @@ impl TemplateRepo {
     /// Resolves a revision to a full commit sha.
     pub fn commit(&self, rev: &str) -> String {
         self.git(&["rev-parse", &format!("{rev}^{{commit}}")])
+    }
+}
+
+/// Removes a file or a link of either kind (a directory link needs `remove_dir` on Windows).
+pub fn remove_link(path: &Path) {
+    if fs::remove_file(path).is_err() {
+        fs::remove_dir(path).unwrap();
     }
 }
 
