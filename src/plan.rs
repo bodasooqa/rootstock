@@ -241,15 +241,16 @@ fn wrote_path(actions: &[Action], path: &str) -> bool {
 /// Returns target path -> (base path, project entry at the base path).
 /// Render rejects folded collisions inside one tree, so the pairing is one-to-one.
 ///
-/// A pair is kept only when the project has nothing at the new name, or the
-/// same entry as at the old name (one file aliased by a case-insensitive
-/// filesystem). Two distinct project files are planned as two paths, so the
-/// file at the new name is never overwritten by the old one.
+/// The design plans a rename as a delete plus an add. Pairing exists only
+/// because on a case-insensitive filesystem both hit one file, so a pair is
+/// kept only when the project shows that alias: an entry at the new name
+/// equal to the one at the old name. Every other case, including nothing at
+/// either name, goes through the normal rows path by path.
 fn rename_pairs<'a>(
     base: &'a RenderedTree,
     target: &'a RenderedTree,
     project: &dyn ProjectView,
-) -> BTreeMap<&'a RelPath, (&'a RelPath, Option<Entry>)> {
+) -> BTreeMap<&'a RelPath, (&'a RelPath, Entry)> {
     let added: BTreeMap<String, &RelPath> = target
         .keys()
         .filter(|t| !base.contains_key(*t))
@@ -259,15 +260,14 @@ fn rename_pairs<'a>(
         .filter(|b| !target.contains_key(*b))
         .filter_map(|b| added.get(&fold_path(b)).map(|t| (*t, b)))
         .filter_map(|(t, b)| {
-            let at_old = project.get(b);
-            let at_new = project.get(t);
-            (at_new.is_none() || at_new == at_old).then_some((t, (b, at_old)))
+            let at_new = project.get(t)?;
+            (project.get(b).as_ref() == Some(&at_new)).then_some((t, (b, at_new)))
         })
         .collect()
 }
 
 /// Plans a rename pair `old` -> `new` as one logical path; `p` is the project's
-/// entry at `old`, which on a case-insensitive filesystem `new` aliases.
+/// entry at `old`, which `new` aliases on a case-insensitive filesystem.
 #[allow(clippy::too_many_arguments)]
 fn plan_rename(
     out: &mut Out,
@@ -276,19 +276,12 @@ fn plan_rename(
     new: &str,
     b: &Rendered,
     t: &Rendered,
-    p: Option<Entry>,
-    in_inventory: bool,
+    p: &Entry,
     label: &str,
     side_taken: bool,
 ) {
-    match (&p, t.class) {
-        (None, FileClass::Managed) => {
-            if !same_content(&b.entry, &t.entry) {
-                out.conflict(new, ConflictKind::DeletedByProject);
-            }
-        }
-        (None, FileClass::Starter) => {}
-        (Some(p), FileClass::Starter) => {
+    match t.class {
+        FileClass::Starter => {
             // A starter's content belongs to the project: only the name follows the template.
             out.actions.push(Action::Delete {
                 path: old.to_string(),
@@ -298,7 +291,7 @@ fn plan_rename(
                 entry: p.clone(),
             });
         }
-        (Some(p), FileClass::Managed) => {
+        FileClass::Managed => {
             let mut scratch = Out::default();
             plan_present(
                 &mut scratch,
@@ -326,9 +319,8 @@ fn plan_rename(
             });
         }
     }
-    if in_inventory || p.is_some() {
-        new_inventory.insert(new.to_string(), t.class);
-    }
+    // The project has the file, so its path is tracked.
+    new_inventory.insert(new.to_string(), t.class);
 }
 
 /// Memoized project lookups for the block check.
@@ -383,7 +375,7 @@ fn drop_blocked(
     out: &mut Out,
     inventory: &mut Inventory,
     project: &dyn ProjectView,
-    pairs: &BTreeMap<&RelPath, (&RelPath, Option<Entry>)>,
+    pairs: &BTreeMap<&RelPath, (&RelPath, Entry)>,
 ) {
     let mut occupancy = Occupancy {
         project,
@@ -443,20 +435,19 @@ pub fn plan_update(
     let mut out = Out::default();
     let mut new_inventory = Inventory::new();
     let paths: BTreeSet<&RelPath> = base.keys().chain(target.keys()).collect();
-    let mut pairs = rename_pairs(base, target, project);
+    let pairs = rename_pairs(base, target, project);
     let renamed: BTreeSet<&RelPath> = pairs.values().map(|(old, _)| *old).collect();
 
     for path in paths {
         if renamed.contains(path) {
             continue;
         }
-        if let Some((old, at_old)) = pairs.get_mut(path) {
+        if let Some((old, at_old)) = pairs.get(path) {
             let (Some(b), Some(t)) = (base.get(*old), target.get(path)) else {
                 continue;
             };
             let side = format!("{path}{SIDE_FILE_SUFFIX}");
             let side_taken = base.contains_key(&side) || target.contains_key(&side);
-            let in_inventory = inventory.contains_key(*old) || inventory.contains_key(path);
             plan_rename(
                 &mut out,
                 &mut new_inventory,
@@ -464,8 +455,7 @@ pub fn plan_update(
                 path,
                 b,
                 t,
-                at_old.take(),
-                in_inventory,
+                at_old,
                 target_label,
                 side_taken,
             );
@@ -1097,13 +1087,16 @@ mod tests {
         assert!(plan.inventory.is_empty());
     }
 
+    // The blocked-rename tests use `Folded` because a pair needs the alias.
+    // On a real case-insensitive filesystem `D` (a file) and `d/` (a directory)
+    // cannot coexist, so these only pin the logic of `drop_blocked`.
     #[test]
     fn blocked_rename_drops_other_conflicts() {
         // Overlapping edits would give markers on the new name, but the write is blocked.
         let b = tree(&[("d/Readme.md", file("x\n"), M)]);
         let t = tree(&[("D/README.md", file("t\n"), M)]);
-        let p = proj(&[("d/Readme.md", file("p\n")), ("D", file("mine\n"))]);
-        let plan = run(&b, &t, &p, &inv(&[("d/Readme.md", M)]));
+        let p = Folded(proj(&[("d/Readme.md", file("p\n")), ("D", file("mine\n"))]));
+        let plan = plan_update(&b, &t, &p, &inv(&[("d/Readme.md", M)]), LABEL);
         assert!(plan.actions.is_empty(), "{:?}", plan.actions);
         assert_eq!(
             plan.conflicts,
@@ -1113,8 +1106,8 @@ mod tests {
         // A diverged binary would get a side file; neither it nor `binary` remains.
         let b = tree(&[("d/Img.bin", bin(1), M)]);
         let t = tree(&[("D/IMG.bin", bin(2), M)]);
-        let p = proj(&[("d/Img.bin", bin(3)), ("D", file("mine\n"))]);
-        let plan = run(&b, &t, &p, &inv(&[("d/Img.bin", M)]));
+        let p = Folded(proj(&[("d/Img.bin", bin(3)), ("D", file("mine\n"))]));
+        let plan = plan_update(&b, &t, &p, &inv(&[("d/Img.bin", M)]), LABEL);
         assert!(plan.actions.is_empty(), "{:?}", plan.actions);
         assert_eq!(
             plan.conflicts,
@@ -1128,8 +1121,8 @@ mod tests {
         // A file the project keeps sits where the new name's directory would be.
         let b = tree(&[("d/Readme.md", file("x\n"), M)]);
         let t = tree(&[("D/README.md", file("y\n"), M)]);
-        let p = proj(&[("d/Readme.md", file("x\n")), ("D", file("mine\n"))]);
-        let plan = run(&b, &t, &p, &inv(&[("d/Readme.md", M)]));
+        let p = Folded(proj(&[("d/Readme.md", file("x\n")), ("D", file("mine\n"))]));
+        let plan = plan_update(&b, &t, &p, &inv(&[("d/Readme.md", M)]), LABEL);
         assert!(plan.actions.is_empty());
         assert_eq!(
             plan.conflicts,
@@ -1195,21 +1188,44 @@ mod tests {
 
     #[test]
     fn case_rename_deleted_by_project() {
+        // Nothing at either name: no alias, so the rows apply independently.
+        // The old name gives nothing; the new one is created (`— | managed | absent`).
         let b = tree(&[("Readme.md", file("x\n"), M)]);
         let t = tree(&[("README.md", file("y\n"), M)]);
         let p = Folded(proj(&[]));
         let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
-        assert!(plan.actions.is_empty());
-        assert_eq!(
-            plan.conflicts,
-            vec![conflict("README.md", ConflictKind::DeletedByProject)]
-        );
+        assert_eq!(plan.actions, vec![write("README.md", file("y\n"))]);
+        assert!(plan.conflicts.is_empty());
         assert_eq!(plan.inventory, inv(&[("README.md", M)]));
 
         let t = tree(&[("README.md", file("x\n"), M)]);
         let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
-        assert!(plan.actions.is_empty());
+        assert_eq!(plan.actions, vec![write("README.md", file("x\n"))]);
         assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn case_rename_case_sensitive_is_delete_plus_add() {
+        let b = tree(&[("Readme.md", file("x\n"), M)]);
+        let t = tree(&[("README.md", file("y\n"), M)]);
+
+        let p = proj(&[("Readme.md", file("x\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("Readme.md", M)]));
+        assert_eq!(
+            plan.actions,
+            vec![delete("Readme.md"), write("README.md", file("y\n"))]
+        );
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(plan.inventory, inv(&[("README.md", M)]));
+
+        let p = proj(&[("Readme.md", file("edited\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("Readme.md", M)]));
+        assert_eq!(plan.actions, vec![write("README.md", file("y\n"))]);
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("Readme.md", ConflictKind::RemovedByTemplate)]
+        );
+        assert_eq!(plan.inventory, inv(&[("README.md", M)]));
     }
 
     #[test]
@@ -1224,8 +1240,10 @@ mod tests {
         );
         assert_eq!(plan.inventory, inv(&[("NOTES.md", S)]));
 
+        // The project deleted the starter: no alias, so the new name is a new
+        // starter file and is created (`— | starter | absent, not in inventory`).
         let plan = plan_update(&b, &t, &Folded(proj(&[])), &inv(&[("Notes.md", S)]), LABEL);
-        assert!(plan.actions.is_empty());
+        assert_eq!(plan.actions, vec![write("NOTES.md", file("y\n"))]);
         assert!(plan.conflicts.is_empty());
         assert_eq!(plan.inventory, inv(&[("NOTES.md", S)]));
     }

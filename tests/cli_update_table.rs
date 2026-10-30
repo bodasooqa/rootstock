@@ -381,16 +381,41 @@ fn e2e_case_only_rename() {
     repo.git(&["mv", "tpl/Readme.md", "tpl/README.md"]);
     repo.file("tpl/README.md", EIGHT_LAST).tag("v1.1.0");
 
+    // Either way the unedited project ends with the new name only.
     update(&plain).assert().code(0).stdout("");
     assert_eq!(names(&plain), [".rootstock.toml", "README.md"]);
     assert_eq!(read(&plain, "README.md"), EIGHT_LAST);
 
-    update(&edited).assert().code(0).stdout("");
-    assert_eq!(names(&edited), [".rootstock.toml", "README.md"]);
-    assert_eq!(read(&edited, "README.md"), EIGHT_BOTH);
-    let rec = record(&edited);
-    assert!(rec.contains("\"README.md\" = \"managed\""), "{rec}");
-    assert!(!rec.contains("Readme.md"), "{rec}");
+    if case_insensitive(edited.parent().unwrap()) {
+        // Both names are one file: the rename carries the project's edit along.
+        update(&edited).assert().code(0).stdout("");
+        assert_eq!(names(&edited), [".rootstock.toml", "README.md"]);
+        assert_eq!(read(&edited, "README.md"), EIGHT_BOTH);
+        let rec = record(&edited);
+        assert!(rec.contains("\"README.md\" = \"managed\""), "{rec}");
+        assert!(!rec.contains("Readme.md"), "{rec}");
+    } else {
+        // Two names, two files: a delete of an edited file plus an add.
+        update(&edited)
+            .assert()
+            .code(2)
+            .stdout("removed-by-template Readme.md\n");
+        assert_eq!(
+            names(&edited),
+            [".rootstock.toml", "README.md", "Readme.md"]
+        );
+        assert_eq!(read(&edited, "Readme.md"), EIGHT_FIRST);
+        assert_eq!(read(&edited, "README.md"), EIGHT_LAST);
+        let rec = record(&edited);
+        assert!(rec.contains("\"README.md\" = \"managed\""), "{rec}");
+    }
+}
+
+/// True when the filesystem under `dir` finds a file under another case of its name.
+fn case_insensitive(dir: &Path) -> bool {
+    let probe = TempDir::new_in(dir).unwrap();
+    fs::write(probe.path().join("case-probe"), "").unwrap();
+    probe.path().join("CASE-PROBE").exists()
 }
 
 #[test]
