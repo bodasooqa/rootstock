@@ -20,7 +20,7 @@ Rust stable, edition 2024, один крейт `rootstock` (lib + bin `rootstock
 
 ## Границы пакетов
 
-Один крейт, пакетов нет; границы — модули. Ядро (config, record, jinja, answers, render, merge, plan) только читает свои объявленные входы: конфиг, запись, checkout шаблона, подключения. Из ядра пишет только `record`, и только `.rootstock.toml`. git, терминала и stderr у ядра нет; `merge` и `plan` чисты полностью. Остальной ввод-вывод — на краях: source, apply, hooks, cli, commands.
+Один крейт, пакетов нет; границы — модули. Ядро (config, record, jinja, answers, render, merge, plan, copier) только читает свои объявленные входы: конфиг, запись, checkout шаблона, подключения. Из ядра пишет только `record`, и только `.rootstock.toml`. git, терминала и stderr у ядра нет; `merge` и `plan` чисты полностью. Остальной ввод-вывод — на краях: source, apply, hooks, cli, commands.
 
 | Файл | Ответственность |
 |---|---|
@@ -34,7 +34,8 @@ Rust stable, edition 2024, один крейт `rootstock` (lib + bin `rootstock
 | `src/source.rs` | источники шаблонов, теги, checkout'ы через `git` |
 | `src/apply.rs` | выполнение `Plan` на диске |
 | `src/hooks.rs` | запуск хуков с проверкой доверия |
-| `src/cli.rs`, `src/commands/{mod,new,update,status,check}.rs` | CLI, терминальный диалог (`TerminalPrompter`) и четыре команды |
+| `src/copier.rs` | ядро: конвертация `copier.yml` в `rootstock.toml` и проверка дерева шаблона на неподдерживаемое; только чтение |
+| `src/cli.rs`, `src/commands/{mod,new,update,status,check,import_copier}.rs` | CLI, терминальный диалог (`TerminalPrompter`) и команды |
 | `tests/support/mod.rs` | построитель фикстуры `TemplateRepo` (git-репозиторий с тегами во временном каталоге) |
 | `tests/cli_*.rs` | сквозные сценарии через бинарник |
 
