@@ -226,3 +226,31 @@ pub fn commit_project(dir: &Path, message: &str) {
     git_in(dir, &["add", "-A"]);
     git_in(dir, &["commit", "--allow-empty", "-q", "-m", message]);
 }
+
+/// The `source` a record text holds, parsed (TOML escapes Windows backslashes).
+pub fn recorded_source(record: &str) -> String {
+    let table: toml::Table = record.parse().unwrap();
+    table["source"].as_str().unwrap().to_string()
+}
+
+/// The record text with its `source` line replaced by `source`.
+pub fn with_source(record: &str, source: &str) -> String {
+    let line = format!("source = {}", toml::Value::String(source.to_string()));
+    record
+        .lines()
+        .map(|l| {
+            if l.starts_with("source = ") {
+                line.as_str()
+            } else {
+                l
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+/// `canonicalize` as rootstock spells a local path: no Windows verbatim prefix.
+pub fn canon(path: &Path) -> std::path::PathBuf {
+    rootstock::source::canonical(path).unwrap()
+}

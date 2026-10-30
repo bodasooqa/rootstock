@@ -30,8 +30,7 @@ pub struct NewOptions {
 /// Source string stored in the record: local paths become absolute.
 pub(crate) fn recorded_source(template: &str, src: &Source) -> Result<String> {
     match src {
-        Source::Local(path) => Ok(path
-            .canonicalize()
+        Source::Local(path) => Ok(crate::source::canonical(path)
             .with_context(|| format!("cannot resolve {}", path.display()))?
             .to_string_lossy()
             .into_owned()),

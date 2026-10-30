@@ -5,7 +5,7 @@ use std::path::Path;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use support::{TemplateRepo, commit_project, git_in};
+use support::{TemplateRepo, canon, commit_project, git_in, recorded_source, with_source};
 use tempfile::TempDir;
 
 const CONFIG: &str = r#"schema = 1
@@ -250,13 +250,7 @@ fn update_refuses_credentials_in_recorded_source() {
     let repo = template_v1();
     let (_tmp, dir) = new_project(&repo);
     let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
-    let edited = record.replace(
-        &format!(
-            "source = \"{}\"",
-            repo.path().canonicalize().unwrap().display()
-        ),
-        "source = \"https://zq7SECRETtoken9@example.invalid/o/r.git\"",
-    );
+    let edited = with_source(&record, "https://zq7SECRETtoken9@example.invalid/o/r.git");
     assert_ne!(edited, record);
     fs::write(dir.join(".rootstock.toml"), edited).unwrap();
     commit_project(&dir, "edit source");
@@ -294,9 +288,10 @@ fn new_and_update_from_repo_subdirectory() {
         "name=demo\n"
     );
     let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
-    let recorded = sub.canonicalize().unwrap();
-    assert!(
-        record.contains(&format!("source = \"{}\"", recorded.display())),
+    let recorded = canon(&sub);
+    assert_eq!(
+        recorded_source(&record),
+        recorded.to_string_lossy(),
         "{record}"
     );
     commit_project(&dir, "init");
@@ -542,21 +537,29 @@ fn new_local_source_recorded_absolute() {
         .assert()
         .code(0);
     let record = fs::read_to_string(tmp.path().join("p/.rootstock.toml")).unwrap();
-    let canonical = repo.path().canonicalize().unwrap();
-    assert!(
-        record.contains(&format!("source = \"{}\"", canonical.display())),
+    let canonical = canon(repo.path());
+    assert_eq!(
+        recorded_source(&record),
+        canonical.to_string_lossy(),
         "{record}"
     );
 }
 
-/// A relative path from `from` to `to` (both absolute) through `..`.
+/// A relative path from `from` to `to` (both absolute, on one drive) through `..`.
 fn pathdiff(to: &str, from: &Path) -> String {
-    let to = Path::new(to).canonicalize().unwrap();
-    let from = from.canonicalize().unwrap();
-    let up = from.components().count() - 1;
-    let mut out = "../".repeat(up);
-    out.push_str(to.to_string_lossy().trim_start_matches('/'));
-    out
+    use std::path::Component;
+    let names = |path: &Path| -> Vec<String> {
+        canon(path)
+            .components()
+            .filter_map(|c| match c {
+                Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut parts = vec!["..".to_string(); names(from).len()];
+    parts.extend(names(Path::new(to)));
+    parts.join("/")
 }
 
 #[test]
@@ -889,7 +892,7 @@ fn update_data_file_is_merged_under_data() {
 fn update_hooks_need_trust() {
     let repo = template_v1();
     let (_tmp, dir) = new_project(&repo);
-    let config = format!("{CONFIG}\n[[hooks]]\nrun = \"touch hooked.txt\"\nwhen = [\"update\"]\n");
+    let config = format!("{CONFIG}\n[[hooks]]\nrun = \": > hooked.txt\"\nwhen = [\"update\"]\n");
     repo.file("rootstock.toml", &config)
         .file("tpl/README.md", README_V2)
         .tag("v1.1.0");
@@ -1141,7 +1144,7 @@ fn update_data_on_a_moved_tag_keeps_the_recorded_commit() {
 #[test]
 fn update_hooks_do_not_run_when_the_answer_is_unchanged() {
     let repo = TemplateRepo::new();
-    let config = format!("{CONFIG}\n[[hooks]]\nrun = \"touch hooked.txt\"\nwhen = [\"update\"]\n");
+    let config = format!("{CONFIG}\n[[hooks]]\nrun = \": > hooked.txt\"\nwhen = [\"update\"]\n");
     repo.file("rootstock.toml", &config)
         .file("tpl/README.md", README_V1)
         .file("tpl/src.txt.jinja", "name={{ name }}\n")
@@ -1338,7 +1341,13 @@ fn subdir_template() -> TemplateRepo {
 }
 
 fn file_url(repo: &TemplateRepo) -> String {
-    format!("file://{}", repo.path().display())
+    // `file:///C:/dir` on Windows, `file:///dir` elsewhere.
+    let path = repo.path().to_string_lossy().replace('\\', "/");
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
 }
 
 fn new_with_subdir(repo: &TemplateRepo, dir: &Path) -> assert_cmd::assert::Assert {

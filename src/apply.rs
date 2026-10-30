@@ -1940,17 +1940,32 @@ mod tests {
         let repo = repo_with(&["x1.sh", "x[1].sh", "other.sh"]);
         let root = repo.path();
         // An untracked file named like a glob must not stage its neighbours.
-        std::fs::write(root.join("b.sh"), "b").unwrap();
-        std::fs::write(root.join("*.sh"), "star").unwrap();
+        std::fs::write(root.join("y1.sh"), "y").unwrap();
+        std::fs::write(root.join("y[1].sh"), "y2").unwrap();
         let p = plan(vec![
             write_file("x[1].sh", b"content of x[1].sh\n", true),
-            write_file("*.sh", b"star", true),
+            write_file("y[1].sh", b"y2", true),
         ]);
         assert!(set_index_modes_in(&p, root).unwrap().is_empty());
         let modes = index_modes(root);
         assert_eq!(modes["x[1].sh"], "100755");
         assert_eq!(modes["x1.sh"], "100644");
         assert_eq!(modes["other.sh"], "100644");
+        assert_eq!(modes["y[1].sh"], "100755");
+        assert!(!modes.contains_key("y1.sh"));
+    }
+
+    /// `*` and `?` cannot be in a Windows file name.
+    #[cfg(unix)]
+    #[test]
+    fn set_index_modes_takes_a_star_literally() {
+        let repo = repo_with(&["a.sh"]);
+        let root = repo.path();
+        std::fs::write(root.join("b.sh"), "b").unwrap();
+        std::fs::write(root.join("*.sh"), "star").unwrap();
+        let p = plan(vec![write_file("*.sh", b"star", true)]);
+        assert!(set_index_modes_in(&p, root).unwrap().is_empty());
+        let modes = index_modes(root);
         assert_eq!(modes["*.sh"], "100755");
         assert!(!modes.contains_key("b.sh"));
     }

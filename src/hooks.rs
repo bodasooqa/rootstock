@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn hooks_need_trust_noninteractive() {
         let dir = tempfile::tempdir().unwrap();
-        let hooks = [hook("touch marker", &[Phase::New])];
+        let hooks = [hook(": > marker", &[Phase::New])];
         let err = run_hooks(&hooks, Phase::New, dir.path(), false, false)
             .unwrap_err()
             .to_string();
@@ -209,7 +209,7 @@ mod tests {
             err.contains("template has hooks; rerun with --trust"),
             "{err}"
         );
-        assert!(err.contains("touch marker"), "{err}");
+        assert!(err.contains(": > marker"), "{err}");
         assert!(!dir.path().join("marker").exists());
     }
 
@@ -231,7 +231,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks = [
             hook("exit 3", &[Phase::New]),
-            hook("touch after", &[Phase::New]),
+            hook(": > after", &[Phase::New]),
         ];
         let err = run_hooks(&hooks, Phase::New, dir.path(), true, false)
             .unwrap_err()
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn check_trust_noninteractive_errors_and_runs_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let hooks = [hook("touch marker", &[Phase::New])];
+        let hooks = [hook(": > marker", &[Phase::New])];
         let err = check_trust(&hooks, Phase::New, false, false)
             .unwrap_err()
             .to_string();
@@ -257,8 +257,8 @@ mod tests {
     fn hooks_filtered_by_phase() {
         let dir = tempfile::tempdir().unwrap();
         let hooks = [
-            hook("touch new_only", &[Phase::New]),
-            hook("touch update_only", &[Phase::Update]),
+            hook(": > new_only", &[Phase::New]),
+            hook(": > update_only", &[Phase::Update]),
         ];
         run_hooks(&hooks, Phase::Update, dir.path(), true, false).unwrap();
         assert!(!dir.path().join("new_only").exists());
@@ -269,7 +269,7 @@ mod tests {
     fn no_hooks_no_trust_needed() {
         let dir = tempfile::tempdir().unwrap();
         run_hooks(&[], Phase::New, dir.path(), false, false).unwrap();
-        let hooks = [hook("touch x", &[Phase::Update])];
+        let hooks = [hook(": > x", &[Phase::Update])];
         run_hooks(&hooks, Phase::New, dir.path(), false, false).unwrap();
         assert!(!dir.path().join("x").exists());
     }
