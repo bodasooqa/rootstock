@@ -510,6 +510,67 @@ fn update_overlap_exits_2_lists_markers() {
 }
 
 #[test]
+fn update_conflict_ignores_the_users_git_conflict_style() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    fs::write(
+        dir.join("README.md"),
+        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nL8-project\n",
+    )
+    .unwrap();
+    commit_project(&dir, "edit");
+    repo.file("tpl/README.md", README_V2).tag("v1.1.0");
+    let cfg_dir = TempDir::new().unwrap();
+    let cfg = cfg_dir.path().join("gitconfig");
+    fs::write(&cfg, "[merge]\n\tconflictStyle = diff3\n").unwrap();
+    update(&dir).env("GIT_CONFIG_GLOBAL", &cfg).assert().code(2);
+    let text = fs::read_to_string(dir.join("README.md")).unwrap();
+    assert!(!text.contains("|||||||"), "{text}");
+    assert!(text.contains("<<<<<<< project"), "{text}");
+}
+
+/// A project whose README conflicts on update to v1.1.0.
+fn conflicting_project() -> (TemplateRepo, TempDir, std::path::PathBuf) {
+    let repo = template_v1();
+    let (tmp, dir) = new_project(&repo);
+    fs::write(
+        dir.join("README.md"),
+        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nL8-project\n",
+    )
+    .unwrap();
+    commit_project(&dir, "edit");
+    repo.file("tpl/README.md", README_V2).tag("v1.1.0");
+    (repo, tmp, dir)
+}
+
+#[test]
+fn update_ignores_inherited_git_location_variables() {
+    let (_repo, _tmp, dir) = conflicting_project();
+    update(&dir)
+        .env("GIT_DIR", dir.join(".git"))
+        .env("GIT_WORK_TREE", &dir)
+        .assert()
+        .code(2)
+        .stdout("markers README.md\n");
+    let text = fs::read_to_string(dir.join("README.md")).unwrap();
+    assert!(text.contains("<<<<<<< project"), "{text}");
+}
+
+#[test]
+fn update_conflict_ignores_the_config_of_the_repo_around_the_temp_dir() {
+    let (_repo, _tmp, dir) = conflicting_project();
+    let outer = TempDir::new().unwrap();
+    git_in(outer.path(), &["init", "-q"]);
+    git_in(outer.path(), &["config", "merge.conflictStyle", "diff3"]);
+    let scratch = outer.path().join("scratch");
+    fs::create_dir(&scratch).unwrap();
+    update(&dir).env("TMPDIR", &scratch).assert().code(2);
+    let text = fs::read_to_string(dir.join("README.md")).unwrap();
+    assert!(!text.contains("|||||||"), "{text}");
+    assert!(text.contains("<<<<<<< project"), "{text}");
+}
+
+#[test]
 fn update_json_output() {
     let repo = template_v1();
     let (_tmp, dir) = new_project(&repo);

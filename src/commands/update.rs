@@ -9,7 +9,7 @@ use super::{
     refuse_unsupported, require_clean_tree, target_label,
 };
 use crate::answers::NoPrompt;
-use crate::apply::{DiskProject, apply, check_path, readable_parents};
+use crate::apply::{DiskProject, GitMerge, apply, check_path, readable_parents};
 use crate::config::Phase;
 use crate::hooks::{check_trust, run_trusted};
 use crate::merge::has_markers;
@@ -106,11 +106,13 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     let target = target_side.render(&target_collected.context)?;
 
     let project = DiskProject::new(dir);
+    let merge = GitMerge::new();
     let plan = plan_update(
         &base,
         &target,
         &project,
         &rec.inventory,
+        &merge,
         &target_label(&version),
     );
     check_trust(
@@ -120,6 +122,7 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         interactive(),
     )?;
     project.finish()?;
+    merge.finish()?;
     refuse_unsupported(&plan)?;
     // Every fallible step runs before the first write (design rule 11).
     let record_text = record::to_text(&Record {

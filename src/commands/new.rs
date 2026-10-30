@@ -8,7 +8,7 @@ use super::{
     CommonOptions, HookFailed, Report, Side, check_version, dir_has_entries, interactive,
     load_data, prompter, refuse_unsupported, target_label,
 };
-use crate::apply::{DiskProject, apply};
+use crate::apply::{DiskProject, GitMerge, apply};
 use crate::config::Phase;
 use crate::hooks::{check_trust, run_trusted};
 use crate::plan::plan_update;
@@ -71,15 +71,18 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
     let target = side.render(&collected.context)?;
 
     let project = DiskProject::new(dir);
+    let merge = GitMerge::new();
     let plan = plan_update(
         &RenderedTree::new(),
         &target,
         &project,
         &Inventory::new(),
+        &merge,
         &target_label(&version),
     );
     check_trust(&cfg.hooks, Phase::New, opts.common.trust, interactive())?;
     project.finish()?;
+    merge.finish()?;
     refuse_unsupported(&plan)?;
     // Every fallible step runs before the first write (design rule 11).
     let record_text = record::to_text(&Record {

@@ -58,9 +58,34 @@ fn carries_credentials(url: &str) -> bool {
     userinfo.contains(':') || (web && !userinfo.is_empty())
 }
 
+/// Repository-local variables of `git rev-parse --local-env-vars` (git 2.54).
+/// They are removed from every spawned git so an inherited `GIT_DIR` and the
+/// like cannot redirect it away from the directory it is meant to work in.
+pub(crate) const GIT_LOCAL_ENV: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
 /// Runs `git` and returns its output; stdin is never inherited.
 pub(crate) fn run_git(args: &[&str]) -> Result<std::process::Output> {
-    Command::new("git")
+    let mut cmd = Command::new("git");
+    for var in GIT_LOCAL_ENV {
+        cmd.env_remove(var);
+    }
+    cmd
         // Repository hooks must never run on behalf of a template.
         .args(["-c", "core.hooksPath=/dev/null"])
         // The `ext::` transport runs arbitrary commands.

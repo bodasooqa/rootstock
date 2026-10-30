@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::RelPath;
-use crate::merge::{Merged, is_binary, merge3};
+use crate::merge::{Merge3, Merged, is_binary};
 use crate::record::{FileClass, Inventory};
 use crate::render::{Entry, Rendered, RenderedTree, fold_path};
 
@@ -145,8 +145,10 @@ impl Out {
 
 /// Decides what to do with one path that is managed in the target and
 /// present in the project, when the base is `base` (`None` = added by both).
+#[allow(clippy::too_many_arguments)]
 fn plan_present(
     out: &mut Out,
+    merge: &dyn Merge3,
     path: &str,
     base: Option<&Entry>,
     target: &Entry,
@@ -198,7 +200,7 @@ fn plan_present(
             }
         },
     };
-    let (merged, kind) = match merge3(base_bytes, pb, tb, label) {
+    let (merged, kind) = match merge.merge3(path, base_bytes, pb, tb, label) {
         Merged::Clean(bytes) => (bytes, base.is_none().then_some(ConflictKind::AddedByBoth)),
         Merged::Conflict(bytes) => (
             bytes,
@@ -271,6 +273,7 @@ fn rename_pairs<'a>(
 #[allow(clippy::too_many_arguments)]
 fn plan_rename(
     out: &mut Out,
+    merge: &dyn Merge3,
     new_inventory: &mut Inventory,
     old: &str,
     new: &str,
@@ -295,6 +298,7 @@ fn plan_rename(
             let mut scratch = Out::default();
             plan_present(
                 &mut scratch,
+                merge,
                 new,
                 Some(&b.entry),
                 &t.entry,
@@ -430,6 +434,7 @@ pub fn plan_update(
     target: &RenderedTree,
     project: &dyn ProjectView,
     inventory: &Inventory,
+    merge: &dyn Merge3,
     target_label: &str,
 ) -> Plan {
     let mut out = Out::default();
@@ -450,6 +455,7 @@ pub fn plan_update(
             let side_taken = base.contains_key(&side) || target.contains_key(&side);
             plan_rename(
                 &mut out,
+                merge,
                 &mut new_inventory,
                 old,
                 path,
@@ -504,6 +510,7 @@ pub fn plan_update(
                 },
                 Some(p) => plan_present(
                     &mut out,
+                    merge,
                     path,
                     b.map(|b| &b.entry),
                     &t.entry,
@@ -544,6 +551,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::apply::GitMerge;
     use crate::render::Rendered;
 
     const LABEL: &str = "template v1.1.0";
@@ -618,13 +626,26 @@ mod tests {
 
     use FileClass::{Managed as M, Starter as S};
 
+    /// Plans through the real `git merge-file`; a missing git fails the test.
+    fn plan_git(
+        base: &RenderedTree,
+        target: &RenderedTree,
+        project: &dyn ProjectView,
+        inventory: &Inventory,
+    ) -> Plan {
+        let merge = GitMerge::new();
+        let plan = plan_update(base, target, project, inventory, &merge, LABEL);
+        merge.finish().unwrap();
+        plan
+    }
+
     fn run(
         base: &RenderedTree,
         target: &RenderedTree,
         p: &BTreeMap<String, Entry>,
         i: &Inventory,
     ) -> Plan {
-        plan_update(base, target, p, i, LABEL)
+        plan_git(base, target, p, i)
     }
 
     fn write(path: &str, entry: Entry) -> Action {
@@ -1139,7 +1160,14 @@ mod tests {
         let b = tree(&[("d/Readme.md", file("x\n"), M)]);
         let t = tree(&[("D/README.md", file("t\n"), M)]);
         let p = Folded(proj(&[("d/Readme.md", file("p\n")), ("D", file("mine\n"))]));
-        let plan = plan_update(&b, &t, &p, &inv(&[("d/Readme.md", M)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &p,
+            &inv(&[("d/Readme.md", M)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert!(plan.actions.is_empty(), "{:?}", plan.actions);
         assert_eq!(
             plan.conflicts,
@@ -1150,7 +1178,14 @@ mod tests {
         let b = tree(&[("d/Img.bin", bin(1), M)]);
         let t = tree(&[("D/IMG.bin", bin(2), M)]);
         let p = Folded(proj(&[("d/Img.bin", bin(3)), ("D", file("mine\n"))]));
-        let plan = plan_update(&b, &t, &p, &inv(&[("d/Img.bin", M)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &p,
+            &inv(&[("d/Img.bin", M)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert!(plan.actions.is_empty(), "{:?}", plan.actions);
         assert_eq!(
             plan.conflicts,
@@ -1165,7 +1200,14 @@ mod tests {
         let b = tree(&[("d/Readme.md", file("x\n"), M)]);
         let t = tree(&[("D/README.md", file("y\n"), M)]);
         let p = Folded(proj(&[("d/Readme.md", file("x\n")), ("D", file("mine\n"))]));
-        let plan = plan_update(&b, &t, &p, &inv(&[("d/Readme.md", M)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &p,
+            &inv(&[("d/Readme.md", M)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert!(plan.actions.is_empty());
         assert_eq!(
             plan.conflicts,
@@ -1183,7 +1225,14 @@ mod tests {
         let b = tree(&[("Readme.md", file("x\n"), M)]);
         let t = tree(&[("README.md", file("y\n"), M)]);
         let p = Folded(proj(&[("Readme.md", file("x\n"))]));
-        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &p,
+            &inv(&[("Readme.md", M)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert_eq!(
             plan.actions,
             vec![delete("Readme.md"), write("README.md", file("y\n"))]
@@ -1193,7 +1242,14 @@ mod tests {
 
         // Same content: the name still changes.
         let t = tree(&[("README.md", file("x\n"), M)]);
-        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &p,
+            &inv(&[("Readme.md", M)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert_eq!(
             plan.actions,
             vec![delete("Readme.md"), write("README.md", file("x\n"))]
@@ -1206,7 +1262,14 @@ mod tests {
         let b = tree(&[("Readme.md", file("a\nb\nc\nd\ne\nf\ng\n"), M)]);
         let t = tree(&[("README.md", file("A\nb\nc\nd\ne\nf\ng\n"), M)]);
         let p = Folded(proj(&[("Readme.md", file("a\nb\nc\nd\ne\nf\nG\n"))]));
-        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &p,
+            &inv(&[("Readme.md", M)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert_eq!(
             plan.actions,
             vec![
@@ -1219,7 +1282,14 @@ mod tests {
 
         // The template did not change the content: the project's edit moves to the new name.
         let t = tree(&[("README.md", file("a\nb\nc\nd\ne\nf\ng\n"), M)]);
-        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &p,
+            &inv(&[("Readme.md", M)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert_eq!(
             plan.actions,
             vec![
@@ -1236,13 +1306,27 @@ mod tests {
         let b = tree(&[("Readme.md", file("x\n"), M)]);
         let t = tree(&[("README.md", file("y\n"), M)]);
         let p = Folded(proj(&[]));
-        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &p,
+            &inv(&[("Readme.md", M)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert_eq!(plan.actions, vec![write("README.md", file("y\n"))]);
         assert!(plan.conflicts.is_empty());
         assert_eq!(plan.inventory, inv(&[("README.md", M)]));
 
         let t = tree(&[("README.md", file("x\n"), M)]);
-        let plan = plan_update(&b, &t, &p, &inv(&[("Readme.md", M)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &p,
+            &inv(&[("Readme.md", M)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert_eq!(plan.actions, vec![write("README.md", file("x\n"))]);
         assert!(plan.conflicts.is_empty());
     }
@@ -1276,7 +1360,14 @@ mod tests {
         let b = tree(&[("Notes.md", file("x\n"), S)]);
         let t = tree(&[("NOTES.md", file("y\n"), S)]);
         let p = Folded(proj(&[("Notes.md", file("mine\n"))]));
-        let plan = plan_update(&b, &t, &p, &inv(&[("Notes.md", S)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &p,
+            &inv(&[("Notes.md", S)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert_eq!(
             plan.actions,
             vec![delete("Notes.md"), write("NOTES.md", file("mine\n"))]
@@ -1286,7 +1377,14 @@ mod tests {
         // The project deleted the starter: no alias, so the new name is a new
         // starter file and is created (`— | starter | absent, not in inventory`).
         // The old name is a starter the target no longer emits, so it stays known.
-        let plan = plan_update(&b, &t, &Folded(proj(&[])), &inv(&[("Notes.md", S)]), LABEL);
+        let plan = plan_update(
+            &b,
+            &t,
+            &Folded(proj(&[])),
+            &inv(&[("Notes.md", S)]),
+            &GitMerge::new(),
+            LABEL,
+        );
         assert_eq!(plan.actions, vec![write("NOTES.md", file("y\n"))]);
         assert!(plan.conflicts.is_empty());
         assert_eq!(plan.inventory, inv(&[("NOTES.md", S), ("Notes.md", S)]));

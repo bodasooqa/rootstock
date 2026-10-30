@@ -1,9 +1,11 @@
 //! Executes a `Plan` on disk and reads the project back as a `ProjectView`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 use crate::RelPath;
+use crate::merge::{Merge3, Merged};
 use crate::plan::{Action, Plan, ProjectView};
 use crate::render::Entry;
 
@@ -384,6 +386,141 @@ fn prune_empty_parents(root: &Path, full: &Path) {
             break;
         }
         dir = current.parent();
+    }
+}
+
+/// `git merge-file` exits with the number of conflicts, capped at this value.
+const MAX_CONFLICT_EXIT: i32 = 127;
+
+/// Why a `git merge-file` run failed; both carry the message.
+enum Failure {
+    /// The process did not start (reported once, for the first file).
+    Spawn(String),
+    Exit(String),
+}
+
+/// Three-way text merge through `git merge-file`; errors are collected for `finish`.
+pub struct GitMerge {
+    program: String,
+    errors: RefCell<Vec<String>>,
+    spawn_failed: Cell<bool>,
+}
+
+impl Default for GitMerge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GitMerge {
+    pub fn new() -> Self {
+        Self {
+            program: "git".to_string(),
+            errors: RefCell::new(Vec::new()),
+            spawn_failed: Cell::new(false),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_program(program: &str) -> Self {
+        Self {
+            program: program.to_string(),
+            errors: RefCell::new(Vec::new()),
+            spawn_failed: Cell::new(false),
+        }
+    }
+
+    /// Returns the merge errors recorded by `merge3`, if any.
+    pub fn finish(self) -> anyhow::Result<()> {
+        let errors = self.errors.into_inner();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!("cannot merge: {}", errors.join("; "))
+        }
+    }
+
+    fn run(
+        &self,
+        path: &str,
+        base: &[u8],
+        project: &[u8],
+        target: &[u8],
+        target_label: &str,
+    ) -> Result<Merged, Failure> {
+        let dir = tempfile::tempdir()
+            .map_err(|e| Failure::Exit(format!("`{path}`: cannot create a temp dir: {e}")))?;
+        let write = |name: &str, bytes: &[u8]| {
+            std::fs::write(dir.path().join(name), bytes)
+                .map_err(|e| Failure::Exit(format!("`{path}`: cannot write {name}: {e}")))
+        };
+        write("project", project)?;
+        write("base", base)?;
+        write("target", target)?;
+        // An empty git config keeps the user's `merge.*` settings out of the result.
+        write("gitconfig", b"")?;
+        let mut cmd = Command::new(&self.program);
+        for var in crate::source::GIT_LOCAL_ENV {
+            cmd.env_remove(var);
+        }
+        let out = cmd
+            .current_dir(dir.path())
+            .args(["-c", "merge.conflictStyle=merge"])
+            .args(["merge-file", "-p", "-L", "project", "-L", "base", "-L"])
+            .arg(target_label)
+            .args(["project", "base", "target"])
+            .env("GIT_CONFIG_GLOBAL", dir.path().join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| {
+                Failure::Spawn(format!(
+                    "`{path}`: failed to run {} merge-file: {e}",
+                    self.program
+                ))
+            })?;
+        match out.status.code() {
+            Some(0) => Ok(Merged::Clean(out.stdout)),
+            Some(n) if (1..=MAX_CONFLICT_EXIT).contains(&n) => Ok(Merged::Conflict(out.stdout)),
+            other => Err(Failure::Exit(format!(
+                "`{path}`: git merge-file failed ({}): {}",
+                other.map_or("killed by a signal".to_string(), |c| format!("exit {c}")),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))),
+        }
+    }
+}
+
+impl Merge3 for GitMerge {
+    fn merge3(
+        &self,
+        path: &str,
+        base: &[u8],
+        project: &[u8],
+        target: &[u8],
+        target_label: &str,
+    ) -> Merged {
+        // Trivial cases never need git.
+        if project == target || base == target {
+            return Merged::Clean(project.to_vec());
+        }
+        if base == project {
+            return Merged::Clean(target.to_vec());
+        }
+        match self.run(path, base, project, target, target_label) {
+            Ok(merged) => merged,
+            Err(failure) => {
+                let message = match failure {
+                    // A missing git fails every file alike: say it once.
+                    Failure::Spawn(_) if self.spawn_failed.replace(true) => None,
+                    Failure::Spawn(message) | Failure::Exit(message) => Some(message),
+                };
+                if let Some(message) = message {
+                    self.errors.borrow_mut().push(message);
+                }
+                Merged::Conflict(project.to_vec())
+            }
+        }
     }
 }
 
@@ -776,5 +913,223 @@ mod tests {
         let err = apply(&p, dir.path()).unwrap_err().to_string();
         assert!(err.contains("applied 1 of 2"), "{err}");
         assert!(err.contains("dir"), "{err}");
+    }
+
+    fn lines(n: usize, edits: &[(usize, &str)]) -> String {
+        (1..=n)
+            .map(|i| {
+                let text = edits
+                    .iter()
+                    .find(|(k, _)| *k == i)
+                    .map_or(format!("line{i}"), |(_, t)| (*t).to_string());
+                format!("{text}\n")
+            })
+            .collect()
+    }
+
+    fn merged(base: &[u8], project: &[u8], target: &[u8]) -> Merged {
+        let merge = GitMerge::new();
+        let out = merge.merge3("f.txt", base, project, target, "t");
+        merge.finish().unwrap();
+        out
+    }
+
+    fn conflict(m: Merged) -> String {
+        match m {
+            Merged::Conflict(b) => String::from_utf8(b).unwrap(),
+            Merged::Clean(b) => panic!("expected conflict, got clean {b:?}"),
+        }
+    }
+
+    #[test]
+    fn non_overlapping_edits_merge_clean() {
+        let base = lines(10, &[]);
+        let project = lines(10, &[(2, "mine")]);
+        let target = lines(10, &[(9, "theirs")]);
+        let want = lines(10, &[(2, "mine"), (9, "theirs")]);
+        assert_eq!(
+            merged(base.as_bytes(), project.as_bytes(), target.as_bytes()),
+            Merged::Clean(want.into_bytes())
+        );
+    }
+
+    #[test]
+    fn overlap_gives_markers() {
+        let merge = GitMerge::new();
+        let out = conflict(merge.merge3(
+            "f.txt",
+            b"a\nb\nc\n",
+            b"a\nmine\nc\n",
+            b"a\ntheirs\nc\n",
+            "template v1.1.0",
+        ));
+        merge.finish().unwrap();
+        assert_eq!(
+            out,
+            "a\n<<<<<<< project\nmine\n=======\ntheirs\n>>>>>>> template v1.1.0\nc\n"
+        );
+    }
+
+    #[test]
+    fn empty_base_identical_is_clean() {
+        assert_eq!(merged(b"", b"x\n", b"x\n"), Merged::Clean(b"x\n".to_vec()));
+    }
+
+    #[test]
+    fn empty_base_different_conflicts() {
+        let out = conflict(merged(b"", b"x\n", b"y\n"));
+        assert_eq!(out, "<<<<<<< project\nx\n=======\ny\n>>>>>>> t\n");
+    }
+
+    #[test]
+    fn crlf_preserved() {
+        let clean = merged(
+            b"a\r\nb\r\nc\r\nd\r\n",
+            b"A\r\nb\r\nc\r\nd\r\n",
+            b"a\r\nb\r\nc\r\nD\r\n",
+        );
+        assert_eq!(clean, Merged::Clean(b"A\r\nb\r\nc\r\nD\r\n".to_vec()));
+        let out = conflict(merged(b"a\r\nb\r\n", b"a\r\nx\r\n", b"a\r\ny\r\n"));
+        assert_eq!(
+            out,
+            "a\r\n<<<<<<< project\r\nx\r\n=======\r\ny\r\n>>>>>>> t\r\n"
+        );
+    }
+
+    #[test]
+    fn no_final_newline_preserved() {
+        let clean = merged(b"a\nb\nc", b"A\nb\nc", b"a\nb\nC");
+        assert_eq!(clean, Merged::Clean(b"A\nb\nC".to_vec()));
+        let out = conflict(merged(b"a\nb", b"a\nx", b"a\ny"));
+        assert_eq!(out, "a\n<<<<<<< project\nx\n=======\ny\n>>>>>>> t\n");
+    }
+
+    #[test]
+    fn crlf_incomplete_side_gets_crlf() {
+        let out = conflict(merged(b"a\r\nb", b"a\r\nx", b"a\r\ny"));
+        assert_eq!(
+            out,
+            "a\r\n<<<<<<< project\r\nx\r\n=======\r\ny\r\n>>>>>>> t\r\n"
+        );
+        // A side that ends with its own line break keeps it as is.
+        let out = conflict(merged(b"a\r\nb\r\n", b"a\r\nx\r\n", b"a\r\ny"));
+        assert_eq!(
+            out,
+            "a\r\n<<<<<<< project\r\nx\r\n=======\r\ny\r\n>>>>>>> t\r\n"
+        );
+    }
+
+    #[test]
+    fn marker_lookalike_content_untouched() {
+        let base = lines(10, &[]);
+        let project = lines(10, &[(2, "<<<<<<< x")]);
+        let target = lines(10, &[(9, "theirs")]);
+        let want = lines(10, &[(2, "<<<<<<< x"), (9, "theirs")]);
+        assert_eq!(
+            merged(base.as_bytes(), project.as_bytes(), target.as_bytes()),
+            Merged::Clean(want.into_bytes())
+        );
+        let project = "a\n<<<<<<< x\n=======\nc\n";
+        let out = conflict(merged(b"a\nb\nc\n", project.as_bytes(), b"a\nq\nc\n"));
+        assert_eq!(out.matches("<<<<<<< project\n").count(), 1);
+        assert_eq!(out.matches(">>>>>>> t\n").count(), 1);
+        assert!(out.contains("<<<<<<< x\n"));
+    }
+
+    #[test]
+    fn same_edit_at_the_edge_conflicts() {
+        let out = merged(
+            b"  \"deny\": [\n    \"a\",\n    \"b\"\n  ]\n",
+            b"  \"deny\": [\n    \"a\",\n    \"b\",\n    \"p1\",\n    \"p2\"\n  ]\n",
+            b"  \"deny\": [\n    \"a\",\n    \"b\",\n    \"t1\"\n  ]\n",
+        );
+        assert_eq!(
+            out,
+            Merged::Conflict(
+                b"  \"deny\": [\n    \"a\",\n    \"b\",\n<<<<<<< project\n    \"p1\",\n    \"p2\"\n=======\n    \"t1\"\n>>>>>>> t\n  ]\n".to_vec()
+            )
+        );
+    }
+
+    #[test]
+    fn conflicts_join_across_a_line_without_letters() {
+        assert_eq!(
+            merged(b"a\n}\nb\n", b"A\n}\nB\n", b"X\n}\nY\n"),
+            Merged::Conflict(b"<<<<<<< project\nA\n}\nB\n=======\nX\n}\nY\n>>>>>>> t\n".to_vec())
+        );
+    }
+
+    #[test]
+    fn conflicts_stay_apart_over_four_lettered_lines() {
+        assert_eq!(
+            merged(
+                b"a\nk1\nk2\nk3\nk4\nb\n",
+                b"A\nk1\nk2\nk3\nk4\nB\n",
+                b"X\nk1\nk2\nk3\nk4\nY\n"
+            ),
+            Merged::Conflict(
+                b"<<<<<<< project\nA\n=======\nX\n>>>>>>> t\nk1\nk2\nk3\nk4\n<<<<<<< project\nB\n=======\nY\n>>>>>>> t\n".to_vec()
+            )
+        );
+    }
+
+    #[test]
+    fn git_merges_clean_where_diffy_conflicted() {
+        assert_eq!(
+            merged(b"d\n\nx\n", b"x\nx\n", b"d\n\nx\n  e\n  e,\n"),
+            Merged::Clean(b"x\nx\n  e\n  e,\n".to_vec())
+        );
+        assert_eq!(
+            merged(
+                b"}\na\n}\n}\nb\n",
+                b"}\na\nc\n}\nb\n",
+                b"}\na\n}\n}\nd\nb\n"
+            ),
+            Merged::Clean(b"}\na\nc\n}\nd\nb\n".to_vec())
+        );
+    }
+
+    #[test]
+    fn git_conflicts_where_diffy_merged_clean() {
+        assert_eq!(
+            merged(
+                b"c\nf\n  e,\nf\n  e,\nx\nx\n",
+                b"c\nf\n  e,\nf\n  e,\nb\nx\n",
+                b"c\nf\n  e,\nf\n  e,\nx\n"
+            ),
+            Merged::Conflict(
+                b"c\nf\n  e,\nf\n  e,\n<<<<<<< project\nb\n=======\n>>>>>>> t\nx\n".to_vec()
+            )
+        );
+    }
+
+    #[test]
+    fn short_paths_do_not_call_git() {
+        let merge = GitMerge::with_program("rootstock-no-such-program");
+        assert_eq!(
+            merge.merge3("f.txt", b"a\n", b"p\n", b"p\n", "t"),
+            Merged::Clean(b"p\n".to_vec())
+        );
+        assert_eq!(
+            merge.merge3("f.txt", b"a\n", b"a\n", b"t\n", "t"),
+            Merged::Clean(b"t\n".to_vec())
+        );
+        assert_eq!(
+            merge.merge3("f.txt", b"a\n", b"p\n", b"a\n", "t"),
+            Merged::Clean(b"p\n".to_vec())
+        );
+        merge.finish().unwrap();
+    }
+
+    #[test]
+    fn missing_git_is_reported_by_finish() {
+        let merge = GitMerge::with_program("rootstock-no-such-program");
+        let out = merge.merge3("dir/f.txt", b"a\n", b"p\n", b"t\n", "t");
+        assert_eq!(out, Merged::Conflict(b"p\n".to_vec()));
+        let err = merge.finish().unwrap_err().to_string();
+        // A spawn failure is reported once, for the first file.
+        assert!(err.contains("`dir/f.txt`"), "{err}");
+        assert!(err.contains("failed to run"), "{err}");
+        assert_eq!(err.matches("failed to run").count(), 1, "{err}");
     }
 }

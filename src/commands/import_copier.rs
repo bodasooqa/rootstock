@@ -15,6 +15,7 @@ use crate::answers::NoPrompt;
 use crate::apply::DiskProject;
 use crate::config::CONFIG_FILE;
 use crate::copier::{self, CopierError};
+use crate::merge::{Merge3, Merged};
 use crate::plan::{Conflict, ConflictKind, plan_update};
 use crate::record::{self, Inventory, RECORD_FILE, Record};
 use crate::render::RenderedTree;
@@ -26,6 +27,15 @@ const ANSWERS_FILE: &str = ".copier-answers.yml";
 /// Permissions of the written `rootstock.toml`.
 #[cfg(unix)]
 const CONFIG_MODE: u32 = 0o644;
+
+/// Import needs only the inventory, so the merge result is never used.
+struct KeepProject;
+
+impl Merge3 for KeepProject {
+    fn merge3(&self, _: &str, _: &[u8], project: &[u8], _: &[u8], _: &str) -> Merged {
+        Merged::Clean(project.to_vec())
+    }
+}
 
 /// Imports the template or the project in `dir`; the summary and any findings go to `err`.
 ///
@@ -103,6 +113,7 @@ fn project_side(dir: &Path, err: &mut dyn Write) -> Result<Vec<Conflict>> {
         &rendered,
         &disk,
         &Inventory::new(),
+        &KeepProject,
         &target_label(&version),
     );
     disk.finish()?;

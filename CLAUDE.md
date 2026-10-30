@@ -8,7 +8,7 @@ rootstock — CLI на Rust (один бинарник, аналог Copier): с
 
 ## Стек проекта
 
-Rust stable, edition 2024, один крейт `rootstock` (lib + bin `rootstock`), лицензия MIT OR Apache-2.0. Библиотеки: clap (derive), serde, toml, serde_json, serde_norway (YAML), minijinja, minijinja-contrib (`pycompat`), regex, ignore, semver, diffy, inquire, thiserror, anyhow, tempfile; в тестах assert_cmd и predicates. Git — через CLI `git` (`std::process::Command`), не libgit2.
+Rust stable, edition 2024, один крейт `rootstock` (lib + bin `rootstock`), лицензия MIT OR Apache-2.0. Библиотеки: clap (derive), serde, toml, serde_json, serde_norway (YAML), minijinja, minijinja-contrib (`pycompat`), regex, ignore, semver, inquire, thiserror, anyhow, tempfile; в тестах assert_cmd и predicates. Git — через CLI `git` (`std::process::Command`), не libgit2; трёхстороннее слияние текста — тоже через него (`git merge-file`), как у Copier.
 
 Правила проекта, которые **переопределяют** общие правила процесса:
 
@@ -29,15 +29,16 @@ Rust stable, edition 2024, один крейт `rootstock` (lib + bin `rootstock
 | `src/jinja.rs` | окружение minijinja из опций, фильтры, помощники выражений и шаблонов |
 | `src/answers.rs` | сбор ответов: заданные, дефолты, `when`, валидаторы; вопросы — через `Prompter` |
 | `src/render.rs` | рендер checkout'а шаблона в `RenderedTree` с классами файлов |
-| `src/merge.rs` | определение бинарных файлов, трёхстороннее слияние текста с маркерами |
+| `src/merge.rs` | определение бинарных файлов, поиск маркеров, трейт слияния `Merge3` |
 | `src/plan.rs` | таблица обновления: `plan_update` (чистая функция) |
 | `src/source.rs` | источники шаблонов, теги, checkout'ы через `git` |
-| `src/apply.rs` | выполнение `Plan` на диске |
+| `src/apply.rs` | выполнение `Plan` на диске; входы плана с края: `DiskProject` (файлы проекта) и `GitMerge` (слияние через `git merge-file`) |
 | `src/hooks.rs` | запуск хуков с проверкой доверия |
 | `src/copier.rs` | ядро: конвертация `copier.yml` в `rootstock.toml`, проверка дерева шаблона на неподдерживаемое, разбор `.copier-answers.yml`; только чтение |
 | `src/cli.rs`, `src/commands/{mod,new,update,status,check,import_copier}.rs` | CLI, терминальный диалог (`TerminalPrompter`) и команды |
 | `tests/support/mod.rs` | построитель фикстуры `TemplateRepo` (git-репозиторий с тегами во временном каталоге) |
 | `tests/cli_*.rs` | сквозные сценарии через бинарник |
+| `tests/parity/` | сверка с Copier 9.19 для приёмки этапа 2 (`render.sh`, `update.sh`, общие `env.sh` и `compare.py`); не в CI |
 
 Общие типы живут в `pub mod` из `src/lib.rs`. Пути внутри деревьев — `RelPath`: `String` с разделителем `/`, не начинается с `/`, без компонентов `..`.
 

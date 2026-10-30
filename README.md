@@ -23,7 +23,7 @@ rootstock import-copier
 ```
 
 - `new` creates the project at the given version (the latest release tag by default) and writes the record `.rootstock.toml`. `<template>` is a URL, `gh:owner/repo` or a local path; `--version HEAD` renders the working tree of a local template. `--subdir` names the template's directory inside the repository, for any kind of source; it is kept in the record, so `update` needs no flag.
-- `update` merges the template changes between the recorded version and the target into the project with a three-way merge. Conflicts are left as markers (`<<<<<<< project`, `=======`, `>>>>>>> template <version>`); binary files get a `.rootstock-new` side file next to them. `--data` (and `--data-file`) changes an answer: the base is rendered with the recorded answers, the target with the new ones.
+- `update` merges the template changes between the recorded version and the target into the project with a three-way merge. Text is merged by `git merge-file` (so `git` must be on `PATH`), the way Copier merges, whatever the user's git config says. Conflicts are left as markers (`<<<<<<< project`, `=======`, `>>>>>>> template <version>`); binary files get a `.rootstock-new` side file next to them. `--data` (and `--data-file`) changes an answer: the base is rendered with the recorded answers, the target with the new ones.
 - `update --to HEAD` on a project created from a local template always runs, since `HEAD` moves. The base of such a project is the commit recorded at `new` time, so uncommitted template edits that `new --version HEAD` rendered show up as project edits.
 - `status` prints `current`, `latest` and `major` (whether the latest release is a major bump), as text or JSON.
 - `check` is for CI: it lists files with unresolved conflict markers (`markers <path>`) and leftover side files (`side-file <path>`) and fails if there are any.
@@ -52,14 +52,14 @@ Stdout carries only command output (conflict lists, status, JSON); everything el
 - `src/jinja.rs` - minijinja environment, filters, expression helpers
 - `src/answers.rs` - collecting answers: given, defaults, `when`, validators; asking goes through a `Prompter`
 - `src/render.rs` - rendering a template checkout into a tree with file classes
-- `src/merge.rs` - binary detection, three-way text merge with markers
+- `src/merge.rs` - binary detection, conflict marker search, the merge interface
 - `src/plan.rs` - the update table, `plan_update` (pure function)
 - `src/source.rs` - template sources, tags, checkouts through `git`
-- `src/apply.rs` - executing a plan on disk
+- `src/apply.rs` - executing a plan on disk; reading the project and merging text through `git merge-file`
 - `src/hooks.rs` - running hooks with a trust check
 - `src/copier.rs` - converting a Copier `copier.yml`, checking the template tree for what cannot be converted, reading `.copier-answers.yml`
 - `src/cli.rs`, `src/commands/{mod,new,update,status,check,import_copier}.rs` - CLI, the terminal dialog and the commands
-- `tests/` - end-to-end scenarios through the binary (`cli_*.rs`), fixtures in `tests/support/`
+- `tests/` - end-to-end scenarios through the binary (`cli_*.rs`), fixtures in `tests/support/`; `tests/parity/` - the Copier parity checks of Stage 2 (not run in CI)
 - `docs/design.md` - the specification
 
 ## License
