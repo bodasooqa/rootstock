@@ -6,7 +6,7 @@
   - `RootOutside` говорит «outside the template directory».
 
   Проверка: `cargo test` красный ровно на новых тестах.
-- [x] 1.2 Удалить `TemplateConfig.include_root` и `render::include_root` с его тестами. `Side::load` передаёт в `Jinja::new` каталог checkout'а; doc-комментарии `jinja.rs` и `config.rs` переписать; текст `RootOutside` поправить. Проверка: `cargo test` зелёный, `git grep include_root -- src tests` пуст.
+- [x] 1.2 Удалить `TemplateConfig.include_root` и `render::include_root` с его тестами. `Side::load` передаёт в `Jinja::new` каталог checkout'а; doc-комментарии `jinja.rs` и `config.rs` переписать; текст `RootOutside` поправить. Проверка: `cargo test` зелёный, `git grep include_root -- src tests` находит только тесты отказа от ключа.
 
 ## 2. Подкаталог в источнике (design D1, D3, D4)
 
@@ -47,7 +47,7 @@
 ## 5. Документация и проверки
 
 - [x] 5.1 `README.md`: `--subdir` в быстром старте; абзац о формате шаблона — подкаталог любого источника, подключения от каталога с `rootstock.toml`. Проверка: `git grep -n include_root README.md` пуст.
-- [ ] 5.2 Полные проверки:
+- [x] 5.2 Полные проверки:
   - `cargo fmt --check`;
   - `cargo clippy --all-targets --all-features -- -D warnings`;
   - `cargo test`.
