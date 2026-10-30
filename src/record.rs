@@ -43,17 +43,19 @@ pub struct Record {
 pub enum RecordError {
     #[error("{}: not a rootstock project ({RECORD_FILE} not found)", dir.display())]
     NotAProject { dir: PathBuf },
-    #[error("cannot read {}: {source}", path.display())]
+    #[error("cannot read {}", path.display())]
     Read {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("cannot write {}: {source}", path.display())]
+    #[error("{}: `{RECORD_FILE}` must be a regular file", path.display())]
+    NotRegular { path: PathBuf },
+    #[error("cannot write {}", path.display())]
     Write {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("invalid record {}: {source}", path.display())]
+    #[error("invalid record {}", path.display())]
     Parse {
         path: PathBuf,
         source: toml::de::Error,
@@ -62,7 +64,7 @@ pub enum RecordError {
     UnsupportedSchema { path: PathBuf, found: u32 },
     #[error("answer `{question}` cannot be stored in the record: {reason}")]
     Answer { question: String, reason: String },
-    #[error("cannot serialize record: {0}")]
+    #[error("cannot serialize record")]
     Serialize(#[from] toml::ser::Error),
 }
 
@@ -149,13 +151,19 @@ pub(crate) fn toml_to_json(
 /// Reads the record of the project at `project`.
 pub fn read(project: &Path) -> Result<Record, RecordError> {
     let path = project.join(RECORD_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
+    // The record is project content: a symlink could point anywhere.
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_file() => {}
+        Ok(_) => return Err(RecordError::NotRegular { path }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(RecordError::NotAProject {
                 dir: project.to_path_buf(),
             });
         }
+        Err(source) => return Err(RecordError::Read { path, source }),
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
         Err(source) => return Err(RecordError::Read { path, source }),
     };
     parse(&path, &text)
@@ -303,6 +311,24 @@ mod tests {
         let err = read(dir.path()).unwrap_err().to_string();
         assert!(err.contains("unsupported schema 2"), "{err}");
         assert!(err.contains(".rootstock.toml"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn record_symlink_rejected() {
+        let outside = tempfile::tempdir().unwrap();
+        write(outside.path(), &sample()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join(RECORD_FILE),
+            dir.path().join(RECORD_FILE),
+        )
+        .unwrap();
+        let err = read(dir.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("`.rootstock.toml` must be a regular file"),
+            "{err}"
+        );
     }
 
     #[test]

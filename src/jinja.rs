@@ -11,9 +11,19 @@ use crate::config::JinjaOptions;
 use crate::record::Answers;
 
 /// A template or expression failed to compile or render.
+///
+/// The Display text already holds minijinja's causes and source excerpt, so
+/// the inner error is deliberately not exposed as `source`: a `{:#}` chain
+/// would print it twice.
 #[derive(Debug, thiserror::Error)]
 #[error("{}", describe(.0))]
-pub struct JinjaError(#[from] minijinja::Error);
+pub struct JinjaError(minijinja::Error);
+
+impl From<minijinja::Error> for JinjaError {
+    fn from(e: minijinja::Error) -> Self {
+        JinjaError(e)
+    }
+}
 
 /// The error text with its template name, line and source excerpt.
 fn describe(e: &Error) -> String {

@@ -14,12 +14,14 @@ const SUPPORTED_SCHEMA: u32 = 1;
 /// Errors from loading or validating a template config.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("cannot read template config {}: {source}", path.display())]
+    #[error("cannot read template config {}", path.display())]
     Read {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("invalid template config {}: {source}", path.display())]
+    #[error("{}: `{CONFIG_FILE}` must be a regular file", path.display())]
+    NotRegular { path: PathBuf },
+    #[error("invalid template config {}", path.display())]
     Parse {
         path: PathBuf,
         source: toml::de::Error,
@@ -277,10 +279,16 @@ fn de_version<'de, D: Deserializer<'de>>(d: D) -> Result<Option<semver::Version>
 /// Reads and validates `<template_dir>/rootstock.toml`.
 pub fn load(template_dir: &Path) -> Result<TemplateConfig, ConfigError> {
     let path = template_dir.join(CONFIG_FILE);
-    let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Read {
+    let read_error = |source| ConfigError::Read {
         path: path.clone(),
         source,
-    })?;
+    };
+    // The template is untrusted: a symlink could pull in any file on the machine.
+    let meta = std::fs::symlink_metadata(&path).map_err(read_error)?;
+    if !meta.file_type().is_file() {
+        return Err(ConfigError::NotRegular { path: path.clone() });
+    }
+    let text = std::fs::read_to_string(&path).map_err(read_error)?;
     parse(&text, &path)
 }
 
@@ -555,7 +563,7 @@ run = "make fmt"
             let text = format!(
                 "schema = 1\n[[questions]]\nname = \"x\"\ntype = \"choice\"\nchoices = [{bad}]"
             );
-            let e = parse(&text, p()).unwrap_err().to_string();
+            let e = format!("{:#}", anyhow::Error::from(parse(&text, p()).unwrap_err()));
             assert!(
                 e.contains("question `x`: choice must be a plain value"),
                 "{bad}: {e}"
@@ -566,6 +574,27 @@ run = "make fmt"
     #[test]
     fn rejects_unknown_fields() {
         assert!(parse("schema = 1\nbogus = 1", p()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_symlink_rejected() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("x"), "secret-content = [").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path().join("x"), dir.path().join(CONFIG_FILE)).unwrap();
+        let err = load(dir.path()).unwrap_err();
+        let shown = format!("{:#}", anyhow::Error::from(err));
+        assert!(
+            shown.contains("`rootstock.toml` must be a regular file"),
+            "{shown}"
+        );
+        assert!(!shown.contains("secret-content"), "{shown}");
+
+        std::fs::remove_file(dir.path().join(CONFIG_FILE)).unwrap();
+        std::fs::create_dir(dir.path().join(CONFIG_FILE)).unwrap();
+        let err = load(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("must be a regular file"), "{err}");
     }
 
     #[test]

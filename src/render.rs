@@ -30,7 +30,7 @@ pub type RenderedTree = BTreeMap<RelPath, Rendered>;
 /// Errors from rendering a template; each names the source path.
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
-    #[error("{}: {source}", path.display())]
+    #[error("{}", path.display())]
     Io {
         path: PathBuf,
         source: std::io::Error,
@@ -41,7 +41,7 @@ pub enum RenderError {
     NonUtf8Content { path: PathBuf },
     #[error("{}: symlink target is not valid UTF-8", path.display())]
     NonUtf8Link { path: PathBuf },
-    #[error("{}: {source}", path.display())]
+    #[error("{}", path.display())]
     Jinja { path: PathBuf, source: JinjaError },
     #[error("{}: rendered path {rendered:?} is not allowed: {reason}", path.display())]
     BadPath {
@@ -72,7 +72,7 @@ pub enum RenderError {
     },
     #[error("{}: template root resolves outside the repository", path.display())]
     RootOutside { path: PathBuf },
-    #[error("invalid file rule {pattern:?}: {source}")]
+    #[error("invalid file rule {pattern:?}")]
     BadPattern {
         pattern: String,
         source: ignore::Error,

@@ -106,6 +106,27 @@ fn new_noninteractive_missing_answer_exits_1() {
 }
 
 #[test]
+fn new_config_parse_error_printed_once() {
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\nroot = [ \"tpl\"\n")
+        .file("tpl/a.txt", "a\n")
+        .tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    let out = rootstock()
+        .args(["new", &repo.url()])
+        .arg(tmp.path().join("p"))
+        .arg("--defaults")
+        .assert()
+        .code(1)
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8_lossy(&out);
+    assert!(stderr.contains("rootstock.toml"), "{stderr}");
+    assert_eq!(stderr.matches("root = [ \"tpl\"").count(), 1, "{stderr}");
+}
+
+#[test]
 fn new_refuses_existing_record() {
     let repo = template_v1();
     let (_tmp, dir) = new_project(&repo);
