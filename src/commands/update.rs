@@ -158,15 +158,14 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     apply(&plan, dir)?;
     // Before the hooks, which may rely on the index. A path git refuses is
     // reported at the end, after the hooks and the output.
-    let failed = set_index_modes(&plan, dir)
-        .context("files were written; the git index could not be read")?;
+    let failed = set_index_modes(&plan, dir);
     let report = Report {
         version,
         conflicts: plan.conflicts,
     };
     if let Err(e) = run_trusted(&target_cfg.hooks, Phase::Update, dir, shell.as_ref()) {
         let mut e = e.context("files were written; hooks failed; the record was not updated");
-        if let Some(index) = index_failure(&failed) {
+        if let Some(index) = index_failure(&failed, false) {
             e = e.context(format!("{index:#}"));
         }
         return Err(HookFailed::new(report, e).into());
@@ -174,7 +173,7 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     record::write_text(dir, &record_text)
         .context("files were written; the record was not updated")?;
     eprintln!("updated to {}", report.version);
-    if let Some(e) = index_failure(&failed) {
+    if let Some(e) = index_failure(&failed, true) {
         return Err(HookFailed::new(report, e).into());
     }
     Ok(report)

@@ -401,9 +401,12 @@ fn e2e_symlink_target_in_a_subdirectory() {
     commit_project(&dir, "init");
     // Whatever the system spells it like, the target is `sub/a.txt` to rootstock.
     assert_eq!(link_target(&dir, "link"), "sub/a.txt");
+    // Reading through the link fails if the target was converted wrongly.
+    assert_eq!(read(&dir, "link"), "a\n");
     repo.symlink("tpl/link", "sub/b.txt").tag("v1.1.0");
     update(&dir).assert().code(0).stdout("");
     assert_eq!(link_target(&dir, "link"), "sub/b.txt");
+    assert_eq!(read(&dir, "link"), "b\n");
 }
 
 #[test]

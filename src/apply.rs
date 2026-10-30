@@ -3,6 +3,8 @@
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 
+use anyhow::Context;
+
 use crate::RelPath;
 use crate::merge::{Merge3, Merged};
 use crate::plan::{Action, Plan, ProjectView};
@@ -162,10 +164,30 @@ fn run_git_in(root: &Path, args: &[&str]) -> anyhow::Result<std::process::Output
 }
 
 /// True when `root` is inside a git work tree (its own or a repository's
-/// above it, as in a monorepo). A directory that does not exist is not.
+/// above it, as in a monorepo). A directory that does not exist is not. Only
+/// git's "not a git repository" means a project without git; any other
+/// failure (say, "dubious ownership") is an error with git's text.
 fn is_git_work_tree(root: &Path) -> anyhow::Result<bool> {
+    if !root.is_dir() {
+        return Ok(false);
+    }
     let out = run_git_in(root, &["rev-parse", "--is-inside-work-tree"])?;
-    Ok(out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true")
+    classify_work_tree(
+        out.status.success(),
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+    )
+}
+
+/// The verdict on the output of `rev-parse --is-inside-work-tree`.
+fn classify_work_tree(success: bool, stdout: &str, stderr: &str) -> anyhow::Result<bool> {
+    if success {
+        return Ok(stdout.trim() == "true");
+    }
+    if stderr.contains("not a git repository") {
+        return Ok(false);
+    }
+    anyhow::bail!("git rev-parse failed: {}", stderr.trim())
 }
 
 /// The modes in the project's git index. Where the file system keeps the
@@ -362,13 +384,28 @@ fn plan_index_ops(
     ops
 }
 
-/// True when `.gitignore` rules cover `path` of the project at `root`.
-fn is_ignored(root: &Path, path: &str) -> bool {
+/// Whether `.gitignore` rules cover `path` of the project at `root`; the
+/// error is why git could not tell.
+fn is_ignored(root: &Path, path: &str) -> Result<bool, String> {
     // `check-ignore` takes paths, not pathspecs, and refuses `--literal-pathspecs`.
     let dir = root.to_string_lossy();
-    crate::source::run_git(&["-C", &dir, "check-ignore", "-q", "--", path])
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+    let out = crate::source::run_git(&["-C", &dir, "check-ignore", "-q", "--", path])
+        .map_err(|e| format!("{e:#}"))?;
+    ignore_verdict(out.status.code(), &String::from_utf8_lossy(&out.stderr))
+}
+
+/// `check-ignore -q` exits 0 for an ignored path and 1 for one that is not;
+/// anything else is a failure.
+fn ignore_verdict(code: Option<i32>, stderr: &str) -> Result<bool, String> {
+    match code {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        other => Err(format!(
+            "git check-ignore failed ({}): {}",
+            other.map_or("no exit code".to_string(), |c| c.to_string()),
+            stderr.trim()
+        )),
+    }
 }
 
 /// The path of the project below the repository's top, `/`-terminated
@@ -441,11 +478,17 @@ fn run_index_ops(root: &Path, prefix: &str, ops: &[IndexOp]) -> Vec<String> {
 /// `root`, where the file system has no bit of its own (Windows). Returns the
 /// paths that git refused, with the reason; the caller reports them after its
 /// own work is done. Does nothing on Unix and outside a git work tree.
-pub fn set_index_modes(plan: &Plan, root: &Path) -> anyhow::Result<Vec<String>> {
+pub fn set_index_modes(plan: &Plan, root: &Path) -> Vec<String> {
     if cfg!(unix) {
-        return Ok(Vec::new());
+        return Vec::new();
     }
-    set_index_modes_in(plan, root)
+    index_modes_report(set_index_modes_in(plan, root))
+}
+
+/// The failures of an index step: the paths git refused, or, when the index
+/// could not be read at all, one entry with the reason (nothing was changed).
+fn index_modes_report(result: anyhow::Result<Vec<String>>) -> Vec<String> {
+    result.unwrap_or_else(|e| vec![format!("the git index could not be used: {e:#}")])
 }
 
 /// `set_index_modes` on every OS, so that the git side is tested on Unix too.
@@ -464,13 +507,23 @@ fn set_index_modes_in(plan: &Plan, root: &Path) -> anyhow::Result<Vec<String>> {
             _ => None,
         })
         .collect();
+    // A path git cannot judge is a failure of that path and is not run through `add`.
+    let undecided = RefCell::new(Vec::new());
     let ops = plan_index_ops(
         &files,
         &index_entries(root)?,
         &|path| std::fs::symlink_metadata(root.join(path)).is_ok(),
-        &|path| is_ignored(root, path),
+        &|path| match is_ignored(root, path) {
+            Ok(ignored) => ignored,
+            Err(reason) => {
+                undecided.borrow_mut().push(format!("`{path}`: {reason}"));
+                true
+            }
+        },
     );
-    Ok(run_index_ops(root, &repository_prefix(root)?, &ops))
+    let mut failed = run_index_ops(root, &repository_prefix(root)?, &ops);
+    failed.extend(undecided.into_inner());
+    Ok(failed)
 }
 
 impl ProjectView for DiskProject<'_> {
@@ -634,7 +687,9 @@ pub fn check_symlinks_allowed(plan: &Plan, root: &Path) -> anyhow::Result<()> {
         })
         .find(|dir| dir.is_dir())
         .ok_or_else(|| anyhow::anyhow!("no existing directory above `{}`", root.display()))?;
-    let scratch = tempfile::Builder::new().tempdir_in(ancestor)?;
+    let scratch = tempfile::Builder::new()
+        .tempdir_in(ancestor)
+        .with_context(|| format!("cannot check symlink support in {}", ancestor.display()))?;
     // The target need not exist; a file link is the kind the system must allow.
     make_link("probe-target", &scratch.path().join("probe"), false)
         .map_err(|e| symlink_refusal(cfg!(windows), &e))
@@ -2083,10 +2138,38 @@ mod tests {
     }
 
     #[test]
+    fn only_not_a_repository_means_no_git_project() {
+        assert!(classify_work_tree(true, "true\n", "").unwrap());
+        assert!(!classify_work_tree(true, "false\n", "").unwrap());
+        let none = "fatal: not a git repository (or any of the parent directories): .git";
+        assert!(!classify_work_tree(false, "", none).unwrap());
+        let dubious = "fatal: detected dubious ownership in repository at '/p'";
+        let err = classify_work_tree(false, "", dubious).unwrap_err();
+        assert!(format!("{err:#}").contains("dubious ownership"));
+    }
+
+    #[test]
+    fn check_ignore_exit_codes_decide() {
+        assert_eq!(ignore_verdict(Some(0), ""), Ok(true));
+        assert_eq!(ignore_verdict(Some(1), ""), Ok(false));
+        let failed = ignore_verdict(Some(128), "fatal: bad\n").unwrap_err();
+        assert!(failed.contains("128") && failed.contains("fatal: bad"));
+        assert!(ignore_verdict(None, "").is_err());
+    }
+
+    #[test]
+    fn an_unreadable_index_becomes_one_failure() {
+        assert_eq!(index_modes_report(Ok(vec!["`a`: x".into()])), ["`a`: x"]);
+        let report = index_modes_report(Err(anyhow::anyhow!("boom")));
+        assert_eq!(report.len(), 1);
+        assert!(report[0].contains("boom"));
+    }
+
+    #[test]
     fn set_index_modes_skips_a_directory_without_git() {
         let dir = tempfile::tempdir().unwrap();
         let p = plan(vec![write_file("run.sh", b"x", true)]);
-        assert!(set_index_modes(&p, dir.path()).unwrap().is_empty());
+        assert!(set_index_modes(&p, dir.path()).is_empty());
         assert!(set_index_modes_in(&p, dir.path()).unwrap().is_empty());
     }
 
@@ -2103,7 +2186,7 @@ mod tests {
             write_file("plain.txt", b"x", false),
         ]);
         apply(&p, root).unwrap();
-        assert!(set_index_modes(&p, root).unwrap().is_empty());
+        assert!(set_index_modes(&p, root).is_empty());
         let index = read_index(root).unwrap();
         assert_eq!(index.get("run.sh"), Some(&FileMode::Executable));
         assert_eq!(index.get("plain.txt"), None);

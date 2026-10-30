@@ -76,12 +76,18 @@ fn shell_missing(git_failure: Option<&str>) -> String {
     }
 }
 
-/// Looks for the shell `name` in the `bin` and `usr/bin` directories of every
-/// ancestor of git's exec path, nearest first (Git for Windows keeps `sh.exe`
-/// there). `is_file` tells what exists.
+/// How many directories of git's exec path are searched for the shell: the
+/// exec path itself and three above it (`git-core`, `libexec`, `mingw64`, the
+/// Git root). Higher up lies the drive root, which is not Git's.
+const SHELL_SEARCH_DEPTH: usize = 4;
+
+/// Looks for the shell `name` in the `bin` and `usr/bin` directories of the
+/// nearest ancestors of git's exec path, nearest first (Git for Windows keeps
+/// `sh.exe` there). `is_file` tells what exists.
 fn locate_shell(exec_path: &Path, name: &str, is_file: &dyn Fn(&Path) -> bool) -> Option<Shell> {
     exec_path
         .ancestors()
+        .take(SHELL_SEARCH_DEPTH)
         .flat_map(|dir| [dir.join("bin").join(name), dir.join("usr/bin").join(name)])
         .find(|candidate| is_file(candidate))
         .map(Shell)
@@ -176,6 +182,19 @@ mod tests {
         let elsewhere = [Path::new("/tools").join("sh.exe")];
         assert_eq!(locate_shell(exec, "sh.exe", &existing(&elsewhere)), None);
         assert_eq!(locate_shell(exec, "sh.exe", &|_| false), None);
+    }
+
+    #[test]
+    fn the_search_stops_below_the_drive_root() {
+        let exec = Path::new("C:/Git/mingw64/libexec/git-core");
+        let root_shell = [Path::new("C:/bin").join("sh.exe")];
+        assert_eq!(locate_shell(exec, "sh.exe", &existing(&root_shell)), None);
+        let git_shell = Path::new("C:/Git/bin").join("sh.exe");
+        let files = [git_shell.clone(), root_shell[0].clone()];
+        assert_eq!(
+            locate_shell(exec, "sh.exe", &existing(&files)),
+            Some(Shell(git_shell))
+        );
     }
 
     #[test]

@@ -115,15 +115,14 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
     // Only now is there an index to hold the executable bits (a project in a
     // repository has one already). A path git refuses does not stop the command:
     // it is reported once the rest is done.
-    let failed =
-        set_index_modes(&plan, dir).context("project created; the git index could not be read")?;
+    let failed = set_index_modes(&plan, dir);
     eprintln!(
         "created {} from {} {}",
         dir.display(),
         opts.template,
         report.version
     );
-    if let Some(e) = index_failure(&failed) {
+    if let Some(e) = index_failure(&failed, true) {
         return Err(HookFailed::new(report, e).into());
     }
     Ok(report)

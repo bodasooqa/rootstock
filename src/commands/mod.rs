@@ -46,14 +46,25 @@ impl HookFailed {
 /// The error for paths whose executable bit git refused to record in the
 /// index (`` `path`: reason `` each); `None` when there are none. The command
 /// raises it after its hooks and its output, so the user sees what was done.
-pub(crate) fn index_failure(failed: &[String]) -> Option<anyhow::Error> {
+/// `record_written` says whether the record was written, so the text claims
+/// only what happened.
+pub(crate) fn index_failure(failed: &[String], record_written: bool) -> Option<anyhow::Error> {
     if failed.is_empty() {
         return None;
     }
-    Some(anyhow!(
-        "files and the record were written; the executable bit of these paths is not in the git index: {}",
+    Some(anyhow!(index_failure_text(failed, record_written)))
+}
+
+fn index_failure_text(failed: &[String], record_written: bool) -> String {
+    let written = if record_written {
+        "files and the record were written"
+    } else {
+        "files were written, the record was not"
+    };
+    format!(
+        "{written}; the executable bit of these paths is not in the git index: {}",
         failed.join("; ")
-    ))
+    )
 }
 
 /// Flags shared by `new` and `update`.
@@ -411,6 +422,18 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn index_failure_claims_only_what_was_written() {
+        let failed = vec!["`run.sh`: locked".to_string()];
+        assert!(index_failure(&[], true).is_none());
+        let done = index_failure_text(&failed, true);
+        assert!(done.starts_with("files and the record were written;"));
+        let hooks_failed = index_failure_text(&failed, false);
+        assert!(hooks_failed.contains("the record was not"));
+        assert!(!hooks_failed.contains("and the record were written"));
+        assert!(hooks_failed.ends_with("`run.sh`: locked"));
+    }
 
     #[test]
     fn display_default_is_single_line_text() {
