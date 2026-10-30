@@ -4,6 +4,6 @@
 
 | Этап | Состояние |
 |---|---|
-| 1. Core | в работе |
-| 2. Copier import | — |
+| 1. Core | закрыт |
+| 2. Copier import | в работе |
 | 3. harness migration | — |

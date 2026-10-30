@@ -1,4 +1,9 @@
-## ADDED Requirements
+# project-creation Specification
+
+## Purpose
+Создание проекта из шаблона командой `new`: выбор версии и источника, сбор ответов, запись `.rootstock.toml`, необязательный `git init` (ТЗ: §Commands, §Concepts).
+
+## Requirements
 
 ### Requirement: Команда new создаёт проект
 
@@ -26,7 +31,11 @@
 
 ### Requirement: Источники шаблонов
 
-Источником SHALL быть `https://…`, `git@…:…`, сокращение `gh:owner/repo` или локальный путь (ТЗ: §Commands, «Template sources»). Для локального пути версия — тег в этом репозитории; `--version HEAD` MUST рендерить рабочее дерево.
+Источником SHALL быть `https://…`, `git@…:…`, сокращение `gh:owner/repo` или локальный путь (ТЗ: §Commands, «Template sources»). Для локального пути версия — тег в этом репозитории; `--version HEAD` MUST рендерить рабочее дерево. Шаблоном MAY быть подкаталог репозитория с `rootstock.toml` (ТЗ: §Concepts, «Template»).
+
+#### Scenario: Шаблон в подкаталоге репозитория
+- **WHEN** `new <repo>/tpl <dir>` вызван, а `rootstock.toml` лежит в `tpl/` репозитория с тегами
+- **THEN** проект рендерится из `tpl/` на последнем теге репозитория
 
 #### Scenario: Рабочее дерево шаблона
 - **WHEN** `new ./tpl <dir> --version HEAD` вызван над локальным шаблоном с непроиндексированными правками

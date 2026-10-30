@@ -20,21 +20,21 @@ Rust stable, edition 2024, один крейт `rootstock` (lib + bin `rootstock
 
 ## Границы пакетов
 
-Один крейт, пакетов нет; границы — модули. Чистое ядро (config, record, jinja, answers, render, merge, plan) не делает ввода-вывода; ввод-вывод — на краях (source, apply, hooks, cli, commands).
+Один крейт, пакетов нет; границы — модули. Ядро (config, record, jinja, answers, render, merge, plan) только читает свои объявленные входы: конфиг, запись, checkout шаблона, подключения. Из ядра пишет только `record`, и только `.rootstock.toml`. git, терминала и stderr у ядра нет; `merge` и `plan` чисты полностью. Остальной ввод-вывод — на краях: source, apply, hooks, cli, commands.
 
 | Файл | Ответственность |
 |---|---|
 | `src/config.rs` | модель и валидация `rootstock.toml` |
 | `src/record.rs` | модель `.rootstock.toml`, инвентарь, чтение/запись |
 | `src/jinja.rs` | окружение minijinja из опций, фильтры, помощники выражений и шаблонов |
-| `src/answers.rs` | сбор ответов: заданные, дефолты, `when`, валидаторы, диалог |
+| `src/answers.rs` | сбор ответов: заданные, дефолты, `when`, валидаторы; вопросы — через `Prompter` |
 | `src/render.rs` | рендер checkout'а шаблона в `RenderedTree` с классами файлов |
 | `src/merge.rs` | определение бинарных файлов, трёхстороннее слияние текста с маркерами |
 | `src/plan.rs` | таблица обновления: `plan_update` (чистая функция) |
 | `src/source.rs` | источники шаблонов, теги, checkout'ы через `git` |
 | `src/apply.rs` | выполнение `Plan` на диске |
 | `src/hooks.rs` | запуск хуков с проверкой доверия |
-| `src/cli.rs`, `src/commands/{new,update,status,check}.rs` | CLI и четыре команды |
+| `src/cli.rs`, `src/commands/{mod,new,update,status,check}.rs` | CLI, терминальный диалог (`TerminalPrompter`) и четыре команды |
 | `tests/support/mod.rs` | построитель фикстуры `TemplateRepo` (git-репозиторий с тегами во временном каталоге) |
 | `tests/cli_*.rs` | сквозные сценарии через бинарник |
 

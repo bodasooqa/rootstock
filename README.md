@@ -41,14 +41,14 @@ Stdout carries only command output (conflict lists, status, JSON); everything el
 - `src/config.rs` - `rootstock.toml` model and validation
 - `src/record.rs` - `.rootstock.toml` model, inventory, reading and writing
 - `src/jinja.rs` - minijinja environment, filters, expression helpers
-- `src/answers.rs` - collecting answers: given, defaults, `when`, validators, dialog
+- `src/answers.rs` - collecting answers: given, defaults, `when`, validators; asking goes through a `Prompter`
 - `src/render.rs` - rendering a template checkout into a tree with file classes
 - `src/merge.rs` - binary detection, three-way text merge with markers
 - `src/plan.rs` - the update table, `plan_update` (pure function)
 - `src/source.rs` - template sources, tags, checkouts through `git`
 - `src/apply.rs` - executing a plan on disk
 - `src/hooks.rs` - running hooks with a trust check
-- `src/cli.rs`, `src/commands/{new,update,status,check}.rs` - CLI and the four commands
+- `src/cli.rs`, `src/commands/{mod,new,update,status,check}.rs` - CLI, the terminal dialog and the four commands
 - `tests/` - end-to-end scenarios through the binary (`cli_*.rs`), fixtures in `tests/support/`
 - `docs/design.md` - the specification
 
