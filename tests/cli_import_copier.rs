@@ -166,7 +166,6 @@ fn all_findings_are_listed_and_nothing_is_written() {
 #[test]
 fn symlink_under_the_root_is_a_failure() {
     let repo = small_template();
-    #[cfg(unix)]
     repo.symlink("template/link.txt", "hello.txt.jinja");
     import(repo.path())
         .code(1)
@@ -375,9 +374,10 @@ fn imports_a_copier_project() {
         record.contains(&format!("commit = \"{}\"", repo.commit("v1.0.0"))),
         "{record}"
     );
-    let canonical = fs::canonicalize(repo.path()).unwrap();
-    assert!(
-        record.contains(&format!("source = \"{}\"", canonical.display())),
+    let canonical = support::canon(repo.path());
+    assert_eq!(
+        support::recorded_source(&record),
+        canonical.to_string_lossy(),
         "{record}"
     );
     assert!(record.contains("name = \"shop\""), "{record}");
@@ -853,7 +853,7 @@ fn hooks_do_not_run_on_import() {
     let repo = TemplateRepo::new();
     repo.file(
         "copier.yml",
-        &format!("{PROJECT_COPIER}_tasks:\n  - touch marker.txt\n"),
+        &format!("{PROJECT_COPIER}_tasks:\n  - \": > marker.txt\"\n"),
     )
     .file("template/managed.txt.jinja", "managed\n")
     .tag("v1.0.0");

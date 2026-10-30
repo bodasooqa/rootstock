@@ -4,6 +4,18 @@
 
 ---
 
+## 1.4 · 2026-10-30 · Windows, before the first release
+
+Merged into `docs/design.md`. The owner decided all three points before the Windows work that precedes the first release. §Constraints promised Windows builds, but nothing said how the Unix assumptions carry over.
+
+**Hooks run in Git for Windows' `sh`.** Hooks are shell commands, and harness writes them in POSIX sh (`if command -v openspec …`). `cmd /C` would break every harness hook on Windows. rootstock needs `git` anyway, and Git for Windows ships `sh`, so a hook runs as `sh -c` everywhere. When no `sh` is found, a command that has hooks to run stops before writing.
+
+**The executable bit and symlinks come from the git tree.** Windows file systems have no executable bit, and git checks symlinks out as plain files unless symlinks are allowed. So a harness project generated on Windows lost `+x` on every `.harness/hooks/*.sh` and committed them as `100644`. Now both are read from the template's git tree, not from the disk. Where the file system has no executable bit, rootstock sets it in the project's git index, and reads it back from there.
+
+**Symlinks are created, or refused before writing.** Windows creates symlinks only in developer mode or as administrator. rootstock still creates real symlinks (rule 7), and when the system refuses, it stops before writing anything and says how to allow them. harness has no symlinks today.
+
+---
+
 ## 1.3 · 2026-10-30 · Stage 2 findings, before stage 3
 
 Merged into `docs/design.md`. Decided at the grooming that opens stage 3, on the open questions in `knowledge/open-questions.md`. The owner decided some points directly and handed the rest to the builder ("let's just do it well"); those are marked *my call*.

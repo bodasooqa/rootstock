@@ -1,6 +1,6 @@
 //! Runs template hooks in the project directory, gated by trust.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::config::{Hook, Phase};
@@ -37,16 +37,79 @@ pub fn check_trust(
     }
 }
 
+/// The POSIX shell that runs hook commands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shell(PathBuf);
+
+/// File name of the shell: `sh` on Unix, `sh.exe` from Git for Windows.
+const SHELL_NAME: &str = if cfg!(windows) { "sh.exe" } else { "sh" };
+
+/// Finds the shell for the hooks selected for `phase`; `None` when there are
+/// none, so a command without hooks never looks for `sh`. Runs nothing; call
+/// it before any file is written.
+pub fn find_shell(hooks: &[Hook], phase: Phase) -> anyhow::Result<Option<Shell>> {
+    if select(hooks, phase).is_empty() {
+        return Ok(None);
+    }
+    if cfg!(not(windows)) {
+        // The system resolves `sh` from `PATH` when the hook starts.
+        return Ok(Some(Shell(PathBuf::from(SHELL_NAME))));
+    }
+    // `PATH` is not searched: it may hold another `sh.exe` (MSYS2, Cygwin, busybox).
+    let exec_path = crate::source::git(&["--exec-path"]).map_err(|e| format!("{e:#}"));
+    let found = exec_path
+        .as_ref()
+        .ok()
+        .and_then(|exec| locate_shell(Path::new(exec), SHELL_NAME, &|path| path.is_file()));
+    found
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!(shell_missing(exec_path.err().as_deref())))
+}
+
+/// The text of the error for a missing shell; `git_failure` is why git's
+/// exec path could not be read, if that is the cause.
+fn shell_missing(git_failure: Option<&str>) -> String {
+    let base = "hooks need `sh` from Git for Windows; none was found next to git";
+    match git_failure {
+        Some(reason) => format!("{base} (`git --exec-path` failed: {reason})"),
+        None => base.to_string(),
+    }
+}
+
+/// How many directories of git's exec path are searched for the shell: the
+/// exec path itself and three above it (`git-core`, `libexec`, `mingw64`, the
+/// Git root). Higher up lies the drive root, which is not Git's.
+const SHELL_SEARCH_DEPTH: usize = 4;
+
+/// Looks for the shell `name` in the `bin` and `usr/bin` directories of the
+/// nearest ancestors of git's exec path, nearest first (Git for Windows keeps
+/// `sh.exe` there). `is_file` tells what exists.
+fn locate_shell(exec_path: &Path, name: &str, is_file: &dyn Fn(&Path) -> bool) -> Option<Shell> {
+    exec_path
+        .ancestors()
+        .take(SHELL_SEARCH_DEPTH)
+        .flat_map(|dir| [dir.join("bin").join(name), dir.join("usr/bin").join(name)])
+        .find(|candidate| is_file(candidate))
+        .map(Shell)
+}
+
 /// Runs the hooks selected for `phase` without asking, in order, stopping at the
-/// first failure. The caller must have passed `check_trust`.
-pub fn run_trusted(hooks: &[Hook], phase: Phase, project: &Path) -> anyhow::Result<()> {
+/// first failure. The caller must have passed `check_trust` and holds the
+/// `shell` that `find_shell` returned for the same hooks and phase.
+pub fn run_trusted(
+    hooks: &[Hook],
+    phase: Phase,
+    project: &Path,
+    shell: Option<&Shell>,
+) -> anyhow::Result<()> {
     for hook in select(hooks, phase) {
-        run_one(hook, project)?;
+        let shell = shell.ok_or_else(|| anyhow::anyhow!("no shell was found for the hooks"))?;
+        run_one(hook, project, shell)?;
     }
     Ok(())
 }
 
-/// `check_trust` followed by `run_trusted`.
+/// `find_shell` and `check_trust` followed by `run_trusted`.
 pub fn run_hooks(
     hooks: &[Hook],
     phase: Phase,
@@ -54,13 +117,14 @@ pub fn run_hooks(
     trust: bool,
     interactive: bool,
 ) -> anyhow::Result<()> {
+    let shell = find_shell(hooks, phase)?;
     check_trust(hooks, phase, trust, interactive)?;
-    run_trusted(hooks, phase, project)
+    run_trusted(hooks, phase, project, shell.as_ref())
 }
 
-fn run_one(hook: &Hook, project: &Path) -> anyhow::Result<()> {
+fn run_one(hook: &Hook, project: &Path, shell: &Shell) -> anyhow::Result<()> {
     // Hook output goes to stderr: stdout carries only command output.
-    let status = std::process::Command::new("sh")
+    let status = std::process::Command::new(&shell.0)
         .arg("-c")
         .arg(&hook.run)
         .current_dir(project)
@@ -89,10 +153,74 @@ mod tests {
         }
     }
 
+    fn existing(files: &[PathBuf]) -> impl Fn(&Path) -> bool + '_ {
+        move |candidate| files.iter().any(|f| f == candidate)
+    }
+
+    #[test]
+    fn shell_is_searched_beside_git_up_the_exec_path() {
+        let exec = Path::new("/g/Git/mingw64/libexec/git-core");
+        // `bin` wins over `usr/bin` in the same ancestor; a nearer ancestor wins.
+        let bin = Path::new("/g/Git").join("bin").join("sh.exe");
+        let usr = Path::new("/g/Git").join("usr/bin").join("sh.exe");
+        let files = [usr.clone(), bin.clone()];
+        let found = locate_shell(exec, "sh.exe", &existing(&files));
+        assert_eq!(found, Some(Shell(bin)));
+        let files = [usr.clone()];
+        let found = locate_shell(exec, "sh.exe", &existing(&files));
+        assert_eq!(found, Some(Shell(usr)));
+        let near = Path::new("/g/Git/mingw64").join("bin").join("sh.exe");
+        let files = [near.clone(), Path::new("/g/Git").join("bin").join("sh.exe")];
+        let found = locate_shell(exec, "sh.exe", &existing(&files));
+        assert_eq!(found, Some(Shell(near)));
+    }
+
+    #[test]
+    fn a_shell_outside_the_git_tree_is_not_found() {
+        // Another `sh.exe` (in `PATH`, say) is not next to git: only ancestors count.
+        let exec = Path::new("/g/Git/mingw64/libexec/git-core");
+        let elsewhere = [Path::new("/tools").join("sh.exe")];
+        assert_eq!(locate_shell(exec, "sh.exe", &existing(&elsewhere)), None);
+        assert_eq!(locate_shell(exec, "sh.exe", &|_| false), None);
+    }
+
+    #[test]
+    fn the_search_stops_below_the_drive_root() {
+        let exec = Path::new("C:/Git/mingw64/libexec/git-core");
+        let root_shell = [Path::new("C:/bin").join("sh.exe")];
+        assert_eq!(locate_shell(exec, "sh.exe", &existing(&root_shell)), None);
+        let git_shell = Path::new("C:/Git/bin").join("sh.exe");
+        let files = [git_shell.clone(), root_shell[0].clone()];
+        assert_eq!(
+            locate_shell(exec, "sh.exe", &existing(&files)),
+            Some(Shell(git_shell))
+        );
+    }
+
+    #[test]
+    fn missing_shell_error_names_why_git_failed() {
+        let plain = shell_missing(None);
+        assert_eq!(
+            plain,
+            "hooks need `sh` from Git for Windows; none was found next to git"
+        );
+        let with_reason = shell_missing(Some("cannot run git"));
+        assert!(with_reason.starts_with(&plain), "{with_reason}");
+        assert!(with_reason.contains("cannot run git"), "{with_reason}");
+    }
+
+    #[test]
+    fn no_hooks_look_for_no_shell() {
+        assert_eq!(find_shell(&[], Phase::New).unwrap(), None);
+        let hooks = [hook("true", &[Phase::Update])];
+        assert_eq!(find_shell(&hooks, Phase::New).unwrap(), None);
+        assert!(find_shell(&hooks, Phase::Update).unwrap().is_some());
+    }
+
     #[test]
     fn hooks_need_trust_noninteractive() {
         let dir = tempfile::tempdir().unwrap();
-        let hooks = [hook("touch marker", &[Phase::New])];
+        let hooks = [hook(": > marker", &[Phase::New])];
         let err = run_hooks(&hooks, Phase::New, dir.path(), false, false)
             .unwrap_err()
             .to_string();
@@ -100,7 +228,7 @@ mod tests {
             err.contains("template has hooks; rerun with --trust"),
             "{err}"
         );
-        assert!(err.contains("touch marker"), "{err}");
+        assert!(err.contains(": > marker"), "{err}");
         assert!(!dir.path().join("marker").exists());
     }
 
@@ -108,15 +236,13 @@ mod tests {
     fn hooks_run_in_order_in_project_dir() {
         let dir = tempfile::tempdir().unwrap();
         let hooks = [
-            hook("pwd > where; echo one > order", &[Phase::New]),
+            hook("echo one > order", &[Phase::New]),
             hook("echo two >> order", &[Phase::New, Phase::Update]),
         ];
         run_hooks(&hooks, Phase::New, dir.path(), true, false).unwrap();
+        // A relative path lands in the project directory: that is the working directory.
         let order = std::fs::read_to_string(dir.path().join("order")).unwrap();
         assert_eq!(order, "one\ntwo\n");
-        let where_ = std::fs::read_to_string(dir.path().join("where")).unwrap();
-        let expected = std::fs::canonicalize(dir.path()).unwrap();
-        assert_eq!(std::fs::canonicalize(where_.trim()).unwrap(), expected);
     }
 
     #[test]
@@ -124,7 +250,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hooks = [
             hook("exit 3", &[Phase::New]),
-            hook("touch after", &[Phase::New]),
+            hook(": > after", &[Phase::New]),
         ];
         let err = run_hooks(&hooks, Phase::New, dir.path(), true, false)
             .unwrap_err()
@@ -136,7 +262,7 @@ mod tests {
     #[test]
     fn check_trust_noninteractive_errors_and_runs_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let hooks = [hook("touch marker", &[Phase::New])];
+        let hooks = [hook(": > marker", &[Phase::New])];
         let err = check_trust(&hooks, Phase::New, false, false)
             .unwrap_err()
             .to_string();
@@ -150,8 +276,8 @@ mod tests {
     fn hooks_filtered_by_phase() {
         let dir = tempfile::tempdir().unwrap();
         let hooks = [
-            hook("touch new_only", &[Phase::New]),
-            hook("touch update_only", &[Phase::Update]),
+            hook(": > new_only", &[Phase::New]),
+            hook(": > update_only", &[Phase::Update]),
         ];
         run_hooks(&hooks, Phase::Update, dir.path(), true, false).unwrap();
         assert!(!dir.path().join("new_only").exists());
@@ -162,7 +288,7 @@ mod tests {
     fn no_hooks_no_trust_needed() {
         let dir = tempfile::tempdir().unwrap();
         run_hooks(&[], Phase::New, dir.path(), false, false).unwrap();
-        let hooks = [hook("touch x", &[Phase::Update])];
+        let hooks = [hook(": > x", &[Phase::Update])];
         run_hooks(&hooks, Phase::New, dir.path(), false, false).unwrap();
         assert!(!dir.path().join("x").exists());
     }

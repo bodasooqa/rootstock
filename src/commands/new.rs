@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use super::{
-    CommonOptions, HookFailed, Report, Side, check_version, dir_has_entries, interactive,
-    load_data, prompter, refuse_unsupported, target_label,
+    CommonOptions, HookFailed, Report, Side, check_version, dir_has_entries, index_failure,
+    interactive, load_data, prompter, target_label,
 };
-use crate::apply::{DiskProject, GitMerge, apply};
+use crate::apply::{DiskProject, GitMerge, apply, check_symlinks_allowed, set_index_modes};
 use crate::config::Phase;
-use crate::hooks::{check_trust, run_trusted};
+use crate::hooks::{check_trust, find_shell, run_trusted};
 use crate::plan::plan_update;
 use crate::record::{self, Inventory, RECORD_FILE, Record};
 use crate::render::RenderedTree;
@@ -30,8 +30,7 @@ pub struct NewOptions {
 /// Source string stored in the record: local paths become absolute.
 pub(crate) fn recorded_source(template: &str, src: &Source) -> Result<String> {
     match src {
-        Source::Local(path) => Ok(path
-            .canonicalize()
+        Source::Local(path) => Ok(crate::source::canonical(path)
             .with_context(|| format!("cannot resolve {}", path.display()))?
             .to_string_lossy()
             .into_owned()),
@@ -82,7 +81,6 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
     );
     project.finish()?;
     merge.finish()?;
-    refuse_unsupported(&plan)?;
     // Every fallible step runs before the first write (design rule 11).
     let record_text = record::to_text(&Record {
         schema: 1,
@@ -93,6 +91,9 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         answers: collected.recorded,
         inventory: plan.inventory.clone(),
     })?;
+    // Found with the other checks: no `sh` and no links mean nothing is written.
+    let shell = find_shell(&cfg.hooks, Phase::New)?;
+    check_symlinks_allowed(&plan, dir)?;
     // Asked last among the steps that can fail, so no one trusts a run that then errors.
     check_trust(&cfg.hooks, Phase::New, opts.common.trust, interactive())?;
 
@@ -100,9 +101,9 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
     apply(&plan, dir)?;
     let report = Report {
         version,
-        conflicts: plan.conflicts,
+        conflicts: plan.conflicts.clone(),
     };
-    if let Err(e) = run_trusted(&cfg.hooks, Phase::New, dir) {
+    if let Err(e) = run_trusted(&cfg.hooks, Phase::New, dir, shell.as_ref()) {
         let e = e.context("files were written; hooks failed; the record was not written");
         return Err(HookFailed::new(report, e).into());
     }
@@ -111,12 +112,19 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
     if opts.git {
         init_git(dir).context("project created; git init failed")?;
     }
+    // Only now is there an index to hold the executable bits (a project in a
+    // repository has one already). A path git refuses does not stop the command:
+    // it is reported once the rest is done.
+    let failed = set_index_modes(&plan, dir);
     eprintln!(
         "created {} from {} {}",
         dir.display(),
         opts.template,
         report.version
     );
+    if let Some(e) = index_failure(&failed, true) {
+        return Err(HookFailed::new(report, e).into());
+    }
     Ok(report)
 }
 

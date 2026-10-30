@@ -340,3 +340,86 @@ fn local_head_subdir_symlink_errors() {
         .to_string();
     assert!(err.contains("template not found at `tpl`"), "{err}");
 }
+
+#[test]
+fn modes_of_a_tag_come_from_its_tree() {
+    use rootstock::render::FileMode;
+    let repo = TemplateRepo::new();
+    repo.file("tpl/rootstock.toml", "schema = 1\n")
+        .file("tpl/run.sh", "#!/bin/sh\n")
+        .file("tpl/plain.txt", "x")
+        .file("other/skip.sh", "x");
+    repo.exec("tpl/run.sh").exec("other/skip.sh");
+    repo.tree_symlink("tpl/link", "plain.txt")
+        .tag_staged("v1.0.0");
+    let co = checkout(&src(&repo.url()), Some("tpl"), "v1.0.0").unwrap();
+    assert_eq!(co.modes.get("run.sh"), Some(&FileMode::Executable));
+    assert_eq!(co.modes.get("plain.txt"), Some(&FileMode::File));
+    assert_eq!(co.modes.get("link"), Some(&FileMode::Symlink));
+    // Paths outside the template directory are dropped.
+    assert!(!co.modes.contains_key("other/skip.sh"));
+    assert!(!co.modes.keys().any(|p| p.starts_with("tpl/")));
+}
+
+#[test]
+fn modes_of_local_head_come_from_the_index() {
+    use rootstock::render::FileMode;
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\n")
+        .file("run.sh", "#!/bin/sh\n")
+        .file("plain.txt", "x");
+    repo.exec("run.sh").tag("v1.0.0");
+    // Not in the index: the disk decides, so the map has no entry.
+    repo.file("untracked.txt", "y");
+    let co = checkout(&src(&repo.url()), None, "HEAD").unwrap();
+    assert_eq!(co.modes.get("run.sh"), Some(&FileMode::Executable));
+    assert_eq!(co.modes.get("plain.txt"), Some(&FileMode::File));
+    assert!(!co.modes.contains_key("untracked.txt"));
+}
+
+/// On Unix the working tree decides what a path is; the index gives the bit only.
+#[cfg(unix)]
+#[test]
+fn local_head_takes_the_kind_of_a_path_from_the_disk_on_unix() {
+    use rootstock::render::FileMode;
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\n")
+        .file("real.txt", "x");
+    repo.tree_symlink("link", "real.txt").tag_staged("v1.0.0");
+    // The index calls `link` a symlink; the disk holds a plain file.
+    repo.file("link", "plain file\n");
+    let co = checkout(&src(&repo.url()), None, "HEAD").unwrap();
+    assert!(!co.modes.contains_key("link"));
+    assert_eq!(co.modes.get("real.txt"), Some(&FileMode::File));
+}
+
+#[test]
+fn modes_of_local_head_in_a_subdirectory() {
+    use rootstock::render::FileMode;
+    let repo = TemplateRepo::new();
+    repo.file("tpl/rootstock.toml", "schema = 1\n")
+        .file("tpl/run.sh", "#!/bin/sh\n");
+    repo.exec("tpl/run.sh").tag("v1.0.0");
+    let local = src(&repo.path().join("tpl").to_string_lossy());
+    let co = checkout(&local, None, "HEAD").unwrap();
+    assert_eq!(co.modes.get("run.sh"), Some(&FileMode::Executable));
+}
+
+#[test]
+fn parse_modes_reads_ls_tree_and_ls_files_output() {
+    use rootstock::render::FileMode;
+    use rootstock::source::parse_modes;
+    let tree = b"100644 blob aaaa\ta.txt\x00100755 blob bbbb\tt/run.sh\x00\
+120000 blob cccc\tt/link\x00160000 commit dddd\tt/sub\x00100644 blob eeee\tother/x\x00";
+    let modes = parse_modes(tree, "t");
+    assert_eq!(modes.len(), 2);
+    assert_eq!(modes["run.sh"], FileMode::Executable);
+    assert_eq!(modes["link"], FileMode::Symlink);
+    let index = b"100755 aaaa 0\tt/run.sh\x00100644 bbbb 0\tt/dir name/f\x00";
+    let modes = parse_modes(index, "t");
+    assert_eq!(modes["run.sh"], FileMode::Executable);
+    assert_eq!(modes["dir name/f"], FileMode::File);
+    // Without a prefix every path stays; a lookalike prefix strips nothing.
+    assert_eq!(parse_modes(tree, "").len(), 4);
+    assert!(parse_modes(tree, "ot").is_empty());
+}

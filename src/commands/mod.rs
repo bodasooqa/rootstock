@@ -16,9 +16,9 @@ use crate::answers::{self, Collected, NoPrompt, Prompter};
 use crate::config::{self, CONFIG_FILE, Question, QuestionKind, TemplateConfig};
 use crate::copier::{self, COPIER_FILES, CopierError};
 use crate::jinja::Jinja;
-use crate::plan::{Action, Conflict, Plan};
+use crate::plan::Conflict;
 use crate::record::{Answers, toml_to_json};
-use crate::render::{self, Entry, RenderedTree};
+use crate::render::{self, RenderedTree};
 use crate::source::{Checkout, Source, git, run_git};
 
 /// What a finished command reports back to the CLI.
@@ -41,6 +41,30 @@ impl HookFailed {
     pub(crate) fn new(report: Report, error: anyhow::Error) -> HookFailed {
         HookFailed { report, error }
     }
+}
+
+/// The error for paths whose executable bit git refused to record in the
+/// index (`` `path`: reason `` each); `None` when there are none. The command
+/// raises it after its hooks and its output, so the user sees what was done.
+/// `record_written` says whether the record was written, so the text claims
+/// only what happened.
+pub(crate) fn index_failure(failed: &[String], record_written: bool) -> Option<anyhow::Error> {
+    if failed.is_empty() {
+        return None;
+    }
+    Some(anyhow!(index_failure_text(failed, record_written)))
+}
+
+fn index_failure_text(failed: &[String], record_written: bool) -> String {
+    let written = if record_written {
+        "files and the record were written"
+    } else {
+        "files were written, the record was not"
+    };
+    format!(
+        "{written}; the executable bit of these paths is not in the git index: {}",
+        failed.join("; ")
+    )
 }
 
 /// Flags shared by `new` and `update`.
@@ -321,6 +345,7 @@ impl Side {
             &self.cfg,
             &self.jinja,
             ctx,
+            &self.checkout.modes,
         )?)
     }
 }
@@ -350,24 +375,6 @@ pub(crate) fn require_clean_tree(dir: &Path) -> Result<()> {
     ])?;
     if !status.is_empty() {
         bail!("working tree has uncommitted changes; commit or stash first");
-    }
-    Ok(())
-}
-
-/// Refuses, before anything is written, a plan this platform cannot apply:
-/// symlink writes where symlinks are not supported.
-pub(crate) fn refuse_unsupported(plan: &Plan) -> Result<()> {
-    let has_symlink = plan.actions.iter().any(|a| {
-        matches!(
-            a,
-            Action::Write {
-                entry: Entry::Symlink { .. },
-                ..
-            }
-        )
-    });
-    if has_symlink && !cfg!(unix) {
-        return Err(anyhow!("symlinks are not supported on this platform"));
     }
     Ok(())
 }
@@ -415,6 +422,18 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn index_failure_claims_only_what_was_written() {
+        let failed = vec!["`run.sh`: locked".to_string()];
+        assert!(index_failure(&[], true).is_none());
+        let done = index_failure_text(&failed, true);
+        assert!(done.starts_with("files and the record were written;"));
+        let hooks_failed = index_failure_text(&failed, false);
+        assert!(hooks_failed.contains("the record was not"));
+        assert!(!hooks_failed.contains("and the record were written"));
+        assert!(hooks_failed.ends_with("`run.sh`: locked"));
+    }
 
     #[test]
     fn display_default_is_single_line_text() {

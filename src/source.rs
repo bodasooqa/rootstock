@@ -9,6 +9,7 @@ use tempfile::TempDir;
 
 use crate::config::CONFIG_FILE;
 use crate::copier::COPIER_FILES;
+use crate::render::{FileMode, Modes};
 
 /// Where a template comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,35 @@ impl Source {
             Source::Git(url) => url.clone(),
             Source::Local(path) => path.to_string_lossy().into_owned(),
         }
+    }
+}
+
+/// Removes the Windows verbatim prefix from a path string: `\\?\C:\x` becomes
+/// `C:\x`, `\\?\UNC\server\share` becomes `\\server\share`. Git takes a
+/// verbatim path for a URL and refuses it. Anything else is returned as is.
+pub fn strip_verbatim(path: &str) -> String {
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}");
+    }
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if is_drive_path(rest) => rest.to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// True for `X:` followed by a separator or nothing.
+fn is_drive_path(path: &str) -> bool {
+    matches!(path.as_bytes(), [letter, b':'] | [letter, b':', b'\\' | b'/', ..] if letter.is_ascii_alphabetic())
+}
+
+/// `Path::canonicalize` for a path that goes to git or into a record: on
+/// Windows without the verbatim prefix `canonicalize` adds. Elsewhere the same.
+pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    let real = path.canonicalize()?;
+    if cfg!(windows) {
+        Ok(PathBuf::from(strip_verbatim(&real.to_string_lossy())))
+    } else {
+        Ok(real)
     }
 }
 
@@ -152,6 +182,8 @@ pub struct Checkout {
     pub commit: String,
     /// The version as the user knows it (a tag or `HEAD`); used in messages.
     pub version: String,
+    /// Git modes of the template paths, relative to `path`.
+    pub modes: Modes,
     _dir: Option<TempDir>,
 }
 
@@ -198,12 +230,8 @@ fn locate(src: &Source) -> Result<Located> {
         );
     }
     let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let real_top = Path::new(&top)
-        .canonicalize()
-        .with_context(|| format!("cannot resolve `{top}`"))?;
-    let real_dir = dir
-        .canonicalize()
-        .with_context(|| format!("cannot resolve `{dir_str}`"))?;
+    let real_top = canonical(Path::new(&top)).with_context(|| format!("cannot resolve `{top}`"))?;
+    let real_dir = canonical(dir).with_context(|| format!("cannot resolve `{dir_str}`"))?;
     let rel = real_dir
         .strip_prefix(&real_top)
         .map_err(|_| anyhow!("`{dir_str}` is not inside its git repository (root is `{top}`)"))?;
@@ -288,10 +316,21 @@ pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkou
         let dir_str = dir.to_string_lossy();
         let commit = git(&["-C", &dir_str, "rev-parse", "HEAD"])
             .with_context(|| format!("{dir_str} has no commits"))?;
+        let path = template_dir_shown(dir, sub, &prefix, rev)?;
+        let mut modes = git_modes(
+            &["-C", &dir_str, "ls-files", "-s", "-z", "--full-name"],
+            &prefix,
+        )?;
+        if cfg!(unix) {
+            // The working tree is what is rendered: on Unix a path is a link only
+            // if the disk says so; the index supplies the executable bit alone.
+            modes.retain(|_, mode| *mode != FileMode::Symlink);
+        }
         return Ok(Checkout {
-            path: template_dir_shown(dir, sub, &prefix, rev)?,
+            path,
             commit,
             version: rev.to_string(),
+            modes,
             _dir: None,
         });
     }
@@ -302,6 +341,12 @@ pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkou
         "clone",
         "--quiet",
         "--no-checkout",
+        // The user's or the system's `autocrlf` must not change the template's bytes.
+        "--config",
+        "core.autocrlf=false",
+        // `text=auto` in the template's attributes would otherwise follow the platform.
+        "--config",
+        "core.eol=lf",
         "--",
         &location,
         &tmp_str,
@@ -319,12 +364,75 @@ pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkou
         "--detach",
         &commit,
     ])?;
+    let modes = git_modes(
+        &[
+            "-C",
+            &tmp_str,
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            &commit,
+        ],
+        &prefix,
+    )?;
     Ok(Checkout {
         path: template_dir(tmp.path(), &prefix, rev)?,
         commit,
         version: rev.to_string(),
+        modes,
         _dir: Some(tmp),
     })
+}
+
+/// Runs a git listing command (`ls-tree -z` or `ls-files -s -z`) and parses its modes.
+pub(crate) fn git_modes(args: &[&str], prefix: &str) -> Result<Modes> {
+    let out = run_git(args)?;
+    if !out.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(parse_modes(&out.stdout, prefix))
+}
+
+/// Parses `git ls-tree -z` or `git ls-files -s -z` output into modes of the
+/// paths below `prefix` (`/`-separated, empty for the repository root), keyed
+/// relative to it. Submodules and paths that are not UTF-8 are left out.
+pub fn parse_modes(listing: &[u8], prefix: &str) -> Modes {
+    let mut modes = Modes::new();
+    for record in listing.split(|b| *b == 0) {
+        // `<mode> <type or sha> ...<TAB><path>`
+        let Some(tab) = record.iter().position(|b| *b == b'\t') else {
+            continue;
+        };
+        let (meta, path) = (&record[..tab], &record[tab + 1..]);
+        let (Ok(meta), Ok(path)) = (std::str::from_utf8(meta), std::str::from_utf8(path)) else {
+            continue;
+        };
+        let relative = if prefix.is_empty() {
+            path
+        } else {
+            let Some(rest) = path
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_prefix('/'))
+            else {
+                continue;
+            };
+            rest
+        };
+        let mode = match meta.split(' ').next() {
+            Some("100755") => FileMode::Executable,
+            Some("120000") => FileMode::Symlink,
+            // A submodule or a directory: nothing to emit.
+            Some("160000" | "040000") | None => continue,
+            Some(_) => FileMode::File,
+        };
+        modes.insert(relative.to_string(), mode);
+    }
+    modes
 }
 
 /// Resolves a tag name or sha to a commit in the clone; `None` if absent.
@@ -352,6 +460,32 @@ mod tests {
     use super::*;
 
     const REFUSAL: &str = "template URL carries credentials";
+
+    #[test]
+    fn verbatim_prefix_is_stripped() {
+        for (given, expected) in [
+            (r"\\?\C:\Users\x", r"C:\Users\x"),
+            (r"\\?\c:", "c:"),
+            (r"\\?\UNC\server\share\dir", r"\\server\share\dir"),
+            // Not verbatim, or verbatim forms with no plain spelling: unchanged.
+            (r"C:\Users\x", r"C:\Users\x"),
+            (r"\\server\share", r"\\server\share"),
+            (r"\\?\Volume{1234}\x", r"\\?\Volume{1234}\x"),
+            (r"\\?\C", r"\\?\C"),
+            ("/tmp/x", "/tmp/x"),
+            ("", ""),
+        ] {
+            assert_eq!(strip_verbatim(given), expected, "{given}");
+        }
+    }
+
+    #[test]
+    fn canonical_path_is_never_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = canonical(dir.path()).unwrap();
+        assert!(!real.to_string_lossy().starts_with(r"\\?\"), "{real:?}");
+        assert!(real.is_dir());
+    }
 
     #[test]
     fn refuses_credentials_in_url() {
