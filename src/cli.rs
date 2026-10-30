@@ -9,6 +9,7 @@ use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::commands::check;
+use crate::commands::import_copier;
 use crate::commands::new::{self, NewOptions};
 use crate::commands::status::{self, Status};
 use crate::commands::update::{self, UpdateOptions};
@@ -42,6 +43,11 @@ enum Command {
     Status(StatusArgs),
     /// Fail if conflict markers or side files are left in the project.
     Check,
+    /// Convert the Copier template in the current directory: write rootstock.toml from copier.yml.
+    ///
+    /// Stops with a list and writes nothing if the template uses anything rootstock
+    /// cannot convert. The Copier answers-file template is removed after the conversion.
+    ImportCopier,
 }
 
 #[derive(Debug, Args)]
@@ -156,6 +162,10 @@ pub fn run() -> Result<Outcome> {
             write_stdout(&out)?;
             // Reported as an error so that main maps it to exit code 1.
             bail!("check failed: {} problem(s)", lines.len());
+        }
+        Command::ImportCopier => {
+            import_copier::run(&current_dir()?, &mut std::io::stderr().lock())?;
+            return Ok(Outcome::Clean);
         }
         Command::New(args) => {
             let report = new::run(&NewOptions {

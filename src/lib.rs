@@ -6,6 +6,7 @@ pub mod apply;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod copier;
 pub mod hooks;
 pub mod jinja;
 pub mod merge;

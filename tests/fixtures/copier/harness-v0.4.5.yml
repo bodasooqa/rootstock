@@ -1,0 +1,256 @@
+# Шаблон Copier общей обвязки проектов. Дизайн — docs/design.md.
+#
+# Только то, что повторимо вне Python: ни `_jinja_extensions`, ни задач на
+# Python. Copier может смениться своим инструментом на Rust (minijinja), поэтому
+# опираемся на формат шаблона Jinja2 и файл ответов, а не на возможности Copier.
+# Исключение одно — встроенные фильтры `regex_search` и `to_nice_yaml`
+# (пакет jinja2-ansible-filters, Copier грузит его всегда): замене придётся их
+# повторить.
+
+_min_copier_version: "9.0"
+_subdirectory: template
+_answers_file: .copier-answers.yml
+# Рендерятся только файлы с суффиксом `.jinja`, остальные копируются как есть:
+# в TSX и CSS бывают `{{`, которые Jinja приняла бы за подстановку.
+_templates_suffix: .jinja
+_envops:
+  keep_trailing_newline: true
+  trim_blocks: true
+  lstrip_blocks: true
+# Частичные файлы для include: тело агента одно на Claude Code и Pi. Загрузчик
+# Jinja у Copier ищет от корня репозитория, а не от `_subdirectory`, поэтому
+# include пишется с префиксом `template/_partials/`.
+#
+# Стартовые файлы (список `_skip_if_exists` ниже, один к одному) при обновлении
+# не рендерятся вовсе. `_skip_if_exists` бережёт их только при создании и пока
+# файл есть: удалённый проектом стартовый файл Copier на каждом обновлении
+# создаёт заново (`crates/app/` в проекте со своими крейтами).
+_exclude:
+  - _partials
+  - "{% if _copier_operation == 'update' %}/README.md{% endif %}"
+  - "{% if _copier_operation == 'update' %}/CLAUDE.md{% endif %}"
+  - "{% if _copier_operation == 'update' %}/.gitignore{% endif %}"
+  - "{% if _copier_operation == 'update' %}openspec/config.yaml{% endif %}"
+  - "{% if _copier_operation == 'update' %}.harness/local/**{% endif %}"
+  - "{% if _copier_operation == 'update' %}/lefthook.yml{% endif %}"
+  - "{% if _copier_operation == 'update' %}.github/workflows/ci.yml{% endif %}"
+  - "{% if _copier_operation == 'update' %}/Cargo.toml{% endif %}"
+  - "{% if _copier_operation == 'update' %}crates/app/**{% endif %}"
+  - "{% if _copier_operation == 'update' %}/package.json{% endif %}"
+  - "{% if _copier_operation == 'update' %}/biome.json{% endif %}"
+  - "{% if _copier_operation == 'update' %}apps/web/**{% endif %}"
+  - "{% if _copier_operation == 'update' %}packages/uikit/**{% endif %}"
+  - "{% if _copier_operation == 'update' %}/src/**{% endif %}"
+  - "{% if _copier_operation == 'update' %}/index.html{% endif %}"
+  - "{% if _copier_operation == 'update' %}/vite.config.ts{% endif %}"
+  - "{% if _copier_operation == 'update' %}/tsconfig.json{% endif %}"
+  - "{% if _copier_operation == 'update' %}/components.json{% endif %}"
+  - "{% if _copier_operation == 'update' and spec_path %}{{ spec_path }}/**{% endif %}"
+  - "{% if _copier_operation == 'update' and revisions_path %}{{ revisions_path }}/**{% endif %}"
+  - "{% if _copier_operation == 'update' and decisions_path %}{{ decisions_path }}/**{% endif %}"
+  - "{% if _copier_operation == 'update' and lessons_path %}{{ lessons_path }}/**{% endif %}"
+  - "{% if _copier_operation == 'update' and open_questions_path %}{{ open_questions_path }}{% endif %}"
+  - "{% if _copier_operation == 'update' %}knowledge/README.md{% endif %}"
+
+# Только при создании проекта: OpenSpec кладёт свои команды и скиллы для Claude
+# Code и Pi. Это generated, в шаблоне их нет; существующий `openspec/config.yaml`
+# init не перезаписывает (проверено на OpenSpec 1.12.0).
+_tasks:
+  - command: >-
+      if command -v openspec >/dev/null 2>&1; then
+      openspec init --tools claude,pi --no-animation;
+      else
+      echo "harness: openspec не найден в PATH, выполните в проекте openspec init --tools claude,pi" >&2;
+      fi
+    when: "{{ _copier_operation == 'copy' }}"
+
+# Стартовые файлы: создаются один раз и дальше принадлежат проекту, обновление
+# шаблона их не трогает. Всё, что не перечислено, — управляемое: обновляется у
+# всех проектов (`.harness/` кроме `.harness/local/`, `.claude/settings.json`,
+# агенты `.claude/agents/` и скиллы шаблона в `.claude/skills/`, прослойка Pi
+# `.pi/settings.json`, `.pi/extensions/harness.ts` и агенты `.pi/agents/`, скрипты
+# `knowledge/` и их тесты, `.github/workflows/harness.yml`,
+# `.github/workflows/harness-update.yml`, `.github/workflows/harness-automerge.yml`,
+# `rust-toolchain.toml`, `rustfmt.toml`, `turbo.json`, `tsconfig.base.json`).
+#
+# Шаблоны — в синтаксисе .gitignore: имя без `/` совпадает на любой глубине.
+# Файлы корня поэтому пишутся с `/` в начале: `README.md` без него делал
+# стартовыми и управляемые `.harness/hooks/README.md`, `.harness/lefthook.yml`,
+# `.harness/biome.json` — обновление их молча пропускало.
+#
+# Шаблоны с ответом обёрнуты в `{% if %}`. На шаге сравнения `copier update`
+# (Copier 9.19) рендерит этот список без ответов: `{{ spec_path }}/**` дал бы
+# `/**`. Тогда все правки проекта, и в управляемых файлах тоже, выпадали бы
+# из патча и молча терялись (настройки `.claude/settings.json`).
+_skip_if_exists:
+  - /README.md
+  - /CLAUDE.md
+  - /.gitignore
+  - openspec/config.yaml
+  # Точки расширения обвязки: свои хуки проекта, свои git-хуки, свои джобы CI
+  - .harness/local/**
+  - /lefthook.yml
+  - .github/workflows/ci.yml
+  # Rust
+  - /Cargo.toml
+  - crates/app/**
+  # Фронт
+  - /package.json
+  - /biome.json
+  - apps/web/**
+  - packages/uikit/**
+  # Один крейт или одно приложение в корне
+  - /src/**
+  - /index.html
+  - /vite.config.ts
+  - /tsconfig.json
+  - /components.json
+  # Документы новой формы
+  - "{% if spec_path %}{{ spec_path }}/**{% endif %}"
+  - "{% if revisions_path %}{{ revisions_path }}/**{% endif %}"
+  - "{% if decisions_path %}{{ decisions_path }}/**{% endif %}"
+  - "{% if lessons_path %}{{ lessons_path }}/**{% endif %}"
+  - "{% if open_questions_path %}{{ open_questions_path }}{% endif %}"
+  - knowledge/README.md
+
+project_name:
+  type: str
+  help: Имя проекта в kebab-case (латиница, цифры, дефис). Из него — имена пакетов `<имя>-<крейт>` и `@<имя>/<пакет>`
+  validator: >-
+    {% if not (project_name | regex_search('^[a-z][a-z0-9-]*$')) %}
+    Имя — kebab-case: строчная латинская буква, затем строчные буквы, цифры, дефис
+    {% endif %}
+
+rust:
+  type: bool
+  default: true
+  help: Rust в проекте?
+
+frontend:
+  type: bool
+  default: true
+  help: Фронт (React SPA на Vite) в проекте?
+  validator: >-
+    {% if not rust and not frontend %}
+    Нужен хотя бы Rust или фронт
+    {% endif %}
+
+# При Rust и фронте вместе вопрос не задаётся: это всегда монорепо. Вопрос с
+# ложным `when` берёт значение из `default` и не пишется в файл ответов.
+monorepo:
+  type: bool
+  default: true
+  when: "{{ not (rust and frontend) }}"
+  help: Монорепо (Cargo-воркспейс в crates/, фронт в apps/ и packages/)? Иначе — один крейт или одно приложение в корне
+  validator: >-
+    {% if rust and frontend and not monorepo %}
+    Rust и фронт вместе — только монорепо
+    {% endif %}
+
+linear:
+  type: bool
+  default: false
+  help: Подключить модуль Linear (задачи, номер задачи в заголовке PR)?
+
+tracker_prefix:
+  type: str
+  when: "{{ linear }}"
+  help: Префикс задач в Linear, заглавными латинскими буквами (например, DEN)
+  validator: >-
+    {% if not (tracker_prefix | regex_search('^[A-Z]+$')) %}
+    Префикс — только заглавные латинские буквы
+    {% endif %}
+
+orca:
+  type: bool
+  default: true
+  help: Подключить модуль Orca (рабочее дерево на сессию через orca worktree)?
+
+telegram:
+  type: bool
+  default: false
+  when: "{{ rust }}"
+  help: Подключить скилл telegram-bot для Rust-исполнителя?
+
+# Модели агентов в Pi: класс модели агента Claude Code (`model:` в
+# `.claude/agents/`) → идентификатор модели Pi `провайдер/модель`
+# (`pi --list-models`). Словарь, а не зашитые строки: провайдер у проектов разный.
+# По умолчанию — модели Anthropic через OpenRouter.
+pi_models:
+  type: yaml
+  default:
+    opus: openrouter/anthropic/claude-opus-5.5
+    sonnet: openrouter/anthropic/claude-sonnet-5.5
+    haiku: openrouter/anthropic/claude-haiku-5.5
+  help: "Модели агентов в Pi: словарь opus/sonnet/haiku → модель Pi `провайдер/модель` (pi --list-models)"
+  validator: >-
+    {% if pi_models is not mapping
+       or pi_models.opus is not string or not pi_models.opus
+       or pi_models.sonnet is not string or not pi_models.sonnet
+       or pi_models.haiku is not string or not pi_models.haiku %}
+    Нужен словарь с ключами opus, sonnet, haiku и моделями Pi строками
+    {% endif %}
+
+doc_form:
+  type: str
+  default: catalog
+  help: Форма документов
+  choices:
+    "catalog — ТЗ каталогом, ревизии, решения и уроки по файлу (новый проект)": catalog
+    "monolith — ТЗ и журналы одним файлом (существующий проект)": monolith
+
+spec_path:
+  type: str
+  default: "{% if doc_form == 'catalog' %}docs/spec{% endif %}"
+  help: Путь к ТЗ от корня проекта (каталог в форме catalog, файл в форме monolith)
+  validator: >-
+    {% if not spec_path %}
+    Укажите путь
+    {% endif %}
+
+revisions_path:
+  type: str
+  default: "{% if doc_form == 'catalog' %}docs/spec/revisions{% endif %}"
+  help: Путь к журналу ревизий ТЗ (каталог в форме catalog, файл в форме monolith)
+  validator: >-
+    {% if not revisions_path %}
+    Укажите путь
+    {% endif %}
+
+decisions_path:
+  type: str
+  default: "{% if doc_form == 'catalog' %}knowledge/decisions{% endif %}"
+  help: Путь к журналу решений (каталог в форме catalog, файл в форме monolith)
+  validator: >-
+    {% if not decisions_path %}
+    Укажите путь
+    {% endif %}
+
+lessons_path:
+  type: str
+  default: "{% if doc_form == 'catalog' %}knowledge/lessons{% endif %}"
+  help: Путь к урокам (каталог в форме catalog, файл в форме monolith)
+  validator: >-
+    {% if not lessons_path %}
+    Укажите путь
+    {% endif %}
+
+open_questions_path:
+  type: str
+  default: "{% if doc_form == 'catalog' %}knowledge/open-questions.md{% endif %}"
+  help: Путь к файлу открытых вопросов
+  validator: >-
+    {% if not open_questions_path %}
+    Укажите путь
+    {% endif %}
+
+# Таблицу читает `knowledge/due.sh`: сроки открытых вопросов «к этапу N»
+# сверяются с состоянием этапов. В форме catalog таблица — в разделе этапов ТЗ.
+stages_path:
+  type: str
+  default: "{% if doc_form == 'catalog' %}{{ spec_path }}/03-stages.md{% endif %}"
+  help: Путь к файлу с таблицей состояния этапов (`| N. Название | состояние |`, состояния «в работе», «закрыт»)
+  validator: >-
+    {% if not stages_path %}
+    Укажите путь
+    {% endif %}
