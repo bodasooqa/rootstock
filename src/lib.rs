@@ -4,6 +4,7 @@
 pub mod answers;
 pub mod apply;
 pub mod cli;
+pub mod commands;
 pub mod config;
 pub mod hooks;
 pub mod jinja;

@@ -26,7 +26,7 @@ impl TemplateRepo {
         repo
     }
 
-    fn git(&self, args: &[&str]) -> String {
+    pub fn git(&self, args: &[&str]) -> String {
         let out = Command::new("git")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -97,4 +97,33 @@ impl TemplateRepo {
     pub fn commit(&self, rev: &str) -> String {
         self.git(&["rev-parse", &format!("{rev}^{{commit}}")])
     }
+}
+
+/// Runs git in `dir` with a hermetic configuration and returns trimmed stdout.
+pub fn git_in(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Makes `dir` a git work tree (if it is not one yet) and commits everything in it.
+pub fn commit_project(dir: &Path, message: &str) {
+    if !dir.join(".git").exists() {
+        git_in(dir, &["init", "-q", "-b", "main"]);
+    }
+    git_in(dir, &["add", "-A"]);
+    git_in(dir, &["commit", "--allow-empty", "-q", "-m", message]);
 }
