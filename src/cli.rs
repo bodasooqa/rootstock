@@ -12,7 +12,7 @@ use crate::commands::check;
 use crate::commands::new::{self, NewOptions};
 use crate::commands::status::{self, Status};
 use crate::commands::update::{self, UpdateOptions};
-use crate::commands::{CommonOptions, Report};
+use crate::commands::{CommonOptions, HookFailed, Report};
 use crate::plan::Conflict;
 
 /// Result of a command that ran to completion.
@@ -161,8 +161,8 @@ pub fn run() -> Result<Outcome> {
                 version: args.version,
                 git: args.git,
                 common: args.common.options(),
-            })?;
-            (report, args.common.format)
+            });
+            (listed(report, args.common.format)?, args.common.format)
         }
         Command::Update(args) => {
             let report = update::run(
@@ -171,8 +171,8 @@ pub fn run() -> Result<Outcome> {
                     to: args.to,
                     common: args.common.options(),
                 },
-            )?;
-            (report, args.common.format)
+            );
+            (listed(report, args.common.format)?, args.common.format)
         }
     };
     print_report(&report, format)?;
@@ -183,6 +183,19 @@ pub fn run() -> Result<Outcome> {
         eprintln!("{count} conflict{}", if count == 1 { "" } else { "s" });
         Ok(Outcome::Conflicts(report.conflicts))
     }
+}
+
+/// Passes a report through; when a hook failed after the files were written,
+/// lists the conflicts on disk before returning the error.
+fn listed(result: Result<Report>, format: Format) -> Result<Report> {
+    let err = match result {
+        Ok(report) => return Ok(report),
+        Err(err) => err,
+    };
+    if let Some(failed) = err.downcast_ref::<HookFailed>() {
+        print_report(&failed.report, format)?;
+    }
+    Err(err)
 }
 
 fn print_report(report: &Report, format: Format) -> Result<()> {

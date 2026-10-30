@@ -5,11 +5,11 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use super::{
-    CommonOptions, Report, Side, interactive, load_data, read_data_file, refuse_unsupported,
-    target_label,
+    CommonOptions, HookFailed, Report, Side, interactive, load_data, read_data_file,
+    refuse_unsupported, target_label,
 };
 use crate::answers::NoPrompt;
-use crate::apply::{DiskProject, apply, check_path, existing_parents};
+use crate::apply::{DiskProject, apply, check_path, readable_parents};
 use crate::config::Phase;
 use crate::hooks::{check_trust, run_trusted};
 use crate::merge::has_markers;
@@ -59,16 +59,19 @@ fn refuse_leftover_markers(dir: &Path, rec: &Record) -> Result<()> {
             continue;
         }
         // Inventory comes from a file the project owns: never read outside the project.
-        if check_path(path).is_err()
-            || !matches!(existing_parents(dir, path, "symlink"), Ok(Some(())))
-        {
+        if check_path(path).is_err() {
+            bail!("record lists an unsafe path `{path}`");
+        }
+        if !readable_parents(dir, path)? {
             continue;
         }
         let full = dir.join(path);
-        let is_file = std::fs::symlink_metadata(&full)
-            .map(|m| m.file_type().is_file())
-            .unwrap_or(false);
-        if !is_file {
+        let meta = match std::fs::symlink_metadata(&full) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => bail!("cannot read `{path}`: {e}"),
+        };
+        if !meta.file_type().is_file() {
             continue;
         }
         let bytes = std::fs::read(&full).with_context(|| format!("cannot read {path}"))?;
@@ -90,7 +93,7 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     require_clean_tree(dir)?;
     refuse_leftover_markers(dir, &rec)?;
 
-    let src = parse_source(&rec.source);
+    let src = parse_source(&rec.source)?;
     let version = match &opts.to {
         Some(v) => v.clone(),
         None => latest(&src)?,
@@ -151,13 +154,16 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     })?;
 
     apply(&plan, dir)?;
-    run_trusted(&target_cfg.hooks, Phase::Update, dir)
-        .context("files were written; hooks failed; the record was not updated")?;
-    record::write_text(dir, &record_text)
-        .context("files were written; the record was not updated")?;
-    eprintln!("updated to {version}");
-    Ok(Report {
+    let report = Report {
         version,
         conflicts: plan.conflicts,
-    })
+    };
+    if let Err(e) = run_trusted(&target_cfg.hooks, Phase::Update, dir) {
+        let e = e.context("files were written; hooks failed; the record was not updated");
+        return Err(HookFailed::new(report, e).into());
+    }
+    record::write_text(dir, &record_text)
+        .context("files were written; the record was not updated")?;
+    eprintln!("updated to {}", report.version);
+    Ok(report)
 }

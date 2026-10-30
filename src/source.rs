@@ -27,15 +27,33 @@ impl Source {
 }
 
 /// Classifies a user-supplied source string.
-pub fn parse_source(s: &str) -> Source {
+pub fn parse_source(s: &str) -> Result<Source> {
     if let Some(rest) = s.strip_prefix("gh:") {
-        return Source::Git(format!("https://github.com/{rest}.git"));
+        return Ok(Source::Git(format!("https://github.com/{rest}.git")));
     }
     let path = Path::new(s);
     if path.is_dir() {
-        return Source::Local(path.to_path_buf());
+        return Ok(Source::Local(path.to_path_buf()));
     }
-    Source::Git(s.to_string())
+    if carries_credentials(s) {
+        // The URL is never echoed: it holds a secret.
+        bail!("template URL carries credentials; configure a git credential helper instead");
+    }
+    Ok(Source::Git(s.to_string()))
+}
+
+/// A `scheme://` URL whose userinfo holds a password, or an http(s) URL
+/// with any userinfo (a token often stands in as the user name).
+fn carries_credentials(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let Some((userinfo, _host)) = authority.rsplit_once('@') else {
+        return false;
+    };
+    let web = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+    userinfo.contains(':') || (web && !userinfo.is_empty())
 }
 
 /// Runs `git` and returns its output; stdin is never inherited.
@@ -199,4 +217,41 @@ fn resolve(dir: &str, rev: &str) -> Result<Option<String>> {
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REFUSAL: &str = "template URL carries credentials";
+
+    #[test]
+    fn refuses_credentials_in_url() {
+        for url in [
+            "https://tok@github.com/o/r.git",
+            "https://u:p@h/r.git",
+            "HTTP://tok@h/r.git",
+            "ssh://u:p@h/r.git",
+        ] {
+            let err = parse_source(url).unwrap_err().to_string();
+            assert!(err.contains(REFUSAL), "{url}: {err}");
+            assert!(!err.contains('@'), "{url}: {err}");
+        }
+    }
+
+    #[test]
+    fn accepts_urls_without_credentials() {
+        for url in [
+            "ssh://git@h/r.git",
+            "git@h:o/r.git",
+            "https://h/r.git",
+            "https://h/a@b.git",
+        ] {
+            assert_eq!(parse_source(url).unwrap(), Source::Git(url.to_string()));
+        }
+        assert_eq!(
+            parse_source("gh:o/r").unwrap(),
+            Source::Git("https://github.com/o/r.git".to_string())
+        );
+    }
 }

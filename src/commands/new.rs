@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use super::{
-    CommonOptions, Report, Side, dir_has_entries, interactive, load_data, prompter,
+    CommonOptions, HookFailed, Report, Side, dir_has_entries, interactive, load_data, prompter,
     refuse_unsupported, target_label,
 };
 use crate::apply::{DiskProject, apply};
@@ -50,7 +50,7 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         bail!("--git needs an empty directory");
     }
 
-    let src = parse_source(&opts.template);
+    let src = parse_source(&opts.template)?;
     let version = match &opts.version {
         Some(v) => v.clone(),
         None => latest(&src)?,
@@ -87,18 +87,26 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
 
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     apply(&plan, dir)?;
-    run_trusted(&cfg.hooks, Phase::New, dir)
-        .context("files were written; hooks failed; the record was not written")?;
+    let report = Report {
+        version,
+        conflicts: plan.conflicts,
+    };
+    if let Err(e) = run_trusted(&cfg.hooks, Phase::New, dir) {
+        let e = e.context("files were written; hooks failed; the record was not written");
+        return Err(HookFailed::new(report, e).into());
+    }
     record::write_text(dir, &record_text)
         .context("files were written; the record was not written")?;
     if opts.git {
         init_git(dir).context("project created; git init failed")?;
     }
-    eprintln!("created {} from {} {version}", dir.display(), opts.template);
-    Ok(Report {
-        version,
-        conflicts: plan.conflicts,
-    })
+    eprintln!(
+        "created {} from {} {}",
+        dir.display(),
+        opts.template,
+        report.version
+    );
+    Ok(report)
 }
 
 fn init_git(dir: &Path) -> Result<()> {

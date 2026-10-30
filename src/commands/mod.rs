@@ -25,6 +25,21 @@ pub struct Report {
     pub conflicts: Vec<Conflict>,
 }
 
+/// A hook failed after the files were written. The conflicts in `report`
+/// are on disk, so the CLI still lists them before reporting the error.
+#[derive(Debug, thiserror::Error)]
+#[error("{error:#}")]
+pub struct HookFailed {
+    pub report: Report,
+    error: anyhow::Error,
+}
+
+impl HookFailed {
+    pub(crate) fn new(report: Report, error: anyhow::Error) -> HookFailed {
+        HookFailed { report, error }
+    }
+}
+
 /// Flags shared by `new` and `update`.
 #[derive(Debug, Clone, Default)]
 pub struct CommonOptions {

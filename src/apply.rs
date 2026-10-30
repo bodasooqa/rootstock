@@ -38,10 +38,7 @@ impl<'a> DiskProject<'a> {
     /// Runs the parent guard for `path`: `Ok(false)` when a parent is missing or
     /// is not a directory (the path is absent), an error for a symlinked parent.
     fn parents_present(&self, path: &str) -> Result<bool, String> {
-        match walk_parents(self.root, path, Walk::Read, "path goes through symlink") {
-            Ok(found) => Ok(found.is_some()),
-            Err(e) => Err(format!("`{path}`: {e}")),
-        }
+        readable_parents(self.root, path).map_err(|e| e.to_string())
     }
 
     fn read(&self, path: &str) -> Result<Option<Entry>, String> {
@@ -287,6 +284,15 @@ pub(crate) fn existing_parents(
     symlink_message: &str,
 ) -> anyhow::Result<Option<()>> {
     Ok(walk_parents(root, path, Walk::Existing, symlink_message)?.map(|_| ()))
+}
+
+/// Walks parents the way `DiskProject` reads: `false` when a component is
+/// missing or not a directory, an error for a symlinked one.
+pub(crate) fn readable_parents(root: &Path, path: &str) -> anyhow::Result<bool> {
+    match walk_parents(root, path, Walk::Read, "path goes through symlink") {
+        Ok(found) => Ok(found.is_some()),
+        Err(e) => anyhow::bail!("`{path}`: {e}"),
+    }
 }
 
 /// Rejects paths that could leave the root or mean something else on Windows:

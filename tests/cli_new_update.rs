@@ -203,6 +203,50 @@ fn new_refuses_existing_record() {
 }
 
 #[test]
+fn new_refuses_credentials_in_url() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("p");
+    for url in [
+        "https://zq7SECRETtoken9@example.invalid/o/r.git",
+        "https://user:zq7SECRETtoken9@example.invalid/o/r.git",
+    ] {
+        rootstock()
+            .args(["new", url])
+            .arg(&dir)
+            .args(["--defaults", "--version", "v1.0.0"])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains(
+                "template URL carries credentials; configure a git credential helper instead",
+            ))
+            .stderr(predicate::str::contains("zq7SECRETtoken9").not());
+        assert!(!dir.exists());
+    }
+}
+
+#[test]
+fn update_refuses_credentials_in_recorded_source() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    let edited = record.replace(
+        &format!(
+            "source = \"{}\"",
+            repo.path().canonicalize().unwrap().display()
+        ),
+        "source = \"https://zq7SECRETtoken9@example.invalid/o/r.git\"",
+    );
+    assert_ne!(edited, record);
+    fs::write(dir.join(".rootstock.toml"), edited).unwrap();
+    commit_project(&dir, "edit source");
+    update(&dir)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("template URL carries credentials"))
+        .stderr(predicate::str::contains("zq7SECRETtoken9").not());
+}
+
+#[test]
 fn new_git_requires_empty_dir() {
     let repo = template_v1();
     let tmp = TempDir::new().unwrap();
@@ -579,6 +623,52 @@ fn update_hook_failure_reports_record_not_updated() {
 }
 
 #[test]
+fn update_hook_failure_still_lists_conflicts() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    fs::write(
+        dir.join("README.md"),
+        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nL8-project\n",
+    )
+    .unwrap();
+    commit_project(&dir, "edit");
+    let config = format!("{CONFIG}\n[[hooks]]\nrun = \"exit 3\"\nwhen = [\"update\"]\n");
+    repo.file("rootstock.toml", &config)
+        .file("tpl/README.md", README_V2)
+        .tag("v1.1.0");
+    update(&dir)
+        .arg("--trust")
+        .assert()
+        .code(1)
+        .stdout("markers README.md\n")
+        .stderr(predicate::str::contains("hooks failed"));
+}
+
+#[test]
+fn new_hook_failure_still_lists_conflicts_as_json() {
+    let repo = TemplateRepo::new();
+    repo.file(
+        "rootstock.toml",
+        "schema = 1\nroot = \"tpl\"\n\n[[hooks]]\nrun = \"exit 3\"\nwhen = [\"new\"]\n",
+    )
+    .file("tpl/a.txt", "template\n")
+    .tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("p");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("a.txt"), "mine\n").unwrap();
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--defaults", "--trust", "--format", "json"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(r#""kind":"added-by-both""#))
+        .stdout(predicate::str::contains(r#""path":"a.txt""#))
+        .stderr(predicate::str::contains("hooks failed"));
+}
+
+#[test]
 fn update_scoped_to_project_dir() {
     let repo = template_v1();
     let tmp = TempDir::new().unwrap();
@@ -738,27 +828,75 @@ fn new_stdout_empty() {
         .stdout(predicate::str::is_empty());
 }
 
-#[cfg(unix)]
-#[test]
-fn leftover_markers_ignores_starter_and_symlink() {
-    let repo = template_v1();
-    let (tmp, dir) = new_project(&repo);
-    let markers = "<<<<<<< project\nmine\n=======\ntheirs\n>>>>>>> template v1.0.0\n";
-    // A starter file with markers is the project's own business.
-    fs::write(dir.join("NOTES.md"), markers).unwrap();
-    // A managed path whose parent the project replaced with a symlink is not read.
-    let elsewhere = tmp.path().join("elsewhere");
-    fs::create_dir(&elsewhere).unwrap();
-    fs::write(elsewhere.join("x.txt"), markers).unwrap();
-    std::os::unix::fs::symlink(&elsewhere, dir.join("ghost")).unwrap();
+const LEFTOVER: &str = "<<<<<<< project\nmine\n=======\ntheirs\n>>>>>>> template v1.0.0\n";
+
+/// Appends a managed inventory entry to the project record.
+fn add_managed_entry(dir: &Path, path: &str) {
     let mut record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
-    record.push_str("\"ghost/x.txt\" = \"managed\"\n");
+    record.push_str(&format!("\"{path}\" = \"managed\"\n"));
     fs::write(dir.join(".rootstock.toml"), record).unwrap();
-    commit_project(&dir, "odd project");
+}
+
+/// Asserts that a refused update left README and the record at v1.0.0.
+fn assert_untouched(dir: &Path) {
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).unwrap(),
+        README_V1
+    );
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("version = \"v1.0.0\""), "{record}");
+}
+
+#[test]
+fn leftover_markers_ignore_starter() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    // A starter file with markers is the project's own business.
+    fs::write(dir.join("NOTES.md"), LEFTOVER).unwrap();
+    commit_project(&dir, "notes with markers");
     repo.file("tpl/README.md", README_V2).tag("v1.1.0");
     update(&dir).assert().code(0);
     assert_eq!(
         fs::read_to_string(dir.join("README.md")).unwrap(),
         README_V2
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn leftover_markers_symlinked_parent_exits_1() {
+    let repo = template_v1();
+    let (tmp, dir) = new_project(&repo);
+    // A managed path whose parent the project replaced with a symlink is never read.
+    let elsewhere = tmp.path().join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    fs::write(elsewhere.join("x.txt"), LEFTOVER).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dir.join("ghost")).unwrap();
+    add_managed_entry(&dir, "ghost/x.txt");
+    commit_project(&dir, "odd project");
+    repo.file("tpl/README.md", README_V2).tag("v1.1.0");
+    update(&dir)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "`ghost/x.txt`: path goes through symlink",
+        ))
+        .stderr(predicate::str::contains("unresolved conflict markers").not());
+    assert_untouched(&dir);
+}
+
+#[test]
+fn leftover_markers_unsafe_inventory_path_exits_1() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    add_managed_entry(&dir, "../outside.txt");
+    commit_project(&dir, "odd record");
+    repo.file("tpl/README.md", README_V2).tag("v1.1.0");
+    update(&dir)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "record lists an unsafe path `../outside.txt`",
+        ));
+    assert_untouched(&dir);
 }

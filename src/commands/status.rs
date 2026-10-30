@@ -32,7 +32,7 @@ fn parse_release(tag: &str) -> Option<Version> {
 
 pub fn run(project: &Path) -> Result<Status> {
     let rec = record::read(project)?;
-    let src = parse_source(&rec.source);
+    let src = parse_source(&rec.source)?;
     let latest_tag = latest(&src)?;
     let Some(current) = parse_release(&rec.version) else {
         bail!("current version `{}` is not a release", rec.version);
