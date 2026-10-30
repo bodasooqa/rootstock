@@ -131,20 +131,20 @@ pub fn convert(yaml: &str, template_dir: &Path) -> Result<Converted, CopierError
     table.insert("jinja".into(), cx.envops(sections.envops));
 
     let skip = cx.string_list("_skip_if_exists", sections.skip);
-    for entry in &skip {
-        cx.check_vars("`_skip_if_exists`", entry);
+    for (i, entry) in skip.iter().enumerate() {
+        cx.check_vars(&format!("`_skip_if_exists[{i}]`"), entry);
     }
     let mut exclude = Vec::new();
     match sections.exclude {
         Some(v) => {
-            for entry in cx.string_list("_exclude", Some(v)) {
+            for (i, entry) in cx.string_list("_exclude", Some(v)).into_iter().enumerate() {
                 match cx.update_only(&entry) {
                     Some(pair) if skip.iter().any(|s| s.trim() == pair) => {}
                     Some(_) => cx.find(format!(
-                        "`_exclude`: update-only exclude without a matching `_skip_if_exists` entry: {entry}"
+                        "`_exclude[{i}]`: update-only exclude without a matching `_skip_if_exists` entry: {entry}"
                     )),
                     None => {
-                        cx.check_vars("`_exclude`", &entry);
+                        cx.check_vars(&format!("`_exclude[{i}]`"), &entry);
                         exclude.push(entry);
                     }
                 }
@@ -1335,6 +1335,16 @@ _skip_if_exists:
 "#,
         );
         has(&f, "_copier_operation");
+    }
+
+    #[test]
+    fn findings_in_rules_name_the_entry_index() {
+        let f = found(
+            "_exclude:\n  - a\n  - \"{{ _copier_operation }}\"\n  - \"{{ _copier_operation }}\"\n_skip_if_exists:\n  - ok\n  - \"{{ _copier_operation }}\"\n",
+        );
+        has(&f, "`_exclude[1]`");
+        has(&f, "`_exclude[2]`");
+        has(&f, "`_skip_if_exists[1]`");
     }
 
     #[test]

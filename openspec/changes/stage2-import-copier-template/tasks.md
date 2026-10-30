@@ -1,6 +1,6 @@
 ## 1. Каркас конвертера и ключи шаблона (design D2–D5, D10)
 
-- [ ] 1.1 Падающие unit-тесты в `src/copier.rs`:
+- [x] 1.1 Падающие unit-тесты в `src/copier.rs`:
   - ключи harness (`_subdirectory`, `_templates_suffix`, `_envops`) дают `root`, `suffix`, три настройки Jinja;
   - без `_envops` пишутся умолчания Copier: `keep_trailing_newline = true`, остальные false;
   - без `_subdirectory` и `_exclude` в `exclude` стоит `DEFAULT_EXCLUDE` Copier дословно, с `_exclude` — нет;
@@ -13,7 +13,7 @@
   - вывод начинается с комментария D2 и разбирается `config::parse`.
 
   Проверка: `cargo test copier` красный ровно на новых тестах.
-- [ ] 1.2 Реализовать `src/copier.rs`:
+- [x] 1.2 Реализовать `src/copier.rs`:
   - `pub mod` в `lib.rs`;
   - функция преобразования текста `copier.yml` в пару «текст `rootstock.toml` + `TemplateConfig`» или `Unsupported(Vec<Finding>)`;
   - тип ошибки на `thiserror`.
@@ -22,7 +22,7 @@
 
 ## 2. Правила и задачи (design D6, D7)
 
-- [ ] 2.1 Падающие тесты:
+- [x] 2.1 Падающие тесты:
   - `_skip_if_exists` → `starter` дословно, с ведущим `/` и с Jinja;
   - обе формы исключения «только при обновлении» с парой отброшены, без пары — находка;
   - `_partials` → `exclude`;
@@ -32,11 +32,11 @@
   - `_copier_operation` в иной записи `_exclude` или в `_skip_if_exists` — находка.
 
   Проверка: красные.
-- [ ] 2.2 Реализовать. Проверка: `cargo test copier` зелёный.
+- [x] 2.2 Реализовать. Проверка: `cargo test copier` зелёный.
 
 ## 3. Вопросы (design D8)
 
-- [ ] 3.1 Падающие тесты:
+- [x] 3.1 Падающие тесты:
   - `bool`, `str`, `yaml` переносятся с `help`, `default`, `validator`;
   - `str` со словарём `choices` → `choice` с `{label, value}`, со списком → простые значения;
   - `when: "{{ not (rust and frontend) }}"` → `not (rust and frontend)`, `when: false` → `"false"`;
@@ -54,11 +54,11 @@
   - порядок вопросов сохраняется.
 
   Проверка: красные.
-- [ ] 3.2 Реализовать. Проверка: `cargo test copier` зелёный.
+- [x] 3.2 Реализовать. Проверка: `cargo test copier` зелёный.
 
 ## 4. Дерево шаблона (design D9, D11, D12)
 
-- [ ] 4.1 Падающие тесты на каталогах во временном дереве:
+- [x] 4.1 Падающие тесты на каталогах во временном дереве:
   - `{{ _copier_conf.answers_file }}.jinja` и `{{_copier_conf.answers_file}}.jinja` в корне шаблона попадают в список удаляемого и не дают находки;
   - такой же файл во вложенном каталоге — находка;
   - `_copier_conf` в содержимом шаблонизируемого и нешаблонизируемого файла и в имени каталога — находки с путём;
@@ -67,11 +67,11 @@
   - `.git` не обходится.
 
   Проверка: красные.
-- [ ] 4.2 Реализовать обход корня шаблона в `src/copier.rs`. Результат преобразования получает список удаляемых путей. Проверка: `cargo test copier` зелёный.
+- [x] 4.2 Реализовать обход корня шаблона в `src/copier.rs`. Результат преобразования получает список удаляемых путей. Проверка: `cargo test copier` зелёный.
 
 ## 5. Команда `import-copier` (design D1, D13)
 
-- [ ] 5.1 Фикстура `tests/fixtures/copier/harness-v0.4.5.yml` — копия `copier.yml` harness v0.4.5 без правок. Падающие сквозные тесты в `tests/cli_import_copier.rs`:
+- [x] 5.1 Фикстура `tests/fixtures/copier/harness-v0.4.5.yml` — копия `copier.yml` harness v0.4.5 без правок. Падающие сквозные тесты в `tests/cli_import_copier.rs`:
   - каталог шаблона Copier с `template/{{ _copier_conf.answers_file }}.jinja` → код 0, `rootstock.toml` есть, файл ответов удалён, `copier.yml` на месте, stdout пуст;
   - фикстура harness плюс пустой `template/` → код 0;
   - после импорта, коммита и тега `rootstock new` по шаблону создаёт проект без `.copier-answers.yml`;
@@ -81,7 +81,7 @@
   - несколько находок → код 1, все названы в stderr, `rootstock.toml` нет, файл ответов на месте.
 
   Проверка: красные.
-- [ ] 5.2 Реализовать:
+- [x] 5.2 Реализовать:
   - `src/commands/import_copier.rs`: запись через временный файл и переименование без перезаписи, затем удаление;
   - подкоманда `ImportCopier` в `src/cli.rs` с текстом помощи.
 
@@ -89,7 +89,7 @@
 
 ## 6. Документация
 
-- [ ] 6.1 `README.md`:
+- [x] 6.1 `README.md`:
   - строка `rootstock import-copier` в быстром старте;
   - пункт о стороне шаблона;
   - карта: `src/copier.rs`, `commands/import_copier.rs`.
@@ -98,4 +98,4 @@
 
 ## 7. Проверки
 
-- [ ] 7.1 `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` — зелёные.
+- [x] 7.1 `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` — зелёные.
