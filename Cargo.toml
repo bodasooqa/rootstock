@@ -5,7 +5,11 @@ edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 description = "Create a project from a versioned git template and update it with a three-way merge"
-publish = false
+repository = "https://github.com/bodasooqa/rootstock"
+readme = "README.md"
+keywords = ["template", "scaffolding", "copier", "git", "cli"]
+categories = ["command-line-utilities", "development-tools", "template-engine"]
+include = ["/src", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
 [lib]
 name = "rootstock"
