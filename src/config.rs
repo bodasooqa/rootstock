@@ -437,11 +437,11 @@ run = "make fmt"
 
     #[test]
     fn rejects_removed_include_key() {
-        let key = ["include", "root"].join("_");
-        let e = parse(&format!("schema = 1\n{key} = \"x\"\n"), p()).unwrap_err();
+        let key = "include_root";
+        let e = parse("schema = 1\ninclude_root = \"x\"\n", p()).unwrap_err();
         assert!(matches!(e, ConfigError::Parse { .. }), "{e}");
         let source = std::error::Error::source(&e).map(|s| s.to_string());
-        assert!(source.is_some_and(|m| m.contains(&key)), "{e:?}");
+        assert!(source.is_some_and(|m| m.contains(key)), "{e:?}");
     }
 
     #[test]
