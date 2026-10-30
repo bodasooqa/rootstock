@@ -1030,18 +1030,136 @@ fn update_json_clean_and_already_at() {
     );
 }
 
+/// The `commit = "..."` line of the project record.
+fn record_commit_line(dir: &Path) -> String {
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    record
+        .lines()
+        .find(|l| l.starts_with("commit = "))
+        .unwrap()
+        .to_string()
+}
+
 #[test]
-fn update_already_at_with_data_says_not_applied() {
+fn update_data_on_current_version_changes_answer() {
     let repo = template_v1();
     let (_tmp, dir) = new_project(&repo);
+    let commit_before = record_commit_line(&dir);
     update(&dir)
-        .args(["--data", "rust=false"])
+        .args(["--data", "name=new"])
         .assert()
         .code(0)
+        .stdout(predicate::str::is_empty());
+    assert_eq!(
+        fs::read_to_string(dir.join("src.txt")).unwrap(),
+        "name=new\n"
+    );
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("name = \"new\""), "{record}");
+    assert!(record.contains("version = \"v1.0.0\""), "{record}");
+    assert_eq!(record_commit_line(&dir), commit_before);
+}
+
+#[test]
+fn update_data_equal_to_recorded_answer_changes_nothing() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    let record_before = fs::read(dir.join(".rootstock.toml")).unwrap();
+    let src_before = fs::read(dir.join("src.txt")).unwrap();
+    update(&dir)
+        .args(["--data", "name=demo"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains(
-            "already at v1.0.0; --data was not applied",
+            "already at v1.0.0; answers unchanged",
         ));
+    assert_eq!(
+        fs::read(dir.join(".rootstock.toml")).unwrap(),
+        record_before
+    );
+    assert_eq!(fs::read(dir.join("src.txt")).unwrap(), src_before);
+    assert!(git_in(&dir, &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn update_data_on_current_version_removes_disabled_file() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
     assert!(dir.join("rust.txt").exists());
+    let commit_before = record_commit_line(&dir);
+    update(&dir).args(["--data", "rust=false"]).assert().code(0);
+    assert!(!dir.join("rust.txt").exists());
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("rust = false"), "{record}");
+    assert!(record.contains("version = \"v1.0.0\""), "{record}");
+    assert_eq!(record_commit_line(&dir), commit_before);
+}
+
+#[test]
+fn update_data_on_current_version_conflicts_with_project_edit() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    fs::write(dir.join("src.txt"), "name=mine\n").unwrap();
+    commit_project(&dir, "edit");
+    let commit_before = record_commit_line(&dir);
+    update(&dir)
+        .args(["--data", "name=new"])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("src.txt"));
+    let text = fs::read_to_string(dir.join("src.txt")).unwrap();
+    assert!(text.contains("<<<<<<< project"), "{text}");
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("name = \"new\""), "{record}");
+    assert_eq!(record_commit_line(&dir), commit_before);
+}
+
+#[test]
+fn update_data_on_a_moved_tag_keeps_the_recorded_commit() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    let commit_before = record_commit_line(&dir);
+    // The tag of the current version is moved to a commit with other content.
+    repo.file("tpl/README.md", README_V2)
+        .file("tpl/src.txt.jinja", "name={{ name }}!\n");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "moved"]);
+    repo.git(&["tag", "-f", "v1.0.0"]);
+    update(&dir).args(["--data", "name=new"]).assert().code(0);
+    assert_eq!(
+        fs::read_to_string(dir.join("src.txt")).unwrap(),
+        "name=new\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).unwrap(),
+        README_V1
+    );
+    assert_eq!(record_commit_line(&dir), commit_before);
+}
+
+#[test]
+fn update_hooks_do_not_run_when_the_answer_is_unchanged() {
+    let repo = TemplateRepo::new();
+    let config = format!("{CONFIG}\n[[hooks]]\nrun = \"touch hooked.txt\"\nwhen = [\"update\"]\n");
+    repo.file("rootstock.toml", &config)
+        .file("tpl/README.md", README_V1)
+        .file("tpl/src.txt.jinja", "name={{ name }}\n")
+        .tag("v1.0.0");
+    let (_tmp, dir) = new_project(&repo);
+    let record_before = fs::read(dir.join(".rootstock.toml")).unwrap();
+    let src_before = fs::read(dir.join("src.txt")).unwrap();
+    update(&dir)
+        .args(["--data", "name=demo", "--trust"])
+        .assert()
+        .code(0)
+        .stderr(predicate::str::contains("answers unchanged"));
+    assert!(!dir.join("hooked.txt").exists());
+    assert_eq!(
+        fs::read(dir.join(".rootstock.toml")).unwrap(),
+        record_before
+    );
+    assert_eq!(fs::read(dir.join("src.txt")).unwrap(), src_before);
 }
 
 #[test]
@@ -1400,4 +1518,34 @@ fn new_rejects_removed_include_root_key() {
         .code(1)
         .stderr(predicate::str::contains("include_root"));
     assert!(!dir.exists());
+}
+
+#[test]
+fn new_from_a_template_that_is_itself_a_project() {
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\n")
+        .file(
+            ".rootstock.toml",
+            "schema = 1\nsource = \"/elsewhere\"\nversion = \"v9.9.9\"\ncommit = \"abc\"\n",
+        )
+        .file("README.md", "readme\n")
+        .tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(0);
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).unwrap(),
+        "readme\n"
+    );
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("version = \"v1.0.0\""), "{record}");
+    assert!(
+        !record.contains("v9.9.9") && !record.contains("/elsewhere"),
+        "{record}"
+    );
 }

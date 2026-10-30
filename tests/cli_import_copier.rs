@@ -503,23 +503,99 @@ fn an_existing_record_is_refused() {
     imports_nothing(project.path(), ".rootstock.toml already exists");
 }
 
-#[test]
-fn a_template_and_a_project_at_once_is_refused() {
+/// A committed Copier project that is also a Copier template (`copier.yml` next to the answers).
+fn template_and_project(copier_yml: &str, commit_line: &str) -> (TemplateRepo, TempDir) {
     let repo = copier_template();
-    let project = copier_project(&repo, "v1.0.0");
-    fs::write(project.path().join("copier.yml"), SMALL).unwrap();
+    let project = copier_project(&repo, commit_line);
+    fs::write(project.path().join("copier.yml"), copier_yml).unwrap();
+    fs::create_dir(project.path().join("template")).unwrap();
+    fs::write(project.path().join("template/hello.txt.jinja"), "hello\n").unwrap();
     commit_project(project.path(), "both");
-    imports_nothing(
-        project.path(),
-        "both copier.yml and .copier-answers.yml are here: this is a template and a project at once; nothing was changed",
+    (repo, project)
+}
+
+#[test]
+fn a_template_and_a_project_at_once_are_both_imported() {
+    let (_repo, project) = template_and_project(SMALL, "v1.0.0");
+    let dir = project.path();
+    let managed = fs::read(dir.join("managed.txt")).unwrap();
+    import(dir)
+        .code(0)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("wrote rootstock.toml"))
+        .stderr(predicate::str::contains("wrote .rootstock.toml"))
+        .stderr(predicate::str::contains("removed .copier-answers.yml"));
+    assert!(dir.join("rootstock.toml").exists());
+    assert!(dir.join(".rootstock.toml").exists());
+    assert!(dir.join("copier.yml").exists());
+    assert!(!dir.join(".copier-answers.yml").exists());
+    assert_eq!(fs::read(dir.join("managed.txt")).unwrap(), managed);
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("version = \"v1.0.0\""), "{record}");
+    assert!(record.contains("name = \"shop\""), "{record}");
+}
+
+#[test]
+fn an_unsupported_template_side_writes_neither_side() {
+    let (_repo, project) = template_and_project(
+        "_subdirectory: template\n_jinja_extensions: [x]\nq:\n  type: int\n",
+        "v1.0.0",
     );
-    fs::rename(
-        project.path().join("copier.yml"),
-        project.path().join("copier.yaml"),
-    )
-    .unwrap();
+    let dir = project.path();
+    let before = snapshot(dir);
+    import(dir)
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("_jinja_extensions"));
+    assert_eq!(snapshot(dir), before);
+    assert!(!dir.join("rootstock.toml").exists());
+    assert!(!dir.join(".rootstock.toml").exists());
+    assert!(dir.join(".copier-answers.yml").exists());
+}
+
+#[test]
+fn a_commit_that_is_not_a_tag_writes_no_template_side() {
+    let (_repo, project) = template_and_project(SMALL, "HEAD");
+    let dir = project.path();
+    let before = snapshot(dir);
+    import(dir)
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("must be a tag vX.Y.Z"));
+    assert_eq!(snapshot(dir), before);
+    assert!(!dir.join("rootstock.toml").exists());
+}
+
+#[test]
+fn a_parent_that_does_not_render_writes_no_template_side() {
+    // The tag is valid, so the project side fails late: at the render of the parent.
+    let repo = TemplateRepo::new();
+    repo.file("copier.yml", PROJECT_COPIER)
+        .file("template/bad.txt.jinja", "{% if %}\n")
+        .tag("v1.0.0");
+    let project = copier_project(&repo, "v1.0.0");
+    let dir = project.path();
+    fs::write(dir.join("copier.yml"), SMALL).unwrap();
+    fs::create_dir(dir.join("template")).unwrap();
+    fs::write(dir.join("template/hello.txt.jinja"), "hello\n").unwrap();
+    commit_project(dir, "both");
+    let before = snapshot(dir);
+    import(dir)
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("cannot render template version"));
+    assert_eq!(snapshot(dir), before);
+    assert!(!dir.join("rootstock.toml").exists());
+    assert!(!dir.join(".rootstock.toml").exists());
+    assert!(dir.join(".copier-answers.yml").exists());
+}
+
+#[test]
+fn two_copier_files_and_the_answers_file_are_still_an_error() {
+    let (_repo, project) = template_and_project(SMALL, "v1.0.0");
+    fs::write(project.path().join("copier.yaml"), SMALL).unwrap();
     commit_project(project.path(), "yaml");
-    imports_nothing(project.path(), "both copier.yaml and .copier-answers.yml");
+    imports_nothing(project.path(), "both copier.yml and copier.yaml");
 }
 
 #[test]

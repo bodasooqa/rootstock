@@ -37,11 +37,14 @@ impl Merge3 for KeepProject {
     }
 }
 
-/// Imports the template or the project in `dir`; the summary and any findings go to `err`.
+/// Imports the template, the project, or both from `dir`; the summary and any findings go to `err`.
 ///
-/// Nothing is written unless the whole conversion succeeded. On the template
-/// side the answers-file template is removed last, after `rootstock.toml` is in
-/// place; on the project side `.copier-answers.yml` is removed after the record.
+/// Nothing is written unless the whole conversion succeeded, for both sides
+/// when both are present: the project side is prepared first (clean tree,
+/// network), then the template side, and only then is anything written. On the
+/// template side the answers-file template is removed last, after
+/// `rootstock.toml` is in place; on the project side `.copier-answers.yml` is
+/// removed after the record.
 pub fn run(dir: &Path, err: &mut dyn Write) -> Result<Vec<Conflict>> {
     let template = copier_file(dir)?;
     let project = match std::fs::symlink_metadata(dir.join(ANSWERS_FILE)) {
@@ -51,22 +54,49 @@ pub fn run(dir: &Path, err: &mut dyn Write) -> Result<Vec<Conflict>> {
         Err(e) => return Err(anyhow!(e).context(format!("cannot inspect {ANSWERS_FILE}"))),
     };
     match (template, project) {
-        (Some(file), false) => template_side(dir, file, err).map(|()| Vec::new()),
-        (None, true) => project_side(dir, err),
-        (Some(file), true) => bail!(
-            "both {file} and {ANSWERS_FILE} are here: this is a template and a project at once; nothing was changed"
-        ),
+        (Some(file), false) => {
+            let prepared = prepare_template(dir, file, err)?;
+            write_template(dir, &prepared, err).map(|()| Vec::new())
+        }
+        (None, true) => {
+            let prepared = prepare_project(dir, err)?;
+            write_project(dir, &prepared, err)
+        }
+        (Some(file), true) => {
+            let project = prepare_project(dir, err)?;
+            let template = prepare_template(dir, file, err)?;
+            write_template(dir, &template, err).context(
+                "the project side was not imported (no .rootstock.toml written); restore the tree with git (checkout and clean) before running import-copier again",
+            )?;
+            write_project(dir, &project, err).context(
+                "rootstock.toml is already written and the answers-file template removed; restore the tree with git (checkout and clean) before running import-copier again",
+            )
+        }
         (None, false) => {
             bail!("nothing to import here (looked for copier.yml, copier.yaml and {ANSWERS_FILE})")
         }
     }
 }
 
+/// A checked project side, ready to be written.
+struct ProjectImport {
+    record_text: String,
+    /// Paths the project holds that rootstock cannot lead.
+    blocked: Vec<Conflict>,
+}
+
+/// A checked template side, ready to be written.
+struct TemplateImport {
+    config_text: String,
+    /// Files the conversion removes after `rootstock.toml` is in place.
+    remove: Vec<String>,
+}
+
 /// Turns a Copier project into a rootstock project at its recorded version.
 ///
 /// Hooks do not run and project files stay as they are: the project already
-/// holds Copier's render of this version.
-fn project_side(dir: &Path, err: &mut dyn Write) -> Result<Vec<Conflict>> {
+/// holds Copier's render of this version. Writes nothing.
+fn prepare_project(dir: &Path, err: &mut dyn Write) -> Result<ProjectImport> {
     if exists(&dir.join(RECORD_FILE))? {
         bail!("{RECORD_FILE} already exists; nothing was changed");
     }
@@ -128,8 +158,6 @@ fn project_side(dir: &Path, err: &mut dyn Write) -> Result<Vec<Conflict>> {
         inventory: plan.inventory.clone(),
     })?;
 
-    record::write_text(dir, &record_text).context("cannot write the record")?;
-    let _ = writeln!(err, "wrote {RECORD_FILE}");
     // Other conflicts of an empty base are edits of the project; only a path
     // that rootstock cannot lead needs a person (design rule 11).
     let blocked: Vec<Conflict> = plan
@@ -137,9 +165,24 @@ fn project_side(dir: &Path, err: &mut dyn Write) -> Result<Vec<Conflict>> {
         .into_iter()
         .filter(|c| c.kind == ConflictKind::Blocked)
         .collect();
-    std::fs::remove_file(dir.join(ANSWERS_FILE)).with_context(|| removal_message(&blocked))?;
+    Ok(ProjectImport {
+        record_text,
+        blocked,
+    })
+}
+
+/// Writes the record, then removes `.copier-answers.yml`.
+fn write_project(
+    dir: &Path,
+    prepared: &ProjectImport,
+    err: &mut dyn Write,
+) -> Result<Vec<Conflict>> {
+    record::write_text(dir, &prepared.record_text).context("cannot write the record")?;
+    let _ = writeln!(err, "wrote {RECORD_FILE}");
+    std::fs::remove_file(dir.join(ANSWERS_FILE))
+        .with_context(|| removal_message(&prepared.blocked))?;
     let _ = writeln!(err, "removed {ANSWERS_FILE}");
-    Ok(blocked)
+    Ok(prepared.blocked.clone())
 }
 
 /// Message for a failed removal of the answers file; names the blocked paths,
@@ -156,7 +199,8 @@ fn removal_message(blocked: &[Conflict]) -> String {
 }
 
 /// Converts the template whose `copier.yml` (or `copier.yaml`) is `copier_file`.
-fn template_side(dir: &Path, copier_file: &str, err: &mut dyn Write) -> Result<()> {
+/// Writes nothing.
+fn prepare_template(dir: &Path, copier_file: &str, err: &mut dyn Write) -> Result<TemplateImport> {
     let target = dir.join(CONFIG_FILE);
     if exists(&target)? {
         bail!("{CONFIG_FILE} already exists; nothing was changed");
@@ -175,9 +219,18 @@ fn template_side(dir: &Path, copier_file: &str, err: &mut dyn Write) -> Result<(
         Err(e) => return Err(anyhow!(e).context(format!("cannot convert {copier_file}"))),
     };
 
+    Ok(TemplateImport {
+        config_text: converted.text,
+        remove: converted.remove,
+    })
+}
+
+/// Writes `rootstock.toml`, then removes the files the conversion drops.
+fn write_template(dir: &Path, prepared: &TemplateImport, err: &mut dyn Write) -> Result<()> {
+    let target = dir.join(CONFIG_FILE);
     let mut tmp = tempfile::NamedTempFile::new_in(dir)
         .with_context(|| format!("cannot create a temporary file in {}", dir.display()))?;
-    tmp.write_all(converted.text.as_bytes())
+    tmp.write_all(prepared.config_text.as_bytes())
         .context("cannot write the temporary file")?;
     #[cfg(unix)]
     {
@@ -192,7 +245,7 @@ fn template_side(dir: &Path, copier_file: &str, err: &mut dyn Write) -> Result<(
         .with_context(|| format!("cannot write {CONFIG_FILE}"))?;
     let _ = writeln!(err, "wrote {CONFIG_FILE}");
 
-    for rel in &converted.remove {
+    for rel in &prepared.remove {
         std::fs::remove_file(dir.join(rel)).with_context(|| {
             format!("{CONFIG_FILE} is already written, but cannot remove {rel}")
         })?;

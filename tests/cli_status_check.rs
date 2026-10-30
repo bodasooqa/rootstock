@@ -203,3 +203,47 @@ fn check_does_not_follow_symlinks() {
     std::os::unix::fs::symlink(outside.path().join("f"), dir.join("README.md")).unwrap();
     check(&dir).assert().code(0).stdout("");
 }
+
+#[test]
+fn check_unsafe_inventory_path_exits_1_without_reading_it() {
+    let repo = template();
+    let (tmp, dir) = new_project(&repo);
+    // Next to the project: a file with markers that must not be read or named.
+    fs::write(tmp.path().join("outside"), CONFLICTED).unwrap();
+    let mut record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    record.push_str("\"../outside\" = \"managed\"\n");
+    fs::write(dir.join(".rootstock.toml"), record).unwrap();
+    check(&dir)
+        .assert()
+        .code(1)
+        .stdout("unsafe-path ../outside\n")
+        .stderr(predicate::str::contains("check failed: 1 problem(s)"));
+}
+
+#[test]
+fn check_version_that_is_not_a_tag_exits_1() {
+    let repo = template();
+    let (_tmp, dir) = new_project(&repo);
+    set_version(&dir, "main");
+    check(&dir)
+        .assert()
+        .code(1)
+        .stdout("version main\n")
+        .stderr(predicate::str::contains("check failed: 1 problem(s)"));
+}
+
+#[test]
+fn check_head_version_is_clean() {
+    let repo = template();
+    let (_tmp, dir) = new_project(&repo);
+    set_version(&dir, "HEAD");
+    check(&dir).assert().code(0).stdout("");
+}
+
+#[test]
+fn check_deleted_managed_file_is_clean() {
+    let repo = template();
+    let (_tmp, dir) = new_project(&repo);
+    fs::remove_file(dir.join("README.md")).unwrap();
+    check(&dir).assert().code(0).stdout("");
+}

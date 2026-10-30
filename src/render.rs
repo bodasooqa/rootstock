@@ -163,8 +163,12 @@ impl Walk<'_> {
             let Some(name) = name.to_str() else {
                 return Err(RenderError::NonUtf8Name { path });
             };
+            // At the top of a template that is itself a rootstock project, both
+            // files are the repository's own, not the template's.
             if name == ".git"
-                || (name == CONFIG_FILE && src_rel.is_empty() && root_is_top(&self.cfg.root))
+                || ((name == CONFIG_FILE || name == RECORD_FILE)
+                    && src_rel.is_empty()
+                    && root_is_top(&self.cfg.root))
             {
                 continue;
             }
@@ -830,6 +834,30 @@ mod tests {
         put(d.path(), "a", "a");
         let t = render(d.path(), &cfg(""), &Answers::new()).unwrap();
         assert_eq!(t.keys().collect::<Vec<_>>(), ["a"]);
+    }
+
+    #[test]
+    fn top_level_record_of_the_template_dir_is_skipped() {
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "rootstock.toml", "schema = 1\n");
+        put(d.path(), ".rootstock.toml", "schema = 1\n");
+        put(d.path(), "a", "a");
+        let t = render(d.path(), &cfg(""), &Answers::new()).unwrap();
+        assert_eq!(t.keys().collect::<Vec<_>>(), ["a"]);
+    }
+
+    #[test]
+    fn template_rendered_to_the_record_name_is_still_an_error() {
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "{{ x }}.jinja", "x");
+        put(d.path(), ".rootstock.toml", "schema = 1\n");
+        let e = render(
+            d.path(),
+            &cfg(""),
+            &answers(json!({"x": ".rootstock.toml"})),
+        )
+        .unwrap_err();
+        assert!(matches!(e, RenderError::RecordPath { .. }), "{e}");
     }
 
     #[test]
