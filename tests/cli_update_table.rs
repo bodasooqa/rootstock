@@ -437,3 +437,25 @@ fn e2e_dir_becomes_file() {
     assert!(!kept.join("docs/x.txt").exists());
     assert!(!record(&kept).contains("\"docs\""));
 }
+
+#[test]
+fn e2e_dir_becomes_file_empty_subdir_blocks() {
+    let repo = template(
+        &config(&[], &[]),
+        &[("docs/x.txt", "x\n"), ("a.txt", "a\n")],
+    );
+    let (_tmp, dir) = new_project(&repo);
+    // git does not track empty directories, so the tree stays clean.
+    fs::create_dir(dir.join("docs/empty")).unwrap();
+    repo.remove("tpl/docs/x.txt");
+    fs::remove_dir(repo.path().join("tpl/docs")).unwrap();
+    repo.file("tpl/docs", "d\n").tag("v1.1.0");
+
+    update(&dir).assert().code(2).stdout("blocked docs\n");
+    assert!(dir.join("docs/empty").is_dir());
+    assert!(!dir.join("docs/x.txt").exists());
+    let rec = record(&dir);
+    assert!(rec.contains("version = \"v1.1.0\""), "{rec}");
+    assert!(!rec.contains("\"docs\""), "{rec}");
+    assert!(!rec.contains("docs/x.txt"), "{rec}");
+}

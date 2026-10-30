@@ -738,6 +738,7 @@ fn new_stdout_empty() {
         .stdout(predicate::str::is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn leftover_markers_ignores_starter_and_symlink() {
     let repo = template_v1();

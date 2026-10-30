@@ -192,6 +192,7 @@ fn check_unreadable_record_exits_1() {
         .stderr(predicate::str::contains(".rootstock.toml"));
 }
 
+#[cfg(unix)]
 #[test]
 fn check_does_not_follow_symlinks() {
     let repo = template();

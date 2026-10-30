@@ -92,16 +92,15 @@ impl<'a> DiskProject<'a> {
         while let Some(current) = pending.pop() {
             let entries = std::fs::read_dir(self.root.join(&current))
                 .map_err(|e| format!("`{current}`: {e}"))?;
+            let mut empty = true;
             for item in entries {
+                empty = false;
                 let item = item.map_err(|e| format!("`{current}`: {e}"))?;
                 let name = item
                     .file_name()
                     .into_string()
                     .map_err(|_| format!("`{current}`: a file name is not valid UTF-8"))?;
                 let rel = format!("{current}/{name}");
-                if rel == ".git" {
-                    continue;
-                }
                 // `file_type` does not follow symlinks.
                 let file_type = item.file_type().map_err(|e| format!("`{rel}`: {e}"))?;
                 if file_type.is_dir() {
@@ -109,6 +108,11 @@ impl<'a> DiskProject<'a> {
                 } else {
                     out.push(rel);
                 }
+            }
+            // An empty directory below `dir` is an occupant no plan deletes:
+            // `get` never sees a directory, so no `Delete` names it.
+            if empty && current != dir {
+                out.push(current);
             }
         }
         Ok(Some(out))
@@ -495,7 +499,7 @@ mod tests {
         let view = DiskProject::new(root);
         let mut files = view.list_files("d").unwrap();
         files.sort();
-        let mut want = vec!["d/a", "d/e/b"];
+        let mut want = vec!["d/a", "d/e/b", "d/e/empty"];
         if cfg!(unix) {
             want.push("d/l");
         }
@@ -504,6 +508,20 @@ mod tests {
         assert_eq!(view.list_files("d/a"), None);
         assert_eq!(view.list_files("missing"), None);
         assert_eq!(view.list_files("d/a/x"), None);
+        view.finish().unwrap();
+    }
+
+    #[test]
+    fn disk_view_lists_empty_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs/empty")).unwrap();
+        std::fs::create_dir_all(root.join("docs/a/b")).unwrap();
+        std::fs::write(root.join("docs/x.txt"), "x").unwrap();
+        let view = DiskProject::new(root);
+        let mut files = view.list_files("docs").unwrap();
+        files.sort();
+        assert_eq!(files, ["docs/a/b", "docs/empty", "docs/x.txt"]);
         view.finish().unwrap();
     }
 

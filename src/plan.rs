@@ -18,7 +18,9 @@ pub trait ProjectView {
     fn get(&self, path: &str) -> Option<Entry>;
 
     /// Everything below directory `dir` that is not a directory (files,
-    /// symlinks), recursively, as full paths; `None` when `dir` is not a directory.
+    /// symlinks), plus every empty directory below it, recursively, as full
+    /// paths; `None` when `dir` is not a directory. An empty directory is never
+    /// deleted by a plan, so it always counts as something the project keeps.
     fn list_files(&self, dir: &str) -> Option<Vec<RelPath>>;
 }
 
@@ -405,8 +407,15 @@ fn drop_blocked(
         let path = out.actions.remove(index).path().to_string();
         inventory.remove(&path);
         if let Some((old, _)) = pairs.get(&path) {
-            out.actions
-                .retain(|a| !matches!(a, Action::Delete { path: p } if p == *old));
+            // Nothing is written for the new name: its merge outcome and side
+            // file are moot, so `blocked` is the only thing reported for it.
+            let side = format!("{path}{SIDE_FILE_SUFFIX}");
+            out.actions.retain(|a| match a {
+                Action::Delete { path: p } => p != *old,
+                Action::Write { path: p, .. } => *p != side,
+            });
+            out.conflicts.retain(|c| c.path != path && c.path != side);
+            inventory.remove(&side);
         }
         out.conflict(&path, ConflictKind::Blocked);
     }
@@ -539,6 +548,7 @@ mod tests {
 
     const LABEL: &str = "template v1.1.0";
 
+    /// A key ending in `/` stands for an empty directory.
     impl ProjectView for BTreeMap<String, Entry> {
         fn get(&self, path: &str) -> Option<Entry> {
             BTreeMap::get(self, path).cloned()
@@ -549,7 +559,7 @@ mod tests {
             let files: Vec<RelPath> = self
                 .keys()
                 .filter(|k| k.starts_with(&prefix))
-                .cloned()
+                .map(|k| k.trim_end_matches('/').to_string())
                 .collect();
             (!files.is_empty()).then_some(files)
         }
@@ -1072,6 +1082,47 @@ mod tests {
     }
 
     #[test]
+    fn dir_becomes_file_with_empty_subdir_blocks() {
+        let b = tree(&[("docs/x", file("x\n"), M)]);
+        let t = tree(&[("docs", file("d\n"), M)]);
+        // `docs/empty/` is an empty directory the project added.
+        let p = proj(&[("docs/x", file("x\n")), ("docs/empty/", file(""))]);
+        let plan = run(&b, &t, &p, &inv(&[("docs/x", M)]));
+        assert_eq!(plan.actions, vec![delete("docs/x")]);
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("docs", ConflictKind::Blocked)]
+        );
+        assert!(plan.inventory.is_empty());
+    }
+
+    #[test]
+    fn blocked_rename_drops_other_conflicts() {
+        // Overlapping edits would give markers on the new name, but the write is blocked.
+        let b = tree(&[("d/Readme.md", file("x\n"), M)]);
+        let t = tree(&[("D/README.md", file("t\n"), M)]);
+        let p = proj(&[("d/Readme.md", file("p\n")), ("D", file("mine\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("d/Readme.md", M)]));
+        assert!(plan.actions.is_empty(), "{:?}", plan.actions);
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("D/README.md", ConflictKind::Blocked)]
+        );
+
+        // A diverged binary would get a side file; neither it nor `binary` remains.
+        let b = tree(&[("d/Img.bin", bin(1), M)]);
+        let t = tree(&[("D/IMG.bin", bin(2), M)]);
+        let p = proj(&[("d/Img.bin", bin(3)), ("D", file("mine\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("d/Img.bin", M)]));
+        assert!(plan.actions.is_empty(), "{:?}", plan.actions);
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("D/IMG.bin", ConflictKind::Blocked)]
+        );
+        assert!(plan.inventory.is_empty());
+    }
+
+    #[test]
     fn blocked_rename_keeps_old_name() {
         // A file the project keeps sits where the new name's directory would be.
         let b = tree(&[("d/Readme.md", file("x\n"), M)]);
@@ -1202,7 +1253,8 @@ mod tests {
         );
         assert_eq!(plan.inventory, inv(&[("README.md", M)]));
 
-        // Equal to the target: nothing to write; the old name is still removed.
+        // README.md equals the target: nothing to write. The edited old name is
+        // kept and reported as removed by the template.
         let p = proj(&[("Readme.md", file("edited\n")), ("README.md", file("y\n"))]);
         let plan = run(&b, &t, &p, &inv(&[("Readme.md", M)]));
         assert!(plan.actions.is_empty(), "{:?}", plan.actions);
