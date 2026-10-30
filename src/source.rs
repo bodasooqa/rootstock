@@ -9,6 +9,7 @@ use tempfile::TempDir;
 
 use crate::config::CONFIG_FILE;
 use crate::copier::COPIER_FILES;
+use crate::render::{FileMode, Modes};
 
 /// Where a template comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +153,8 @@ pub struct Checkout {
     pub commit: String,
     /// The version as the user knows it (a tag or `HEAD`); used in messages.
     pub version: String,
+    /// Git modes of the template paths, relative to `path`.
+    pub modes: Modes,
     _dir: Option<TempDir>,
 }
 
@@ -288,10 +291,16 @@ pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkou
         let dir_str = dir.to_string_lossy();
         let commit = git(&["-C", &dir_str, "rev-parse", "HEAD"])
             .with_context(|| format!("{dir_str} has no commits"))?;
+        let path = template_dir_shown(dir, sub, &prefix, rev)?;
+        let modes = git_modes(
+            &["-C", &dir_str, "ls-files", "-s", "-z", "--full-name"],
+            &prefix,
+        )?;
         return Ok(Checkout {
-            path: template_dir_shown(dir, sub, &prefix, rev)?,
+            path,
             commit,
             version: rev.to_string(),
+            modes,
             _dir: None,
         });
     }
@@ -302,6 +311,9 @@ pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkou
         "clone",
         "--quiet",
         "--no-checkout",
+        // The user's or the system's `autocrlf` must not change the template's bytes.
+        "--config",
+        "core.autocrlf=false",
         "--",
         &location,
         &tmp_str,
@@ -319,12 +331,75 @@ pub fn checkout(src: &Source, subdir: Option<&str>, rev: &str) -> Result<Checkou
         "--detach",
         &commit,
     ])?;
+    let modes = git_modes(
+        &[
+            "-C",
+            &tmp_str,
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            &commit,
+        ],
+        &prefix,
+    )?;
     Ok(Checkout {
         path: template_dir(tmp.path(), &prefix, rev)?,
         commit,
         version: rev.to_string(),
+        modes,
         _dir: Some(tmp),
     })
+}
+
+/// Runs a git listing command (`ls-tree -z` or `ls-files -s -z`) and parses its modes.
+pub(crate) fn git_modes(args: &[&str], prefix: &str) -> Result<Modes> {
+    let out = run_git(args)?;
+    if !out.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(parse_modes(&out.stdout, prefix))
+}
+
+/// Parses `git ls-tree -z` or `git ls-files -s -z` output into modes of the
+/// paths below `prefix` (`/`-separated, empty for the repository root), keyed
+/// relative to it. Submodules and paths that are not UTF-8 are left out.
+pub fn parse_modes(listing: &[u8], prefix: &str) -> Modes {
+    let mut modes = Modes::new();
+    for record in listing.split(|b| *b == 0) {
+        // `<mode> <type or sha> ...<TAB><path>`
+        let Some(tab) = record.iter().position(|b| *b == b'\t') else {
+            continue;
+        };
+        let (meta, path) = (&record[..tab], &record[tab + 1..]);
+        let (Ok(meta), Ok(path)) = (std::str::from_utf8(meta), std::str::from_utf8(path)) else {
+            continue;
+        };
+        let relative = if prefix.is_empty() {
+            path
+        } else {
+            let Some(rest) = path
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_prefix('/'))
+            else {
+                continue;
+            };
+            rest
+        };
+        let mode = match meta.split(' ').next() {
+            Some("100755") => FileMode::Executable,
+            Some("120000") => FileMode::Symlink,
+            // A submodule or a directory: nothing to emit.
+            Some("160000" | "040000") | None => continue,
+            Some(_) => FileMode::File,
+        };
+        modes.insert(relative.to_string(), mode);
+    }
+    modes
 }
 
 /// Resolves a tag name or sha to a commit in the clone; `None` if absent.

@@ -33,6 +33,16 @@ rootstock import-copier
 
 Hooks declared by a template run only with `--trust` or after an interactive confirmation.
 
+## Windows
+
+rootstock builds and runs on Windows, with three things to know:
+
+- Hooks run under `sh`. On Windows rootstock uses `sh.exe` from [Git for Windows](https://gitforwindows.org/): found in `PATH`, or next to `git`. If a template has hooks to run and none is found, the command stops before writing anything. Hook commands must be POSIX shell.
+- Windows files have no executable bit, so rootstock keeps it in the git index: the executable bit of a template file is read from the git tree, and in a project that is a git work tree rootstock sets the bit in the index (`git update-index --chmod`, or `git add --chmod=+x` for a new file). `new --git` does it too, right after `git init`. A project that is not a git work tree gets no bit.
+- Symbolic links need Developer Mode (Settings, then System, then For developers) or an administrator shell. Without them a template with links stops before the first file is written.
+
+Template files are read from the git tree with `core.autocrlf` turned off, so line endings of a template are never changed by your git configuration.
+
 ## Template format
 
 A template is a git repository with release tags `vX.Y.Z` and a `rootstock.toml` (`schema = 1`) in its root. A template may also be a subdirectory of a repository (`new --subdir`, or a local path pointing straight into it); then `rootstock.toml` sits in that subdirectory, and the paths in the config (`root`) as well as every `{% include %}` and `{% import %}` are relative to it; `partials` are relative to `root`. The config names the directory with the template files (`root`), the questions asked of the user, jinja options, hooks and file rules, for example which files are starter files. Files ending in `.jinja` are rendered with the answers and lose the suffix; path names may contain jinja too. Templates may call the common Python methods on values, as Jinja2 allows: string methods such as `endswith` or `split`, dict methods `items`, `keys`, `values`, `get`. `list.append(x)` changes the list in place on a list created with `{% set name = [] %}`. Managed files are kept up to date by `update`; starter files are created once and never touched again. When the template files sit in the template directory itself, a `.rootstock.toml` next to `rootstock.toml` is the repository's own record as a rootstock project and is never rendered. The full description is in `docs/design.md`.

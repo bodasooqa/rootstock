@@ -8,9 +8,9 @@ use super::{
     CommonOptions, HookFailed, Report, Side, check_version, dir_has_entries, interactive,
     load_data, prompter, refuse_unsupported, target_label,
 };
-use crate::apply::{DiskProject, GitMerge, apply};
+use crate::apply::{DiskProject, GitMerge, apply, set_index_modes};
 use crate::config::Phase;
-use crate::hooks::{check_trust, run_trusted};
+use crate::hooks::{check_trust, find_shell, run_trusted};
 use crate::plan::plan_update;
 use crate::record::{self, Inventory, RECORD_FILE, Record};
 use crate::render::RenderedTree;
@@ -93,6 +93,8 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         answers: collected.recorded,
         inventory: plan.inventory.clone(),
     })?;
+    // Found with the other checks: no `sh` means nothing is written.
+    let shell = find_shell(&cfg.hooks, Phase::New)?;
     // Asked last among the steps that can fail, so no one trusts a run that then errors.
     check_trust(&cfg.hooks, Phase::New, opts.common.trust, interactive())?;
 
@@ -100,9 +102,9 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
     apply(&plan, dir)?;
     let report = Report {
         version,
-        conflicts: plan.conflicts,
+        conflicts: plan.conflicts.clone(),
     };
-    if let Err(e) = run_trusted(&cfg.hooks, Phase::New, dir) {
+    if let Err(e) = run_trusted(&cfg.hooks, Phase::New, dir, shell.as_ref()) {
         let e = e.context("files were written; hooks failed; the record was not written");
         return Err(HookFailed::new(report, e).into());
     }
@@ -110,6 +112,8 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         .context("files were written; the record was not written")?;
     if opts.git {
         init_git(dir).context("project created; git init failed")?;
+        // Only now is there an index to hold the executable bits.
+        set_index_modes(&plan, dir).context("project created; the git index was not updated")?;
     }
     eprintln!(
         "created {} from {} {}",

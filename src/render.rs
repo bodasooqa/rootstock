@@ -17,6 +17,21 @@ pub enum Entry {
     Symlink { target: String },
 }
 
+/// How git stores a path of the template tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileMode {
+    /// A regular file (`100644`).
+    File,
+    /// An executable file (`100755`).
+    Executable,
+    /// A symbolic link (`120000`).
+    Symlink,
+}
+
+/// Git modes of the template's paths, relative to the template directory.
+/// A path absent from the map is read from the disk.
+pub type Modes = BTreeMap<RelPath, FileMode>;
+
 /// A rendered path with its class.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rendered {
@@ -81,12 +96,15 @@ pub enum RenderError {
     },
 }
 
-/// Renders the template under `repo_root/cfg.root` with `ctx`.
+/// Renders the template under `repo_root/cfg.root` with `ctx`. `modes` holds
+/// the git modes of the template's paths (keys relative to `repo_root`): the
+/// executable bit and the symlink kind come from there, not from the disk.
 pub fn render_tree(
     repo_root: &Path,
     cfg: &TemplateConfig,
     jinja: &Jinja,
     ctx: &Answers,
+    modes: &Modes,
 ) -> Result<RenderedTree, RenderError> {
     let exclude = build_rules(&cfg.files.exclude, jinja, ctx)?;
     let starter = build_rules(&cfg.files.starter, jinja, ctx)?;
@@ -112,6 +130,7 @@ pub fn render_tree(
         exclude: &exclude,
         starter: &starter,
         partials: &partials,
+        modes,
         sources: BTreeMap::new(),
         tree: BTreeMap::new(),
     };
@@ -127,6 +146,7 @@ struct Walk<'a> {
     exclude: &'a Gitignore,
     starter: &'a Gitignore,
     partials: &'a [String],
+    modes: &'a Modes,
     sources: BTreeMap<RelPath, PathBuf>,
     tree: RenderedTree,
 }
@@ -205,7 +225,13 @@ impl Walk<'_> {
                 self.dir(&path, &src, &out)?;
                 continue;
             }
-            let stripped = if meta.is_file() && !self.cfg.suffix.is_empty() {
+            let mode = self
+                .modes
+                .get(&self.template_dir_path(&src_display))
+                .copied();
+            // A link git stores as `120000` may sit on the disk as a plain file.
+            let is_link = file_type.is_symlink() || mode == Some(FileMode::Symlink);
+            let stripped = if meta.is_file() && !is_link && !self.cfg.suffix.is_empty() {
                 name.strip_suffix(self.cfg.suffix.as_str())
                     .filter(|rest| !rest.is_empty())
             } else {
@@ -239,15 +265,22 @@ impl Walk<'_> {
                 continue;
             }
             self.check_conflicts(&rendered, &path)?;
-            let entry = if meta.file_type().is_symlink() {
-                let target = std::fs::read_link(&path).map_err(|source| RenderError::Io {
+            let entry = if is_link {
+                let io = |source| RenderError::Io {
                     path: path.clone(),
                     source,
-                })?;
-                let target = target
-                    .to_str()
-                    .ok_or_else(|| RenderError::NonUtf8Link { path: path.clone() })?
-                    .to_string();
+                };
+                let target = if file_type.is_symlink() {
+                    std::fs::read_link(&path)
+                        .map_err(io)?
+                        .into_os_string()
+                        .into_string()
+                        .map_err(|_| RenderError::NonUtf8Link { path: path.clone() })?
+                } else {
+                    // Git without the right to make links writes the target as a file.
+                    String::from_utf8(std::fs::read(&path).map_err(io)?)
+                        .map_err(|_| RenderError::NonUtf8Link { path: path.clone() })?
+                };
                 check_absolute(&path, &target)?;
                 Entry::Symlink { target }
             } else {
@@ -270,7 +303,11 @@ impl Walk<'_> {
                 };
                 Entry::File {
                     bytes,
-                    executable: is_executable(&meta),
+                    executable: match mode {
+                        Some(FileMode::Executable) => true,
+                        Some(FileMode::File) => false,
+                        _ => is_executable(&meta),
+                    },
                 }
             };
             let class = if self
@@ -597,7 +634,67 @@ mod tests {
         ctx: &Answers,
     ) -> Result<RenderedTree, RenderError> {
         let jinja = Jinja::new(&cfg.jinja, root);
-        render_tree(root, cfg, &jinja, ctx)
+        render_tree(root, cfg, &jinja, ctx, &Modes::new())
+    }
+
+    fn render_with(
+        root: &Path,
+        cfg: &TemplateConfig,
+        modes: &Modes,
+    ) -> Result<RenderedTree, RenderError> {
+        let jinja = Jinja::new(&cfg.jinja, root);
+        render_tree(root, cfg, &jinja, &answers(json!({})), modes)
+    }
+
+    #[test]
+    fn mode_from_the_tree_beats_the_disk() {
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "run.sh", "#!/bin/sh\n");
+        put(d.path(), "plain.txt.jinja", "x");
+        put(d.path(), "other", "y");
+        let modes = Modes::from([
+            ("run.sh".to_string(), FileMode::Executable),
+            ("plain.txt.jinja".to_string(), FileMode::File),
+        ]);
+        let t = render_with(d.path(), &cfg(""), &modes).unwrap();
+        assert!(file(&t, "run.sh").1);
+        assert!(!file(&t, "plain.txt").1);
+        assert!(!file(&t, "other").1);
+    }
+
+    #[test]
+    fn mode_key_follows_the_template_root() {
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "tpl/run.sh", "x");
+        let modes = Modes::from([("tpl/run.sh".to_string(), FileMode::Executable)]);
+        let t = render_with(d.path(), &cfg("root = \"tpl\"\n"), &modes).unwrap();
+        assert!(file(&t, "run.sh").1);
+    }
+
+    #[test]
+    fn symlink_mode_turns_a_plain_file_into_a_link() {
+        let d = tempfile::tempdir().unwrap();
+        put(d.path(), "real.txt", "x");
+        // What git writes for `120000` without the right to make links.
+        put(d.path(), "link", "real.txt");
+        put(d.path(), "link2.jinja", "real.txt");
+        let modes = Modes::from([
+            ("link".to_string(), FileMode::Symlink),
+            ("link2.jinja".to_string(), FileMode::Symlink),
+        ]);
+        let t = render_with(d.path(), &cfg(""), &modes).unwrap();
+        assert_eq!(
+            t["link"].entry,
+            Entry::Symlink {
+                target: "real.txt".to_string()
+            }
+        );
+        assert_eq!(
+            t["link2.jinja"].entry,
+            Entry::Symlink {
+                target: "real.txt".to_string()
+            }
+        );
     }
 
     fn answers(v: serde_json::Value) -> Answers {

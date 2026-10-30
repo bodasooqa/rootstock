@@ -6,19 +6,28 @@ use std::path::Path;
 use crate::RelPath;
 use crate::merge::{Merge3, Merged};
 use crate::plan::{Action, Plan, ProjectView};
-use crate::render::Entry;
+use crate::render::{Entry, FileMode, Modes};
 
 /// The project directory as a `ProjectView`; `.git` is invisible.
 pub struct DiskProject<'a> {
     pub root: &'a Path,
     errors: RefCell<Vec<String>>,
+    /// Modes in the git index of the project; filled only where the file system
+    /// keeps no executable bit (see `load_index`).
+    index: Modes,
 }
 
 impl<'a> DiskProject<'a> {
     pub fn new(root: &'a Path) -> Self {
+        let mut errors = Vec::new();
+        let index = load_index(root).unwrap_or_else(|e| {
+            errors.push(format!("cannot read the git index: {e:#}"));
+            Modes::new()
+        });
         Self {
             root,
-            errors: RefCell::new(Vec::new()),
+            errors: RefCell::new(errors),
+            index,
         }
     }
 
@@ -69,9 +78,16 @@ impl<'a> DiskProject<'a> {
             return Err(format!("`{path}` is a special file, expected a file"));
         }
         let bytes = std::fs::read(&full).map_err(|e| format!("`{path}`: {e}"))?;
+        let indexed = self.index.get(path).copied();
+        if indexed == Some(FileMode::Symlink) {
+            // Git without the right to make links keeps a link as a file with the target.
+            let target = String::from_utf8(bytes)
+                .map_err(|_| format!("`{path}`: symlink target is not valid UTF-8"))?;
+            return Ok(Some(Entry::Symlink { target }));
+        }
         Ok(Some(Entry::File {
             bytes,
-            executable: is_executable(&meta),
+            executable: is_executable(&meta) || indexed == Some(FileMode::Executable),
         }))
     }
 
@@ -128,6 +144,113 @@ fn is_executable(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
+/// True when `root` is a git work tree of its own (it holds `.git`).
+fn is_git_work_tree(root: &Path) -> bool {
+    root.join(".git").exists()
+}
+
+/// The modes in the project's git index. Where the file system keeps the
+/// executable bit (Unix) the disk is the truth and nothing is read.
+#[cfg(unix)]
+fn load_index(_root: &Path) -> anyhow::Result<Modes> {
+    Ok(Modes::new())
+}
+
+#[cfg(not(unix))]
+fn load_index(root: &Path) -> anyhow::Result<Modes> {
+    read_index(root)
+}
+
+/// Reads `git ls-files -s -z` of the project; empty when it is no git work tree.
+fn read_index(root: &Path) -> anyhow::Result<Modes> {
+    if !is_git_work_tree(root) {
+        return Ok(Modes::new());
+    }
+    crate::source::git_modes(&["-C", &root.to_string_lossy(), "ls-files", "-s", "-z"], "")
+}
+
+/// What `set_index_modes` asks git to do.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct IndexOps {
+    /// Tracked files whose bit differs from the index: `(path, executable)`.
+    chmod: Vec<(RelPath, bool)>,
+    /// Untracked files that must be executable: staged with the bit.
+    add_executable: Vec<RelPath>,
+}
+
+/// Compares the files a plan writes (`(path, executable)`) with the index.
+/// A tracked link is left alone: its mode is not an executable bit.
+fn plan_index_ops(files: &[(&str, bool)], index: &Modes) -> IndexOps {
+    let mut ops = IndexOps::default();
+    for &(path, executable) in files {
+        match index.get(path) {
+            Some(FileMode::File) if executable => ops.chmod.push((path.to_string(), true)),
+            Some(FileMode::Executable) if !executable => ops.chmod.push((path.to_string(), false)),
+            None if executable => ops.add_executable.push(path.to_string()),
+            _ => {}
+        }
+    }
+    ops
+}
+
+/// Paths handed to one `git` call; a command line has a length limit on Windows.
+const PATHS_PER_GIT_CALL: usize = 64;
+
+/// Records the executable bit of the files `plan` writes in the git index of
+/// `root`, where the file system has no bit of its own (Windows). Does nothing
+/// on Unix and in a directory that is not a git work tree.
+pub fn set_index_modes(plan: &Plan, root: &Path) -> anyhow::Result<()> {
+    if cfg!(unix) || !is_git_work_tree(root) {
+        return Ok(());
+    }
+    let files: Vec<(&str, bool)> = plan
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::Write {
+                path,
+                entry: Entry::File { executable, .. },
+            } => Some((path.as_str(), *executable)),
+            _ => None,
+        })
+        .collect();
+    let ops = plan_index_ops(&files, &read_index(root)?);
+    let dir = root.to_string_lossy();
+    let run = |flag: &str, paths: &[&str], add: bool| -> anyhow::Result<()> {
+        for chunk in paths.chunks(PATHS_PER_GIT_CALL) {
+            let mut args = vec!["-C", &*dir];
+            args.extend(if add {
+                ["add", flag]
+            } else {
+                ["update-index", flag]
+            });
+            args.push("--");
+            args.extend(chunk);
+            let out = crate::source::run_git(&args)?;
+            if !out.status.success() {
+                anyhow::bail!(
+                    "git {} failed: {}",
+                    args[2..].join(" "),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+        }
+        Ok(())
+    };
+    let paths = |set: bool| -> Vec<&str> {
+        ops.chmod
+            .iter()
+            .filter(|(_, executable)| *executable == set)
+            .map(|(path, _)| path.as_str())
+            .collect()
+    };
+    run("--chmod=+x", &paths(true), false)?;
+    run("--chmod=-x", &paths(false), false)?;
+    let added: Vec<&str> = ops.add_executable.iter().map(String::as_str).collect();
+    run("--chmod=+x", &added, true)?;
+    Ok(())
+}
+
 impl ProjectView for DiskProject<'_> {
     fn get(&self, path: &str) -> Option<Entry> {
         if let Err(e) = check_path(path) {
@@ -166,8 +289,14 @@ impl ProjectView for DiskProject<'_> {
 
 /// Applies the plan's actions in order under `root`.
 pub fn apply(plan: &Plan, root: &Path) -> anyhow::Result<()> {
+    if plan.actions.iter().any(is_symlink_write) {
+        probe_symlinks(root)?;
+    }
     let total = plan.actions.len();
-    for (done, action) in plan.actions.iter().enumerate() {
+    for (done, action) in ordered(&plan.actions, cfg!(not(unix)))
+        .into_iter()
+        .enumerate()
+    {
         let path = match action {
             Action::Write { path, .. } | Action::Delete { path } => path,
         };
@@ -175,7 +304,50 @@ pub fn apply(plan: &Plan, root: &Path) -> anyhow::Result<()> {
             anyhow::anyhow!("applied {done} of {total} changes; failed at `{path}`: {e:#}")
         })?;
     }
-    Ok(())
+    set_index_modes(plan, root)
+        .map_err(|e| anyhow::anyhow!("files were written; the git index was not updated: {e:#}"))
+}
+
+fn is_symlink_write(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Write {
+            entry: Entry::Symlink { .. },
+            ..
+        }
+    )
+}
+
+/// The actions in the order they run: as planned, or with link writes moved
+/// behind the rest (their relative order kept).
+fn ordered(actions: &[Action], links_last: bool) -> Vec<&Action> {
+    if !links_last {
+        return actions.iter().collect();
+    }
+    let (links, rest): (Vec<&Action>, Vec<&Action>) =
+        actions.iter().partition(|action| is_symlink_write(action));
+    rest.into_iter().chain(links).collect()
+}
+
+/// The refusal printed when the system will not make a link.
+fn symlink_refusal(error: &std::io::Error) -> anyhow::Error {
+    anyhow::anyhow!(
+        "cannot create symlinks ({error}): enable Developer Mode in Windows settings, or run as administrator"
+    )
+}
+
+/// Makes a link in a scratch directory below `root` and removes it again.
+/// Runs before the first write, so a system that refuses links changes nothing.
+fn probe_symlinks(root: &Path) -> anyhow::Result<()> {
+    let scratch = tempfile::Builder::new().tempdir_in(root)?;
+    // The target need not exist; a file link is the kind the system must allow.
+    make_link("probe-target", &scratch.path().join("probe"), false).map_err(|e| symlink_refusal(&e))
+}
+
+/// Whether a link at `parent/<name>` to `target` points at a directory now
+/// (a dangling link counts as a file). Windows makes the two kinds apart.
+fn link_is_dir(parent: &Path, target: &str) -> bool {
+    parent.join(target).is_dir()
 }
 
 fn apply_one(action: &Action, root: &Path) -> anyhow::Result<()> {
@@ -359,19 +531,36 @@ fn set_mode(
     Ok(())
 }
 
-#[cfg(unix)]
 fn write_symlink(parent: &Path, full: &Path, target: &str) -> anyhow::Result<()> {
     // The link is built inside a fresh temp dir, then renamed over the path.
     let scratch = tempfile::Builder::new().tempdir_in(parent)?;
     let link = scratch.path().join("link");
-    std::os::unix::fs::symlink(target, &link)?;
+    make_link(target, &link, link_is_dir(parent, target))?;
     std::fs::rename(&link, full)?;
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn write_symlink(_parent: &Path, _full: &Path, _target: &str) -> anyhow::Result<()> {
-    anyhow::bail!("symlinks are not supported on this platform")
+#[cfg(unix)]
+fn make_link(target: &str, link: &Path, _dir: bool) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+/// Windows has a directory link and a file link; `dir` picks the kind.
+#[cfg(windows)]
+fn make_link(target: &str, link: &Path, dir: bool) -> std::io::Result<()> {
+    if dir {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn make_link(_target: &str, _link: &Path, _dir: bool) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "symlinks are not supported on this platform",
+    ))
 }
 
 /// Removes empty directories above `full`, up to but not including `root`.
@@ -1142,5 +1331,158 @@ mod tests {
         assert!(err.contains("`dir/f.txt`"), "{err}");
         assert!(err.contains("exit 255"), "{err}");
         assert!(err.contains("boom"), "{err}");
+    }
+
+    fn link_write(path: &str) -> Action {
+        Action::Write {
+            path: path.to_string(),
+            entry: Entry::Symlink {
+                target: "t".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn symlink_refusal_names_the_remedy() {
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let text = symlink_refusal(&error).to_string();
+        assert!(text.starts_with("cannot create symlinks ("), "{text}");
+        assert!(
+            text.ends_with("enable Developer Mode in Windows settings, or run as administrator"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn links_go_last_only_when_asked() {
+        let actions = vec![
+            link_write("l1"),
+            write_file("a", b"x", false),
+            Action::Delete { path: "d".into() },
+            link_write("l2"),
+        ];
+        let paths = |order: Vec<&Action>| -> Vec<String> {
+            order
+                .into_iter()
+                .map(|a| match a {
+                    Action::Write { path, .. } | Action::Delete { path } => path.clone(),
+                })
+                .collect()
+        };
+        assert_eq!(paths(ordered(&actions, false)), ["l1", "a", "d", "l2"]);
+        assert_eq!(paths(ordered(&actions, true)), ["a", "d", "l1", "l2"]);
+    }
+
+    #[test]
+    fn link_kind_follows_the_target_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("d")).unwrap();
+        std::fs::write(dir.path().join("f"), "x").unwrap();
+        assert!(link_is_dir(dir.path(), "d"));
+        assert!(!link_is_dir(dir.path(), "f"));
+        assert!(!link_is_dir(dir.path(), "missing"));
+    }
+
+    #[test]
+    fn probe_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        // Links are allowed where this test runs (CI runners may link as administrator).
+        probe_symlinks(dir.path()).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn index_ops_compare_with_the_index() {
+        let index = Modes::from([
+            ("plain".to_string(), FileMode::File),
+            ("run".to_string(), FileMode::Executable),
+            ("same".to_string(), FileMode::Executable),
+            ("link".to_string(), FileMode::Symlink),
+        ]);
+        let files = [
+            ("plain", true),
+            ("run", false),
+            ("same", true),
+            ("link", true),
+            ("new.sh", true),
+            ("new.txt", false),
+        ];
+        assert_eq!(
+            plan_index_ops(&files, &index),
+            IndexOps {
+                chmod: vec![("plain".to_string(), true), ("run".to_string(), false)],
+                add_executable: vec!["new.sh".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn index_decides_the_bit_and_the_link_of_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("run.sh"), "x").unwrap();
+        std::fs::write(dir.path().join("link"), "run.sh").unwrap();
+        std::fs::write(dir.path().join("other"), "y").unwrap();
+        let mut view = DiskProject::new(dir.path());
+        view.index = Modes::from([
+            ("run.sh".to_string(), FileMode::Executable),
+            ("link".to_string(), FileMode::Symlink),
+        ]);
+        assert_eq!(
+            view.get("run.sh"),
+            Some(Entry::File {
+                bytes: b"x".to_vec(),
+                executable: true
+            })
+        );
+        assert_eq!(
+            view.get("link"),
+            Some(Entry::Symlink {
+                target: "run.sh".to_string()
+            })
+        );
+        assert!(matches!(
+            view.get("other"),
+            Some(Entry::File {
+                executable: false,
+                ..
+            })
+        ));
+        view.finish().unwrap();
+    }
+
+    #[test]
+    fn set_index_modes_skips_a_directory_without_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = plan(vec![write_file("run.sh", b"x", true)]);
+        set_index_modes(&p, dir.path()).unwrap();
+    }
+
+    /// Where the file system has no bit (not Unix), the bit goes to the index.
+    #[cfg(not(unix))]
+    #[test]
+    fn apply_records_the_bit_in_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        crate::source::git(&["-C", &root.to_string_lossy(), "init", "-q"]).unwrap();
+        crate::source::git(&["-C", &root.to_string_lossy(), "add", "--", "."]).unwrap();
+        let p = plan(vec![
+            write_file("run.sh", b"#!/bin/sh\n", true),
+            write_file("plain.txt", b"x", false),
+        ]);
+        apply(&p, root).unwrap();
+        let index = read_index(root).unwrap();
+        assert_eq!(index.get("run.sh"), Some(&FileMode::Executable));
+        assert_eq!(index.get("plain.txt"), None);
+        assert!(
+            DiskProject::new(root)
+                .get("run.sh")
+                .is_some_and(|e| matches!(
+                    e,
+                    Entry::File {
+                        executable: true,
+                        ..
+                    }
+                ))
+        );
     }
 }

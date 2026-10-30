@@ -321,6 +321,7 @@ impl Side {
             &self.cfg,
             &self.jinja,
             ctx,
+            &self.checkout.modes,
         )?)
     }
 }

@@ -63,22 +63,60 @@ impl TemplateRepo {
         self
     }
 
-    #[cfg(unix)]
+    /// Makes the file executable: in the git index on every OS (the only
+    /// place Windows keeps the bit), and on the disk where it has one.
     pub fn exec(&self, path: &str) -> &Self {
-        let full = self.dir.path().join(path);
-        fs::set_permissions(&full, fs::Permissions::from_mode(0o755)).unwrap();
+        #[cfg(unix)]
+        {
+            let full = self.dir.path().join(path);
+            fs::set_permissions(&full, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        self.git(&["add", "--", path]);
+        self.git(&["update-index", "--chmod=+x", "--", path]);
+        self
+    }
+
+    /// Records a symlink in the git tree without touching the disk: the way
+    /// to build a `120000` entry on any OS, whatever `core.symlinks` says.
+    pub fn tree_symlink(&self, path: &str, target: &str) -> &Self {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .arg("-C")
+            .arg(self.dir.path())
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(target.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success());
+        let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        self.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("120000,{sha},{path}"),
+        ]);
         self
     }
 
     /// Creates (or replaces) a symlink at `path` pointing to `target`.
-    #[cfg(unix)]
     pub fn symlink(&self, path: &str, target: &str) -> &Self {
         let full = self.dir.path().join(path);
         if let Some(parent) = full.parent() {
             fs::create_dir_all(parent).unwrap();
         }
         let _ = fs::remove_file(&full);
-        std::os::unix::fs::symlink(target, &full).unwrap();
+        make_symlink(target, &full);
         self
     }
 
@@ -90,6 +128,15 @@ impl TemplateRepo {
     /// Commits everything and tags the commit.
     pub fn tag(&self, tag: &str) -> &Self {
         self.git(&["add", "-A"]);
+        self.git(&["commit", "--allow-empty", "-q", "-m", tag]);
+        self.git(&["tag", tag]);
+        self
+    }
+
+    /// Like `tag`, but stages new and changed files without removals: `add -A`
+    /// would drop a link that `tree_symlink` put only into the index.
+    pub fn tag_staged(&self, tag: &str) -> &Self {
+        self.git(&["add", "--ignore-removal", "."]);
         self.git(&["commit", "--allow-empty", "-q", "-m", tag]);
         self.git(&["tag", tag]);
         self
@@ -120,6 +167,22 @@ impl TemplateRepo {
     /// Resolves a revision to a full commit sha.
     pub fn commit(&self, rev: &str) -> String {
         self.git(&["rev-parse", &format!("{rev}^{{commit}}")])
+    }
+}
+
+#[cfg(unix)]
+fn make_symlink(target: &str, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+/// Windows makes a directory link or a file link; the target decides which.
+#[cfg(windows)]
+fn make_symlink(target: &str, link: &Path) {
+    let resolved = link.parent().unwrap().join(target);
+    if resolved.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link).unwrap();
+    } else {
+        std::os::windows::fs::symlink_file(target, link).unwrap();
     }
 }
 

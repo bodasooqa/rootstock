@@ -1,6 +1,7 @@
 //! Runs template hooks in the project directory, gated by trust.
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::config::{Hook, Phase};
@@ -37,16 +38,76 @@ pub fn check_trust(
     }
 }
 
+/// The POSIX shell that runs hook commands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shell(PathBuf);
+
+/// File name of the shell: `sh` on Unix, `sh.exe` from Git for Windows.
+const SHELL_NAME: &str = if cfg!(windows) { "sh.exe" } else { "sh" };
+
+/// Finds the shell for the hooks selected for `phase`; `None` when there are
+/// none, so a command without hooks never looks for `sh`. Runs nothing; call
+/// it before any file is written.
+pub fn find_shell(hooks: &[Hook], phase: Phase) -> anyhow::Result<Option<Shell>> {
+    if select(hooks, phase).is_empty() {
+        return Ok(None);
+    }
+    if cfg!(not(windows)) {
+        // The system resolves `sh` from `PATH` when the hook starts.
+        return Ok(Some(Shell(PathBuf::from(SHELL_NAME))));
+    }
+    // Without git there is no exec path to search; `PATH` alone still counts.
+    let exec_path = crate::source::git(&["--exec-path"]).ok();
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    locate_shell(
+        &path_var,
+        exec_path.as_deref().map(Path::new),
+        SHELL_NAME,
+        &|candidate| candidate.is_file(),
+    )
+    .map(Some)
+    .ok_or_else(|| {
+        anyhow::anyhow!("hooks need `sh` from Git for Windows; none was found next to git")
+    })
+}
+
+/// Looks for the shell `name` in the `PATH` entries, then in the `bin` and
+/// `usr/bin` directories of every ancestor of git's exec path (Git for Windows
+/// keeps `sh.exe` there, outside `PATH`). `is_file` tells what exists.
+fn locate_shell(
+    path_var: &OsStr,
+    exec_path: Option<&Path>,
+    name: &str,
+    is_file: &dyn Fn(&Path) -> bool,
+) -> Option<Shell> {
+    let in_path = std::env::split_paths(path_var).map(|dir| dir.join(name));
+    let beside_git = exec_path.into_iter().flat_map(|exec| {
+        exec.ancestors()
+            .flat_map(|dir| [dir.join("bin").join(name), dir.join("usr/bin").join(name)])
+    });
+    in_path
+        .chain(beside_git)
+        .find(|candidate| is_file(candidate))
+        .map(Shell)
+}
+
 /// Runs the hooks selected for `phase` without asking, in order, stopping at the
-/// first failure. The caller must have passed `check_trust`.
-pub fn run_trusted(hooks: &[Hook], phase: Phase, project: &Path) -> anyhow::Result<()> {
+/// first failure. The caller must have passed `check_trust` and holds the
+/// `shell` that `find_shell` returned for the same hooks and phase.
+pub fn run_trusted(
+    hooks: &[Hook],
+    phase: Phase,
+    project: &Path,
+    shell: Option<&Shell>,
+) -> anyhow::Result<()> {
     for hook in select(hooks, phase) {
-        run_one(hook, project)?;
+        let shell = shell.ok_or_else(|| anyhow::anyhow!("no shell was found for the hooks"))?;
+        run_one(hook, project, shell)?;
     }
     Ok(())
 }
 
-/// `check_trust` followed by `run_trusted`.
+/// `find_shell` and `check_trust` followed by `run_trusted`.
 pub fn run_hooks(
     hooks: &[Hook],
     phase: Phase,
@@ -54,13 +115,14 @@ pub fn run_hooks(
     trust: bool,
     interactive: bool,
 ) -> anyhow::Result<()> {
+    let shell = find_shell(hooks, phase)?;
     check_trust(hooks, phase, trust, interactive)?;
-    run_trusted(hooks, phase, project)
+    run_trusted(hooks, phase, project, shell.as_ref())
 }
 
-fn run_one(hook: &Hook, project: &Path) -> anyhow::Result<()> {
+fn run_one(hook: &Hook, project: &Path, shell: &Shell) -> anyhow::Result<()> {
     // Hook output goes to stderr: stdout carries only command output.
-    let status = std::process::Command::new("sh")
+    let status = std::process::Command::new(&shell.0)
         .arg("-c")
         .arg(&hook.run)
         .current_dir(project)
@@ -87,6 +149,59 @@ mod tests {
             run: run.to_string(),
             when: when.to_vec(),
         }
+    }
+
+    fn existing(files: &[PathBuf]) -> impl Fn(&Path) -> bool + '_ {
+        move |candidate| files.iter().any(|f| f == candidate)
+    }
+
+    #[test]
+    fn shell_is_taken_from_path_first() {
+        let in_path = Path::new("/tools").join("sh.exe");
+        let beside_git = Path::new("/g/Git").join("bin").join("sh.exe");
+        let files = [in_path.clone(), beside_git];
+        let path_var = std::env::join_paths(["/other", "/tools"]).unwrap();
+        let exec = Path::new("/g/Git/mingw64/libexec/git-core");
+        let found = locate_shell(&path_var, Some(exec), "sh.exe", &existing(&files));
+        assert_eq!(found, Some(Shell(in_path)));
+    }
+
+    #[test]
+    fn shell_is_searched_beside_git_up_the_exec_path() {
+        let exec = Path::new("/g/Git/mingw64/libexec/git-core");
+        let path_var = std::env::join_paths(["/other"]).unwrap();
+        // `bin` wins over `usr/bin` in the same ancestor; a nearer ancestor wins.
+        let bin = Path::new("/g/Git").join("bin").join("sh.exe");
+        let usr = Path::new("/g/Git").join("usr/bin").join("sh.exe");
+        let files = [usr.clone(), bin.clone()];
+        let found = locate_shell(&path_var, Some(exec), "sh.exe", &existing(&files));
+        assert_eq!(found, Some(Shell(bin)));
+        let files = [usr.clone()];
+        let found = locate_shell(&path_var, Some(exec), "sh.exe", &existing(&files));
+        assert_eq!(found, Some(Shell(usr)));
+        let near = Path::new("/g/Git/mingw64").join("bin").join("sh.exe");
+        let files = [near.clone(), Path::new("/g/Git").join("bin").join("sh.exe")];
+        let found = locate_shell(&path_var, Some(exec), "sh.exe", &existing(&files));
+        assert_eq!(found, Some(Shell(near)));
+    }
+
+    #[test]
+    fn missing_shell_is_none() {
+        let path_var = std::env::join_paths(["/other"]).unwrap();
+        let exec = Path::new("/g/Git/mingw64/libexec/git-core");
+        assert_eq!(
+            locate_shell(&path_var, Some(exec), "sh.exe", &|_| false),
+            None
+        );
+        assert_eq!(locate_shell(&path_var, None, "sh.exe", &|_| false), None);
+    }
+
+    #[test]
+    fn no_hooks_look_for_no_shell() {
+        assert_eq!(find_shell(&[], Phase::New).unwrap(), None);
+        let hooks = [hook("true", &[Phase::Update])];
+        assert_eq!(find_shell(&hooks, Phase::New).unwrap(), None);
+        assert!(find_shell(&hooks, Phase::Update).unwrap().is_some());
     }
 
     #[test]

@@ -1549,3 +1549,116 @@ fn new_from_a_template_that_is_itself_a_project() {
         "{record}"
     );
 }
+
+#[test]
+fn new_runs_a_posix_hook_on_every_os() {
+    let repo = TemplateRepo::new();
+    // Shell built-ins and a redirection only: nothing but a POSIX `sh` is needed.
+    let hook = "if command -v true >/dev/null 2>&1; then echo ran > hooked.txt; fi";
+    repo.file(
+        "rootstock.toml",
+        &format!("schema = 1\n\n[[hooks]]\nrun = {hook:?}\nwhen = [\"new\"]\n"),
+    )
+    .tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--defaults", "--trust"])
+        .assert()
+        .code(0);
+    assert_eq!(
+        fs::read_to_string(dir.join("hooked.txt")).unwrap().trim(),
+        "ran"
+    );
+}
+
+/// A global git config with the given body, and the temp dir that holds it.
+fn git_global(body: &str) -> (TempDir, std::path::PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("gitconfig");
+    fs::write(&path, body).unwrap();
+    (tmp, path)
+}
+
+#[test]
+fn new_keeps_lf_when_git_converts_line_endings() {
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\n")
+        .file("lf.txt", "one\ntwo\n")
+        .bytes("crlf.txt", b"one\r\ntwo\r\n")
+        .tag("v1.0.0");
+    let (_cfg, global) = git_global("[core]\n\tautocrlf = true\n");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(0);
+    assert_eq!(fs::read(dir.join("lf.txt")).unwrap(), b"one\ntwo\n");
+    assert_eq!(fs::read(dir.join("crlf.txt")).unwrap(), b"one\r\ntwo\r\n");
+}
+
+#[test]
+fn new_emits_a_link_the_checkout_wrote_as_a_file() {
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\n")
+        .file("real.txt", "content\n");
+    repo.tree_symlink("link", "real.txt").tag_staged("v1.0.0");
+    // Git told not to make links writes the target into a plain file.
+    let (_cfg, global) = git_global("[core]\n\tsymlinks = false\n");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(0);
+    assert_eq!(
+        fs::read_link(dir.join("link")).unwrap().to_str().unwrap(),
+        "real.txt"
+    );
+}
+
+#[test]
+fn new_emits_the_executable_bit_of_the_tree() {
+    let repo = TemplateRepo::new();
+    repo.file("rootstock.toml", "schema = 1\n")
+        .file("run.sh", "#!/bin/sh\n")
+        .file("plain.txt", "x\n");
+    repo.exec("run.sh").tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .arg("--defaults")
+        .arg("--git")
+        .assert()
+        .code(0);
+    // Windows keeps the bit only in the index of the project.
+    #[cfg(not(unix))]
+    {
+        let index = git_in(&dir, &["ls-files", "-s"]);
+        assert!(
+            index
+                .lines()
+                .any(|l| l.starts_with("100755") && l.ends_with("run.sh")),
+            "{index}"
+        );
+    }
+    // Elsewhere the disk has it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode_of = |name: &str| fs::metadata(dir.join(name)).unwrap().permissions().mode();
+        assert_eq!(mode_of("run.sh") & 0o111, 0o111);
+        assert_eq!(mode_of("plain.txt") & 0o111, 0);
+    }
+}

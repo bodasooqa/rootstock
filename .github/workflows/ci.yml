@@ -27,3 +27,29 @@ jobs:
     #   js: false
 
   # Свои джобы проекта — ниже.
+
+  # Тесты на Windows и macOS. Linux гоняет джоба `rust` из `harness.yml`.
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      # Красная ОС не должна скрывать результат другой.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      # Тулчейн берётся из rust-toolchain.toml: rustup доставит компоненты сам.
+      - uses: Swatinem/rust-cache@v2
+
+      # Сборка под Windows ловит то, что на macOS не видно: код под `cfg(windows)`.
+      - name: Clippy
+        if: runner.os == 'Windows'
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Тесты
+        run: cargo test --locked

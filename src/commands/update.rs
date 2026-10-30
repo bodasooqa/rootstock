@@ -11,7 +11,7 @@ use super::{
 use crate::answers::NoPrompt;
 use crate::apply::{DiskProject, GitMerge, apply, check_path, readable_parents};
 use crate::config::Phase;
-use crate::hooks::{check_trust, run_trusted};
+use crate::hooks::{check_trust, find_shell, run_trusted};
 use crate::merge::has_markers;
 use crate::plan::plan_update;
 use crate::record::{self, FileClass, Record};
@@ -142,6 +142,8 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         answers: target_collected.recorded,
         inventory: plan.inventory.clone(),
     })?;
+    // Found with the other checks: no `sh` means nothing is written.
+    let shell = find_shell(&target_cfg.hooks, Phase::Update)?;
     // Asked last among the steps that can fail, so no one trusts a run that then errors.
     check_trust(
         &target_cfg.hooks,
@@ -155,7 +157,7 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         version,
         conflicts: plan.conflicts,
     };
-    if let Err(e) = run_trusted(&target_cfg.hooks, Phase::Update, dir) {
+    if let Err(e) = run_trusted(&target_cfg.hooks, Phase::Update, dir, shell.as_ref()) {
         let e = e.context("files were written; hooks failed; the record was not updated");
         return Err(HookFailed::new(report, e).into());
     }
