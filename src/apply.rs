@@ -36,6 +36,11 @@ impl<'a> DiskProject<'a> {
 
     fn read(&self, path: &str) -> Result<Option<Entry>, String> {
         let full = self.root.join(path);
+        match existing_parents(self.root, path, "path goes through symlink") {
+            Ok(Some(())) => {}
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(format!("`{path}`: {e}")),
+        }
         let meta = match std::fs::symlink_metadata(&full) {
             Ok(meta) => meta,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -76,6 +81,10 @@ fn is_executable(_meta: &std::fs::Metadata) -> bool {
 
 impl ProjectView for DiskProject<'_> {
     fn get(&self, path: &str) -> Option<Entry> {
+        if let Err(e) = check_path(path) {
+            self.record(e.to_string());
+            return None;
+        }
         if path.split('/').next() == Some(".git") {
             return None;
         }
@@ -106,9 +115,9 @@ pub fn apply(plan: &Plan, root: &Path) -> anyhow::Result<()> {
 fn apply_one(action: &Action, root: &Path) -> anyhow::Result<()> {
     match action {
         Action::Write { path, entry } => {
+            check_path(path)?;
             let full = root.join(path);
-            let parent = prepare_parent(root, path, true)?
-                .ok_or_else(|| anyhow::anyhow!("parent directory is missing"))?;
+            let parent = create_parents(root, path)?;
             if let Ok(meta) = std::fs::symlink_metadata(&full)
                 && meta.is_dir()
             {
@@ -120,17 +129,20 @@ fn apply_one(action: &Action, root: &Path) -> anyhow::Result<()> {
             }
         }
         Action::Delete { path } => {
+            check_path(path)?;
             let full = root.join(path);
-            if prepare_parent(root, path, false)?.is_none() {
+            if existing_parents(root, path, "refusing to delete through symlink")?.is_none() {
                 return Ok(());
             }
             match std::fs::symlink_metadata(&full) {
                 Ok(meta) if meta.is_dir() => anyhow::bail!("a directory exists at this path"),
-                Ok(_) => std::fs::remove_file(&full)?,
+                Ok(_) => {
+                    std::fs::remove_file(&full)?;
+                    prune_empty_parents(root, &full);
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
             }
-            prune_empty_parents(root, &full);
             Ok(())
         }
     }
@@ -139,10 +151,11 @@ fn apply_one(action: &Action, root: &Path) -> anyhow::Result<()> {
 /// Walks the parent components of `path` below `root`, refusing symlinks and
 /// non-directories. Missing components are created one at a time when `create`
 /// is set; otherwise a missing component yields `None`.
-fn prepare_parent(
+fn walk_parents(
     root: &Path,
     path: &str,
     create: bool,
+    symlink_message: &str,
 ) -> anyhow::Result<Option<std::path::PathBuf>> {
     let mut current = root.to_path_buf();
     let mut components: Vec<&str> = path.split('/').collect();
@@ -151,7 +164,7 @@ fn prepare_parent(
         current.push(component);
         match std::fs::symlink_metadata(&current) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                anyhow::bail!("refusing to write through symlink `{}`", current.display())
+                anyhow::bail!("{symlink_message} `{}`", current.display())
             }
             Ok(meta) if !meta.is_dir() => {
                 anyhow::bail!("`{}` is not a directory", current.display())
@@ -167,6 +180,33 @@ fn prepare_parent(
         }
     }
     Ok(Some(current))
+}
+
+/// Walks and, where missing, creates the parents of `path`; returns the parent directory.
+fn create_parents(root: &Path, path: &str) -> anyhow::Result<std::path::PathBuf> {
+    let mut parent = root.to_path_buf();
+    let mut components: Vec<&str> = path.split('/').collect();
+    components.pop();
+    parent.extend(components);
+    walk_parents(root, path, true, "refusing to write through symlink")?;
+    Ok(parent)
+}
+
+/// Walks existing parents only; `None` means a component is missing.
+fn existing_parents(root: &Path, path: &str, symlink_message: &str) -> anyhow::Result<Option<()>> {
+    Ok(walk_parents(root, path, false, symlink_message)?.map(|_| ()))
+}
+
+/// Rejects paths that could leave the root: empty, absolute, or with `""`, `.`, `..` segments.
+fn check_path(path: &str) -> anyhow::Result<()> {
+    let bad = path.is_empty()
+        || path.starts_with('/')
+        || path.starts_with('\\')
+        || path.split('/').any(|s| matches!(s, "" | "." | ".."));
+    if bad {
+        anyhow::bail!("unsafe path `{path}`");
+    }
+    Ok(())
 }
 
 fn write_file(parent: &Path, full: &Path, bytes: &[u8], executable: bool) -> anyhow::Result<()> {
@@ -367,6 +407,99 @@ mod tests {
         let meta = std::fs::symlink_metadata(dir.path().join("f")).unwrap();
         assert!(meta.is_file());
         assert_eq!(std::fs::read(dir.path().join("f")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn apply_rejects_unsafe_paths() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        for bad in ["../x", "/x", "a//b", "a/./b"] {
+            let err = apply(&plan(vec![write_file(bad, b"x", false)]), &root);
+            assert!(err.is_err(), "{bad} accepted");
+            let err = apply(&plan(vec![Action::Delete { path: bad.into() }]), &root);
+            assert!(err.is_err(), "delete {bad} accepted");
+        }
+        assert!(!outer.path().join("x").exists());
+        assert!(!std::path::Path::new("/x").exists());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        let view = DiskProject::new(&root);
+        assert_eq!(view.get("../x"), None);
+        assert!(view.finish().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_view_records_symlinked_parent() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("f"), "secret").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("d")).unwrap();
+        let view = DiskProject::new(dir.path());
+        assert_eq!(view.get("d/f"), None);
+        let err = view.finish().unwrap_err().to_string();
+        assert!(err.contains("path goes through symlink"), "{err}");
+        assert!(err.contains('d'), "{err}");
+    }
+
+    #[test]
+    fn delete_missing_leaf_keeps_empty_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        apply(
+            &plan(vec![Action::Delete {
+                path: "a/b/gone".into(),
+            }]),
+            dir.path(),
+        )
+        .unwrap();
+        assert!(dir.path().join("a/b").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_symlink_keeps_target() {
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("victim");
+        std::fs::write(&target, "keep").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("l")).unwrap();
+        apply(&plan(vec![Action::Delete { path: "l".into() }]), dir.path()).unwrap();
+        assert!(std::fs::symlink_metadata(dir.path().join("l")).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_through_symlinked_parent_errors() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("f"), "keep").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("d")).unwrap();
+        let err = apply(
+            &plan(vec![Action::Delete { path: "d/f".into() }]),
+            dir.path(),
+        );
+        assert!(err.is_err());
+        assert!(outside.path().join("f").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_write_replaces_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f"), "old").unwrap();
+        let p = plan(vec![Action::Write {
+            path: "f".into(),
+            entry: Entry::Symlink {
+                target: "elsewhere".into(),
+            },
+        }]);
+        apply(&p, dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read_link(dir.path().join("f")).unwrap().to_str(),
+            Some("elsewhere")
+        );
     }
 
     #[test]
