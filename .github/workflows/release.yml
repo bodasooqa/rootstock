@@ -1,0 +1,124 @@
+# Release: on a version tag, build binaries for five targets and publish them
+# on GitHub Releases. The crate goes to crates.io by hand, from the tagged
+# commit, once this run is green: a crates.io version can be yanked but never
+# replaced.
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  # A pull request that touches the release only builds: nothing is published.
+  pull_request:
+    paths: [.github/workflows/release.yml, Cargo.toml, Cargo.lock, rust-toolchain.toml]
+
+permissions: {}
+
+# Two pushes of the same tag must not publish twice.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The tag must name the version in Cargo.toml: crates.io takes the version
+  # from the manifest, GitHub from the tag.
+  verify:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tag matches Cargo.toml
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rootstock") | .version')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+  build:
+    needs: verify
+    # On a pull request `verify` is skipped, and the build still runs.
+    if: ${{ !cancelled() && needs.verify.result != 'failure' }}
+    name: build (${{ matrix.target }})
+    strategy:
+      matrix:
+        include:
+          # musl: a static binary that does not depend on the glibc of the runner.
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, native: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, native: true }
+          - { target: aarch64-apple-darwin, os: macos-latest, native: true }
+          - { target: x86_64-apple-darwin, os: macos-latest, native: false }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, native: true }
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      # A static CRT: the Windows binary does not need the Visual C++ runtime.
+      RUSTFLAGS: ${{ contains(matrix.target, 'windows') && '-C target-feature=+crt-static' || '' }}
+      VERSION: ${{ github.event_name == 'push' && github.ref_name || 'pr' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test
+        if: matrix.native
+        run: target/${{ matrix.target }}/release/rootstock --version
+
+      - name: Package
+        run: |
+          name="rootstock-$VERSION-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          if [ "${{ runner.os }}" = Windows ]; then
+            cp "target/${{ matrix.target }}/release/rootstock.exe" "dist/$name/"
+            (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null)
+          else
+            cp "target/${{ matrix.target }}/release/rootstock" "dist/$name/"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          fi
+          rm -rf "dist/$name"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  github:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd dist && sha256sum -- * > SHA256SUMS
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag

@@ -4,10 +4,18 @@ rootstock is a command-line tool, written in Rust and shipped as a single binary
 
 Status: Stage 1 (core) and Stage 2 (Copier import and parity) done; Stage 3 (harness migration) next.
 
+## Install
+
+```sh
+cargo install rootstock --locked
+```
+
+Or download a prebuilt binary from [GitHub Releases](https://github.com/bodasooqa/rootstock/releases): Linux (x86_64, aarch64; static, musl), macOS (arm64, x86_64) and Windows (x86_64). `SHA256SUMS` lists the checksums. rootstock needs `git` on `PATH`.
+
 ## Quick start
 
 ```sh
-cargo build --release          # binary: target/release/rootstock
+cargo build --release          # from a checkout; binary: target/release/rootstock
 
 rootstock new <template> <dir> [--subdir path] [--version vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust] [--git] [--format text|json]
 cd <dir>
@@ -71,6 +79,7 @@ Stdout carries only command output (conflict lists, status, JSON); everything el
 - `src/cli.rs`, `src/commands/{mod,new,update,status,check,import_copier}.rs` - CLI, the terminal dialog and the commands
 - `tests/` - end-to-end scenarios through the binary (`cli_*.rs`), fixtures in `tests/support/`; `tests/parity/` - the Copier parity checks of Stage 2 (not run in CI)
 - `docs/design.md` - the specification
+- `.github/workflows/ci.yml` - tests on Linux, macOS and Windows; `release.yml` - binaries on GitHub Releases for a `vX.Y.Z` tag
 
 ## License
 
