@@ -1,22 +1,18 @@
 //! `rootstock update`: three-way update of the project in the current directory.
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use super::{
-    CommonOptions, Report, collect_side, interactive, load_config, load_data, render_side,
-    target_label,
-};
+use super::{CommonOptions, Report, Side, interactive, load_data, read_data_file, target_label};
 use crate::answers::NoPrompt;
-use crate::apply::{DiskProject, apply};
+use crate::apply::{DiskProject, apply, check_path, existing_parents};
 use crate::config::Phase;
 use crate::hooks::{check_trust, run_trusted};
 use crate::merge::has_markers;
 use crate::plan::plan_update;
 use crate::record::{self, FileClass, Record};
-use crate::source::{checkout, latest, parse_source};
+use crate::source::{checkout, git, latest, parse_source, run_git};
 
 /// Arguments of `rootstock update`.
 #[derive(Debug, Clone)]
@@ -25,30 +21,29 @@ pub struct UpdateOptions {
     pub common: CommonOptions,
 }
 
-/// Runs git in `dir` and returns stdout; a failure carries stderr.
-fn git_in(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .context("cannot run git")?;
-    if !out.status.success() {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
 fn require_clean_tree(dir: &Path) -> Result<()> {
-    let inside = git_in(dir, &["rev-parse", "--is-inside-work-tree"]).unwrap_or_default();
-    if inside.trim() != "true" {
-        bail!("not a git work tree; update needs git to make the result reviewable");
+    let dir_str = dir.to_string_lossy();
+    // A spawn failure is an error of its own; a non-zero exit carries git's reason.
+    let out = run_git(&["-C", &dir_str, "rev-parse", "--is-inside-work-tree"])?;
+    if !out.status.success() {
+        bail!(
+            "not a git work tree: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
-    let status = git_in(
-        dir,
-        &["status", "--porcelain", "--untracked-files=all", "--", "."],
-    )?;
-    if !status.trim().is_empty() {
+    if String::from_utf8_lossy(&out.stdout).trim() != "true" {
+        bail!("not a git work tree");
+    }
+    let status = git(&[
+        "-C",
+        &dir_str,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--",
+        ".",
+    ])?;
+    if !status.is_empty() {
         bail!("working tree has uncommitted changes; commit or stash first");
     }
     Ok(())
@@ -58,6 +53,12 @@ fn refuse_leftover_markers(dir: &Path, rec: &Record) -> Result<()> {
     let mut found = Vec::new();
     for (path, class) in &rec.inventory {
         if *class != FileClass::Managed {
+            continue;
+        }
+        // Inventory comes from a file the project owns: never read outside the project.
+        if check_path(path).is_err()
+            || !matches!(existing_parents(dir, path, "symlink"), Ok(Some(())))
+        {
             continue;
         }
         let full = dir.join(path);
@@ -92,32 +93,31 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         None => latest(&src)?,
     };
     if version == rec.version {
-        eprintln!("already at {version}");
+        if read_data_file(&opts.common)?.is_some() || !opts.common.data.is_empty() {
+            eprintln!(
+                "already at {version}; --data was not applied (answers change only with a version step)"
+            );
+        } else {
+            eprintln!("already at {version}");
+        }
         return Ok(Report {
             version,
             conflicts: Vec::new(),
         });
     }
 
-    let base_co = checkout(&src, &rec.commit)?;
-    let target_co = checkout(&src, &version)?;
-    let base_cfg = load_config(&base_co)?;
-    let target_cfg = load_config(&target_co)?;
+    let base_side = Side::load(checkout(&src, &rec.commit)?)?;
+    let target_side = Side::load(checkout(&src, &version)?)?;
+    let target_cfg = &target_side.cfg;
 
     let mut known = rec.answers.clone();
-    known.extend(load_data(&target_cfg, &opts.common)?);
+    known.extend(load_data(target_cfg, &opts.common)?);
 
-    let base_collected = collect_side(&base_cfg, &base_co, &rec.answers, true, &mut NoPrompt)?;
+    let base_collected = base_side.collect(&rec.answers, true, &mut NoPrompt)?;
     let mut prompter = super::prompter();
-    let target_collected = collect_side(
-        &target_cfg,
-        &target_co,
-        &known,
-        opts.common.defaults,
-        prompter.as_mut(),
-    )?;
-    let base = render_side(&base_cfg, &base_co, &base_collected.context)?;
-    let target = render_side(&target_cfg, &target_co, &target_collected.context)?;
+    let target_collected = target_side.collect(&known, opts.common.defaults, prompter.as_mut())?;
+    let base = base_side.render(&base_collected.context)?;
+    let target = target_side.render(&target_collected.context)?;
 
     let project = DiskProject::new(dir);
     let plan = plan_update(
@@ -144,7 +144,7 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
             schema: 1,
             source: rec.source.clone(),
             version: version.clone(),
-            commit: target_co.commit.clone(),
+            commit: target_side.commit().to_string(),
             answers: target_collected.recorded,
             inventory: plan.inventory.clone(),
         },

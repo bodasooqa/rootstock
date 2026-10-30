@@ -39,7 +39,7 @@ pub fn parse_source(s: &str) -> Source {
 }
 
 /// Runs `git` and returns its output; stdin is never inherited.
-fn run_git(args: &[&str]) -> Result<std::process::Output> {
+pub(crate) fn run_git(args: &[&str]) -> Result<std::process::Output> {
     Command::new("git")
         // Repository hooks must never run on behalf of a template.
         .args(["-c", "core.hooksPath=/dev/null"])
@@ -53,7 +53,7 @@ fn run_git(args: &[&str]) -> Result<std::process::Output> {
 }
 
 /// Runs `git` and returns trimmed stdout, failing with args and stderr.
-fn git(args: &[&str]) -> Result<String> {
+pub(crate) fn git(args: &[&str]) -> Result<String> {
     let out = run_git(args)?;
     if !out.status.success() {
         bail!(

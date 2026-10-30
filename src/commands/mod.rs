@@ -55,14 +55,22 @@ pub(crate) fn load_config(checkout: &Checkout) -> Result<TemplateConfig> {
     })
 }
 
+/// Reads and parses `--data-file`, if given.
+pub(crate) fn read_data_file(opts: &CommonOptions) -> Result<Option<toml::Table>> {
+    let Some(file) = &opts.data_file else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("cannot read --data-file {}", file.display()))?;
+    let table =
+        toml::from_str(&text).with_context(|| format!("invalid --data-file {}", file.display()))?;
+    Ok(Some(table))
+}
+
 /// Reads `--data-file` and `--data` into answers; flags win over the file.
 pub(crate) fn load_data(cfg: &TemplateConfig, opts: &CommonOptions) -> Result<Answers> {
     let mut out = Answers::new();
-    if let Some(file) = &opts.data_file {
-        let text = std::fs::read_to_string(file)
-            .with_context(|| format!("cannot read --data-file {}", file.display()))?;
-        let table: toml::Table = toml::from_str(&text)
-            .with_context(|| format!("invalid --data-file {}", file.display()))?;
+    if let (Some(file), Some(table)) = (&opts.data_file, read_data_file(opts)?) {
         for (key, value) in &table {
             if !cfg.questions.iter().any(|q| &q.name == key) {
                 return Err(anyhow!(
@@ -77,28 +85,49 @@ pub(crate) fn load_data(cfg: &TemplateConfig, opts: &CommonOptions) -> Result<An
     Ok(out)
 }
 
-/// Collects the answers of one side.
-pub(crate) fn collect_side(
-    cfg: &TemplateConfig,
-    checkout: &Checkout,
-    known: &Answers,
-    use_defaults: bool,
-    prompter: &mut dyn Prompter,
-) -> Result<Collected> {
-    let root = render::include_root(checkout.path(), cfg)?;
-    let jinja = Jinja::new(&cfg.jinja, &root);
-    answers::collect(cfg, &jinja, known, use_defaults, prompter)
+/// One side of an update (base or target): a checkout, its config and its Jinja environment.
+pub(crate) struct Side {
+    pub cfg: TemplateConfig,
+    checkout: Checkout,
+    jinja: Jinja,
 }
 
-/// Renders one side of the template with `ctx`.
-pub(crate) fn render_side(
-    cfg: &TemplateConfig,
-    checkout: &Checkout,
-    ctx: &Answers,
-) -> Result<RenderedTree> {
-    let root = render::include_root(checkout.path(), cfg)?;
-    let jinja = Jinja::new(&cfg.jinja, &root);
-    Ok(render::render_tree(checkout.path(), cfg, &jinja, ctx)?)
+impl Side {
+    /// Loads the config of `checkout` and builds the environment once.
+    pub fn load(checkout: Checkout) -> Result<Side> {
+        let cfg = load_config(&checkout)?;
+        let root = render::include_root(checkout.path(), &cfg)?;
+        let jinja = Jinja::new(&cfg.jinja, &root);
+        Ok(Side {
+            cfg,
+            checkout,
+            jinja,
+        })
+    }
+
+    pub fn commit(&self) -> &str {
+        &self.checkout.commit
+    }
+
+    /// Collects the answers of this side.
+    pub fn collect(
+        &self,
+        known: &Answers,
+        use_defaults: bool,
+        prompter: &mut dyn Prompter,
+    ) -> Result<Collected> {
+        answers::collect(&self.cfg, &self.jinja, known, use_defaults, prompter)
+    }
+
+    /// Renders this side with `ctx`.
+    pub fn render(&self, ctx: &Answers) -> Result<RenderedTree> {
+        Ok(render::render_tree(
+            self.checkout.path(),
+            &self.cfg,
+            &self.jinja,
+            ctx,
+        )?)
+    }
 }
 
 /// Label of the target side in conflict markers.
@@ -106,7 +135,7 @@ pub(crate) fn target_label(version: &str) -> String {
     format!("template {version}")
 }
 
-/// Directory entries other than nothing: true when `dir` exists and holds anything.
+/// True when `dir` exists and holds at least one entry.
 pub(crate) fn dir_has_entries(dir: &Path) -> Result<bool> {
     match std::fs::read_dir(dir) {
         Ok(mut it) => Ok(it.next().is_some()),

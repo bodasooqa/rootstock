@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use std::io::Write;
+
+use anyhow::{Context, Result};
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
@@ -136,7 +138,7 @@ pub fn run() -> Result<Outcome> {
         }
         Command::Update(args) => {
             let report = update::run(
-                &std::env::current_dir()?,
+                &std::env::current_dir().context("cannot determine the current directory")?,
                 &UpdateOptions {
                     to: args.to,
                     common: args.common.options(),
@@ -155,10 +157,11 @@ pub fn run() -> Result<Outcome> {
 }
 
 fn print_report(report: &Report, format: Format) -> Result<()> {
+    let mut out = String::new();
     match format {
         Format::Text => {
             for c in &report.conflicts {
-                println!("{} {}", c.kind.as_str(), c.path);
+                out.push_str(&format!("{} {}\n", c.kind.as_str(), c.path));
             }
         }
         Format::Json => {
@@ -168,8 +171,13 @@ fn print_report(report: &Report, format: Format) -> Result<()> {
                 .map(|c| serde_json::json!({"path": c.path, "kind": c.kind.as_str()}))
                 .collect();
             let value = serde_json::json!({"version": report.version, "conflicts": conflicts});
-            println!("{}", serde_json::to_string(&value)?);
+            out.push_str(&serde_json::to_string(&value)?);
+            out.push('\n');
         }
     }
-    Ok(())
+    // The work is already done: a closed pipe must not change the exit code.
+    match std::io::stdout().lock().write_all(out.as_bytes()) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => Err(e.into()),
+        _ => Ok(()),
+    }
 }

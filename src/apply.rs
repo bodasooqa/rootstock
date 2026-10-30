@@ -193,12 +193,16 @@ fn create_parents(root: &Path, path: &str) -> anyhow::Result<std::path::PathBuf>
 }
 
 /// Walks existing parents only; `None` means a component is missing.
-fn existing_parents(root: &Path, path: &str, symlink_message: &str) -> anyhow::Result<Option<()>> {
+pub(crate) fn existing_parents(
+    root: &Path,
+    path: &str,
+    symlink_message: &str,
+) -> anyhow::Result<Option<()>> {
     Ok(walk_parents(root, path, false, symlink_message)?.map(|_| ()))
 }
 
 /// Rejects paths that could leave the root: empty, absolute, or with `""`, `.`, `..` segments.
-fn check_path(path: &str) -> anyhow::Result<()> {
+pub(crate) fn check_path(path: &str) -> anyhow::Result<()> {
     let bad = path.is_empty()
         || path.starts_with('/')
         || path.starts_with('\\')

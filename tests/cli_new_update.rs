@@ -41,7 +41,10 @@ fn template_v1() -> TemplateRepo {
 }
 
 fn rootstock() -> Command {
-    Command::cargo_bin("rootstock").unwrap()
+    let mut cmd = Command::cargo_bin("rootstock").unwrap();
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd
 }
 
 /// Runs `rootstock new` into a fresh project dir and commits the result.
@@ -62,10 +65,6 @@ fn update(dir: &Path) -> Command {
     let mut cmd = rootstock();
     cmd.current_dir(dir).arg("update");
     cmd
-}
-
-fn commit_all(dir: &Path, msg: &str) {
-    commit_project(dir, msg);
 }
 
 #[test]
@@ -148,17 +147,14 @@ fn new_git_requires_empty_dir() {
 #[test]
 fn new_without_git_flag_does_not_init() {
     let repo = template_v1();
-    let (_tmp, dir) = {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("p");
-        rootstock()
-            .args(["new", &repo.url()])
-            .arg(&dir)
-            .arg("--defaults")
-            .assert()
-            .code(0);
-        (tmp, dir)
-    };
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("p");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(0);
     assert!(!dir.join(".git").exists());
 }
 
@@ -218,7 +214,7 @@ fn update_keeps_project_edit() {
         "L1-project\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n",
     )
     .unwrap();
-    commit_all(&dir, "edit");
+    commit_project(&dir, "edit");
     repo.file("tpl/README.md", README_V2).tag("v1.1.0");
     update(&dir).assert().code(0);
     assert_eq!(
@@ -236,7 +232,7 @@ fn update_overlap_exits_2_lists_markers() {
         "l1\nl2\nl3\nl4\nl5\nl6\nl7\nL8-project\n",
     )
     .unwrap();
-    commit_all(&dir, "edit");
+    commit_project(&dir, "edit");
     repo.file("tpl/README.md", README_V2).tag("v1.1.0");
     update(&dir).assert().code(2).stdout("markers README.md\n");
     let text = fs::read_to_string(dir.join("README.md")).unwrap();
@@ -253,7 +249,7 @@ fn update_json_output() {
         "l1\nl2\nl3\nl4\nl5\nl6\nl7\nL8-project\n",
     )
     .unwrap();
-    commit_all(&dir, "edit");
+    commit_project(&dir, "edit");
     repo.file("tpl/README.md", README_V2).tag("v1.1.0");
     let out = update(&dir)
         .args(["--format", "json"])
@@ -277,7 +273,7 @@ fn update_does_not_recreate_deleted_starter() {
     let repo = template_v1();
     let (_tmp, dir) = new_project(&repo);
     fs::remove_file(dir.join("NOTES.md")).unwrap();
-    commit_all(&dir, "rm notes");
+    commit_project(&dir, "rm notes");
     repo.file("tpl/src.txt.jinja", "name={{ name }}!\n")
         .tag("v1.1.0");
     update(&dir).assert().code(0);
@@ -337,12 +333,17 @@ fn update_with_leftover_markers_exits_1() {
         "<<<<<<< project\nmine\n=======\ntheirs\n>>>>>>> template v1.0.0\n",
     )
     .unwrap();
-    commit_all(&dir, "markers");
+    commit_project(&dir, "markers");
     repo.file("tpl/README.md", README_V2).tag("v1.1.0");
     update(&dir)
         .assert()
         .code(1)
+        .stderr(predicate::str::contains("unresolved conflict markers"))
         .stderr(predicate::str::contains("README.md"));
+    assert_eq!(
+        fs::read(dir.join("README.md")).unwrap(),
+        b"<<<<<<< project\nmine\n=======\ntheirs\n>>>>>>> template v1.0.0\n"
+    );
     let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
     assert!(record.contains("version = \"v1.0.0\""), "{record}");
 }
@@ -360,6 +361,13 @@ fn update_missing_base_commit_exits_1_writes_nothing() {
     repo.git(&["branch", "-D", "main"]);
     repo.git(&["reflog", "expire", "--expire=now", "--all"]);
     repo.git(&["gc", "--prune=now", "-q"]);
+    let gone = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["cat-file", "-e", &old])
+        .output()
+        .unwrap();
+    assert!(!gone.status.success(), "old commit must be pruned");
 
     let before_readme = fs::read(dir.join("README.md")).unwrap();
     let before_record = fs::read(dir.join(".rootstock.toml")).unwrap();
@@ -433,7 +441,7 @@ fn update_data_file_is_merged_under_data() {
 
     let bad = tmp.path().join("bad.toml");
     fs::write(&bad, "nope = 1\n").unwrap();
-    commit_all(&dir, "after update");
+    commit_project(&dir, "after update");
     repo.file("tpl/README.md", "x\n").tag("v1.2.0");
     update(&dir)
         .arg("--data-file")
@@ -465,4 +473,146 @@ fn update_hooks_need_trust() {
 
     update(&dir).arg("--trust").assert().code(0);
     assert!(dir.join("hooked.txt").exists());
+}
+
+#[test]
+fn update_hook_failure_reports_record_not_updated() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    let config = format!("{CONFIG}\n[[hooks]]\nrun = \"exit 3\"\nwhen = [\"update\"]\n");
+    repo.file("rootstock.toml", &config)
+        .file("tpl/README.md", README_V2)
+        .tag("v1.1.0");
+    update(&dir)
+        .arg("--trust")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "hooks failed; the record was not updated",
+        ));
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("version = \"v1.0.0\""), "{record}");
+}
+
+#[test]
+fn update_scoped_to_project_dir() {
+    let repo = template_v1();
+    let tmp = TempDir::new().unwrap();
+    let mono = tmp.path().join("mono");
+    let dir = mono.join("proj");
+    fs::create_dir_all(&dir).unwrap();
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .arg("--defaults")
+        .assert()
+        .code(0);
+    commit_project(&mono, "init");
+    fs::create_dir(mono.join("other")).unwrap();
+    fs::write(mono.join("other/uncommitted.txt"), "x").unwrap();
+    repo.file("tpl/README.md", README_V2).tag("v1.1.0");
+    update(&dir).assert().code(0);
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).unwrap(),
+        README_V2
+    );
+}
+
+#[test]
+fn update_json_clean_and_already_at() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    let expect = |version: &str| serde_json::json!({"version": version, "conflicts": []});
+
+    let out = update(&dir)
+        .args(["--format", "json"])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
+        expect("v1.0.0")
+    );
+
+    repo.file("tpl/README.md", README_V2).tag("v1.1.0");
+    let out = update(&dir)
+        .args(["--format", "json"])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
+        expect("v1.1.0")
+    );
+}
+
+#[test]
+fn update_already_at_with_data_says_not_applied() {
+    let repo = template_v1();
+    let (_tmp, dir) = new_project(&repo);
+    update(&dir)
+        .args(["--data", "rust=false"])
+        .assert()
+        .code(0)
+        .stderr(predicate::str::contains(
+            "already at v1.0.0; --data was not applied",
+        ));
+    assert!(dir.join("rust.txt").exists());
+}
+
+#[test]
+fn new_head_records_head() {
+    let repo = template_v1();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("p");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--version", "HEAD", "--defaults"])
+        .assert()
+        .code(0);
+    let record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    assert!(record.contains("version = \"HEAD\""), "{record}");
+    assert!(record.contains(&repo.commit("HEAD")), "{record}");
+}
+
+#[test]
+fn new_stdout_empty() {
+    let repo = template_v1();
+    let tmp = TempDir::new().unwrap();
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(tmp.path().join("p"))
+        .arg("--defaults")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn leftover_markers_ignores_starter_and_symlink() {
+    let repo = template_v1();
+    let (tmp, dir) = new_project(&repo);
+    let markers = "<<<<<<< project\nmine\n=======\ntheirs\n>>>>>>> template v1.0.0\n";
+    // A starter file with markers is the project's own business.
+    fs::write(dir.join("NOTES.md"), markers).unwrap();
+    // A managed path whose parent the project replaced with a symlink is not read.
+    let elsewhere = tmp.path().join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    fs::write(elsewhere.join("x.txt"), markers).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dir.join("ghost")).unwrap();
+    let mut record = fs::read_to_string(dir.join(".rootstock.toml")).unwrap();
+    record.push_str("\"ghost/x.txt\" = \"managed\"\n");
+    fs::write(dir.join(".rootstock.toml"), record).unwrap();
+    commit_project(&dir, "odd project");
+    repo.file("tpl/README.md", README_V2).tag("v1.1.0");
+    update(&dir).assert().code(0);
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).unwrap(),
+        README_V2
+    );
 }

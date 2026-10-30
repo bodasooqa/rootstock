@@ -1,13 +1,11 @@
 //! `rootstock new`: an update from an empty base into an empty project.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
 use super::{
-    CommonOptions, Report, collect_side, dir_has_entries, interactive, load_config, load_data,
-    prompter, render_side, target_label,
+    CommonOptions, Report, Side, dir_has_entries, interactive, load_data, prompter, target_label,
 };
 use crate::apply::{DiskProject, apply};
 use crate::config::Phase;
@@ -15,7 +13,7 @@ use crate::hooks::{check_trust, run_trusted};
 use crate::plan::plan_update;
 use crate::record::{self, Inventory, RECORD_FILE, Record};
 use crate::render::RenderedTree;
-use crate::source::{Source, checkout, latest, parse_source};
+use crate::source::{Source, checkout, git, latest, parse_source};
 
 /// Arguments of `rootstock new`.
 #[derive(Debug, Clone)]
@@ -56,14 +54,14 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
         Some(v) => v.clone(),
         None => latest(&src)?,
     };
-    let co = checkout(&src, &version)?;
-    let cfg = load_config(&co)?;
+    let side = Side::load(checkout(&src, &version)?)?;
+    let cfg = &side.cfg;
     let source = recorded_source(&opts.template, &src)?;
 
-    let known = load_data(&cfg, &opts.common)?;
+    let known = load_data(cfg, &opts.common)?;
     let mut prompter = prompter();
-    let collected = collect_side(&cfg, &co, &known, opts.common.defaults, prompter.as_mut())?;
-    let target = render_side(&cfg, &co, &collected.context)?;
+    let collected = side.collect(&known, opts.common.defaults, prompter.as_mut())?;
+    let target = side.render(&collected.context)?;
 
     let project = DiskProject::new(dir);
     let plan = plan_update(
@@ -86,7 +84,7 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
             schema: 1,
             source,
             version: version.clone(),
-            commit: co.commit.clone(),
+            commit: side.commit().to_string(),
             answers: collected.recorded,
             inventory: plan.inventory.clone(),
         },
@@ -102,17 +100,6 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
 }
 
 fn init_git(dir: &Path) -> Result<()> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["init", "-q"])
-        .output()
-        .context("cannot run git")?;
-    if !out.status.success() {
-        bail!(
-            "git init failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
+    git(&["-C", &dir.to_string_lossy(), "init", "-q"])?;
     Ok(())
 }
