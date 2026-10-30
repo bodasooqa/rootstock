@@ -10,12 +10,18 @@ use crate::record::{Answers, toml_to_json};
 /// Asks the user for one answer.
 pub trait Prompter {
     fn ask(&mut self, q: &Question, default: Option<&Value>) -> Result<Value>;
+
+    /// Shows why an answer was rejected before the question is asked again.
+    fn report(&mut self, message: &str);
 }
 
 /// Prompter for runs without a terminal: any question that reaches it is an error.
 pub struct NoPrompt;
 
 impl Prompter for NoPrompt {
+    /// Nothing is ever asked, so there is nothing to retry.
+    fn report(&mut self, _message: &str) {}
+
     fn ask(&mut self, q: &Question, default: Option<&Value>) -> Result<Value> {
         if default.is_some() {
             bail!(
@@ -30,81 +36,6 @@ impl Prompter for NoPrompt {
     }
 }
 
-/// Interactive prompter built on `inquire`.
-pub struct TerminalPrompter;
-
-impl Prompter for TerminalPrompter {
-    fn ask(&mut self, q: &Question, default: Option<&Value>) -> Result<Value> {
-        let message = q.name.as_str();
-        match q.kind {
-            QuestionKind::Bool => {
-                let mut p = inquire::Confirm::new(message);
-                if let Some(b) = default.and_then(Value::as_bool) {
-                    p = p.with_default(b);
-                }
-                if let Some(h) = &q.help {
-                    p = p.with_help_message(h);
-                }
-                Ok(Value::Bool(p.prompt()?))
-            }
-            QuestionKind::Str | QuestionKind::Int | QuestionKind::Yaml => {
-                let initial = default.map(|d| display_default(q.kind, d));
-                let mut p = inquire::Text::new(message);
-                if let Some(d) = &initial {
-                    p = p.with_initial_value(d);
-                }
-                if let Some(h) = &q.help {
-                    p = p.with_help_message(h);
-                }
-                let text = p.prompt()?;
-                match q.kind {
-                    QuestionKind::Str => Ok(Value::String(text)),
-                    _ => coerce_str(q, &text),
-                }
-            }
-            QuestionKind::Choice => {
-                let labels: Vec<String> = q.choices.iter().map(|c| c.label.clone()).collect();
-                let mut p = inquire::Select::new(message, labels);
-                if let Some(i) = default.and_then(|d| choice_index(q, d)) {
-                    p = p.with_starting_cursor(i);
-                }
-                if let Some(h) = &q.help {
-                    p = p.with_help_message(h);
-                }
-                let picked = p.raw_prompt()?;
-                choice_value(q, picked.index)
-            }
-            QuestionKind::MultiChoice => {
-                let labels: Vec<String> = q.choices.iter().map(|c| c.label.clone()).collect();
-                let preset: Vec<usize> = default
-                    .and_then(Value::as_array)
-                    .map(|items| items.iter().filter_map(|v| choice_index(q, v)).collect())
-                    .unwrap_or_default();
-                let mut p = inquire::MultiSelect::new(message, labels).with_default(&preset);
-                if let Some(h) = &q.help {
-                    p = p.with_help_message(h);
-                }
-                let picked = p.raw_prompt()?;
-                let values = picked
-                    .into_iter()
-                    .map(|o| choice_value(q, o.index))
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(Value::Array(values))
-            }
-        }
-    }
-}
-
-/// Text shown as the pre-filled value of a text prompt.
-fn display_default(kind: QuestionKind, value: &Value) -> String {
-    match (kind, value) {
-        // JSON is valid single-line YAML.
-        (QuestionKind::Yaml, v) => v.to_string(),
-        (_, Value::String(s)) => s.clone(),
-        (_, v) => v.to_string(),
-    }
-}
-
 fn choice_values(q: &Question) -> Result<Vec<Value>> {
     q.choices
         .iter()
@@ -112,11 +43,13 @@ fn choice_values(q: &Question) -> Result<Vec<Value>> {
         .collect()
 }
 
-fn choice_index(q: &Question, value: &Value) -> Option<usize> {
+/// Position of `value` among the choices of `q`.
+pub(crate) fn choice_index(q: &Question, value: &Value) -> Option<usize> {
     choice_values(q).ok()?.iter().position(|c| c == value)
 }
 
-fn choice_value(q: &Question, index: usize) -> Result<Value> {
+/// Value of the choice at `index`.
+pub(crate) fn choice_value(q: &Question, index: usize) -> Result<Value> {
     choice_values(q)?
         .into_iter()
         .nth(index)
@@ -160,7 +93,7 @@ fn match_choice(q: &Question, input: &Value) -> Result<Option<Value>> {
 }
 
 /// Converts text (from `--data` or a rendered default) to the question's type.
-fn coerce_str(q: &Question, raw: &str) -> Result<Value> {
+pub(crate) fn coerce_str(q: &Question, raw: &str) -> Result<Value> {
     match q.kind {
         QuestionKind::Str => Ok(Value::String(raw.to_string())),
         QuestionKind::Bool => parse_bool(raw)
@@ -342,13 +275,13 @@ pub fn collect(
                     let value = match value {
                         Ok(v) => v,
                         Err(e) => {
-                            eprintln!("{e:#}");
+                            prompter.report(&format!("{e:#}"));
                             continue;
                         }
                     };
                     match validate(q, jinja, &context, &value)? {
                         None => break value,
-                        Some(message) => eprintln!("{message}"),
+                        Some(message) => prompter.report(&message),
                     }
                 },
             }
@@ -386,6 +319,17 @@ mod tests {
     struct Script {
         answers: Vec<serde_json::Value>,
         asked: Vec<String>,
+        reports: Vec<String>,
+    }
+
+    impl Script {
+        fn new(answers: Vec<serde_json::Value>) -> Script {
+            Script {
+                answers,
+                asked: vec![],
+                reports: vec![],
+            }
+        }
     }
 
     impl Prompter for Script {
@@ -399,6 +343,10 @@ mod tests {
                 return Err(anyhow!("script exhausted"));
             }
             Ok(self.answers.remove(0))
+        }
+
+        fn report(&mut self, message: &str) {
+            self.reports.push(message.to_string());
         }
     }
 
@@ -425,18 +373,6 @@ name = "pi_models"
 type = "yaml"
 default = { opus = "a", sonnet = "b", haiku = "c" }
 "#;
-
-    #[test]
-    fn display_default_is_single_line_text() {
-        assert_eq!(display_default(QuestionKind::Str, &json!("demo")), "demo");
-        assert_eq!(display_default(QuestionKind::Int, &json!(42)), "42");
-        let y = display_default(QuestionKind::Yaml, &json!({"opus": "a", "sonnet": "b"}));
-        assert!(!y.contains('\n'), "{y}");
-        assert_eq!(
-            serde_norway::from_str::<Value>(&y).unwrap(),
-            json!({"opus": "a", "sonnet": "b"})
-        );
-    }
 
     #[test]
     fn known_answer_wins() {
@@ -514,13 +450,25 @@ when = "linear"
     #[test]
     fn prompted_value_failing_validator_is_asked_again() {
         let c = cfg(HARNESS);
-        let mut p = Script {
-            answers: vec![json!("Bad_Name"), json!("good")],
-            asked: vec![],
-        };
+        let mut p = Script::new(vec![json!("Bad_Name"), json!("good")]);
         let out = collect(&c, &jinja(&c), &Answers::new(), true, &mut p).unwrap();
         assert_eq!(out.recorded["project_name"], json!("good"));
         assert_eq!(p.asked[..2], ["project_name", "project_name"]);
+    }
+
+    #[test]
+    fn retry_messages_go_through_the_prompter() {
+        let c = cfg(HARNESS);
+        let mut p = Script::new(vec![json!("Bad_Name"), json!("good")]);
+        collect(&c, &jinja(&c), &Answers::new(), true, &mut p).unwrap();
+        assert_eq!(p.reports, ["Name is kebab-case"]);
+
+        let c = cfg("[[questions]]\nname = \"n\"\ntype = \"int\"\n");
+        let mut p = Script::new(vec![json!("abc"), json!("3")]);
+        let out = collect(&c, &jinja(&c), &Answers::new(), true, &mut p).unwrap();
+        assert_eq!(out.recorded["n"], json!(3));
+        assert_eq!(p.reports.len(), 1, "{:?}", p.reports);
+        assert!(p.reports[0].contains("question `n`"), "{:?}", p.reports);
     }
 
     #[test]

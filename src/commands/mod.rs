@@ -9,9 +9,10 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
+use serde_json::Value;
 
-use crate::answers::{self, Collected, NoPrompt, Prompter, TerminalPrompter};
-use crate::config::{self, TemplateConfig};
+use crate::answers::{self, Collected, NoPrompt, Prompter};
+use crate::config::{self, Question, QuestionKind, TemplateConfig};
 use crate::jinja::Jinja;
 use crate::plan::{Action, Conflict, Plan};
 use crate::record::{Answers, toml_to_json};
@@ -59,6 +60,90 @@ pub(crate) fn prompter() -> Box<dyn Prompter> {
         Box::new(TerminalPrompter)
     } else {
         Box::new(NoPrompt)
+    }
+}
+
+/// Interactive prompter built on `inquire`; the terminal side of `answers`.
+pub struct TerminalPrompter;
+
+impl Prompter for TerminalPrompter {
+    fn report(&mut self, message: &str) {
+        eprintln!("{message}");
+    }
+
+    fn ask(&mut self, q: &Question, default: Option<&Value>) -> Result<Value> {
+        let message = q.name.as_str();
+        match q.kind {
+            QuestionKind::Bool => {
+                let mut p = inquire::Confirm::new(message);
+                if let Some(b) = default.and_then(Value::as_bool) {
+                    p = p.with_default(b);
+                }
+                if let Some(h) = &q.help {
+                    p = p.with_help_message(h);
+                }
+                Ok(Value::Bool(p.prompt()?))
+            }
+            QuestionKind::Str | QuestionKind::Int | QuestionKind::Yaml => {
+                let initial = default.map(|d| display_default(q.kind, d));
+                let mut p = inquire::Text::new(message);
+                if let Some(d) = &initial {
+                    p = p.with_initial_value(d);
+                }
+                if let Some(h) = &q.help {
+                    p = p.with_help_message(h);
+                }
+                let text = p.prompt()?;
+                match q.kind {
+                    QuestionKind::Str => Ok(Value::String(text)),
+                    _ => answers::coerce_str(q, &text),
+                }
+            }
+            QuestionKind::Choice => {
+                let labels: Vec<String> = q.choices.iter().map(|c| c.label.clone()).collect();
+                let mut p = inquire::Select::new(message, labels);
+                if let Some(i) = default.and_then(|d| answers::choice_index(q, d)) {
+                    p = p.with_starting_cursor(i);
+                }
+                if let Some(h) = &q.help {
+                    p = p.with_help_message(h);
+                }
+                let picked = p.raw_prompt()?;
+                answers::choice_value(q, picked.index)
+            }
+            QuestionKind::MultiChoice => {
+                let labels: Vec<String> = q.choices.iter().map(|c| c.label.clone()).collect();
+                let preset: Vec<usize> = default
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| answers::choice_index(q, v))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mut p = inquire::MultiSelect::new(message, labels).with_default(&preset);
+                if let Some(h) = &q.help {
+                    p = p.with_help_message(h);
+                }
+                let picked = p.raw_prompt()?;
+                let values = picked
+                    .into_iter()
+                    .map(|o| answers::choice_value(q, o.index))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Value::Array(values))
+            }
+        }
+    }
+}
+
+/// Text shown as the pre-filled value of a text prompt.
+fn display_default(kind: QuestionKind, value: &Value) -> String {
+    match (kind, value) {
+        // JSON is valid single-line YAML.
+        (QuestionKind::Yaml, v) => v.to_string(),
+        (_, Value::String(s)) => s.clone(),
+        (_, v) => v.to_string(),
     }
 }
 
@@ -176,5 +261,24 @@ pub(crate) fn dir_has_entries(dir: &Path) -> Result<bool> {
         Ok(mut it) => Ok(it.next().is_some()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(anyhow!("cannot read {}: {e}", dir.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn display_default_is_single_line_text() {
+        assert_eq!(display_default(QuestionKind::Str, &json!("demo")), "demo");
+        assert_eq!(display_default(QuestionKind::Int, &json!(42)), "42");
+        let y = display_default(QuestionKind::Yaml, &json!({"opus": "a", "sonnet": "b"}));
+        assert!(!y.contains('\n'), "{y}");
+        assert_eq!(
+            serde_norway::from_str::<Value>(&y).unwrap(),
+            json!({"opus": "a", "sonnet": "b"})
+        );
     }
 }
