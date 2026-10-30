@@ -60,7 +60,7 @@ pub enum RecordError {
         path: PathBuf,
         source: toml::de::Error,
     },
-    #[error("{}: unsupported schema {found} (this rootstock supports schema {SUPPORTED_SCHEMA})", path.display())]
+    #[error("{}: unsupported record schema {found} (this rootstock supports schema {SUPPORTED_SCHEMA})", path.display())]
     UnsupportedSchema { path: PathBuf, found: u32 },
     #[error("answer `{question}` cannot be stored in the record: {reason}")]
     Answer { question: String, reason: String },
@@ -169,17 +169,26 @@ pub fn read(project: &Path) -> Result<Record, RecordError> {
     parse(&path, &text)
 }
 
+/// Just the schema, read before the strict parse so that a future record is
+/// reported by its schema, not by a field this build does not know.
+#[derive(Deserialize)]
+struct SchemaOnly {
+    schema: u32,
+}
+
 fn parse(path: &Path, text: &str) -> Result<Record, RecordError> {
-    let raw: RawRecord = toml::from_str(text).map_err(|source| RecordError::Parse {
+    let parse_error = |source| RecordError::Parse {
         path: path.to_path_buf(),
         source,
-    })?;
-    if raw.schema != SUPPORTED_SCHEMA {
+    };
+    let head: SchemaOnly = toml::from_str(text).map_err(parse_error)?;
+    if head.schema != SUPPORTED_SCHEMA {
         return Err(RecordError::UnsupportedSchema {
             path: path.to_path_buf(),
-            found: raw.schema,
+            found: head.schema,
         });
     }
+    let raw: RawRecord = toml::from_str(text).map_err(parse_error)?;
     let answers = raw
         .answers
         .iter()
@@ -195,10 +204,9 @@ fn parse(path: &Path, text: &str) -> Result<Record, RecordError> {
     })
 }
 
-/// Writes the record into `project`: to a temporary file in the same
-/// directory, then renamed over `.rootstock.toml`.
-pub fn write(project: &Path, record: &Record) -> Result<(), RecordError> {
-    let path = project.join(RECORD_FILE);
+/// Serializes the record to the text of `.rootstock.toml`; fails on answers
+/// TOML cannot store. Callers build it before writing anything else.
+pub fn to_text(record: &Record) -> Result<String, RecordError> {
     let raw = RawRecord {
         schema: record.schema,
         source: record.source.clone(),
@@ -215,14 +223,39 @@ pub fn write(project: &Path, record: &Record) -> Result<(), RecordError> {
     if !text.ends_with('\n') {
         text.push('\n');
     }
+    Ok(text)
+}
+
+/// Writes record text into `project`: to a temporary file in the same
+/// directory, then renamed over `.rootstock.toml`.
+pub fn write_text(project: &Path, text: &str) -> Result<(), RecordError> {
+    let path = project.join(RECORD_FILE);
     let io = |source| RecordError::Write {
         path: path.clone(),
         source,
     };
     let mut tmp = tempfile::NamedTempFile::new_in(project).map_err(io)?;
     std::io::Write::write_all(&mut tmp, text.as_bytes()).map_err(io)?;
+    set_mode(tmp.path()).map_err(io)?;
     tmp.persist(&path).map_err(|e| io(e.error))?;
     Ok(())
+}
+
+/// The record is an ordinary project file: 0644, not tempfile's 0600.
+#[cfg(unix)]
+fn set_mode(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Serializes and writes the record: `to_text` then `write_text`.
+pub fn write(project: &Path, record: &Record) -> Result<(), RecordError> {
+    write_text(project, &to_text(record)?)
 }
 
 #[cfg(test)]
@@ -309,8 +342,55 @@ mod tests {
         )
         .unwrap();
         let err = read(dir.path()).unwrap_err().to_string();
-        assert!(err.contains("unsupported schema 2"), "{err}");
+        assert!(err.contains("unsupported record schema 2"), "{err}");
         assert!(err.contains(".rootstock.toml"), "{err}");
+    }
+
+    #[test]
+    fn to_text_then_write_text_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec = sample();
+        let text = to_text(&rec).unwrap();
+        write_text(dir.path(), &text).unwrap();
+        assert_eq!(read(dir.path()).unwrap(), rec);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(RECORD_FILE)).unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn to_text_rejects_null_without_writing() {
+        let mut rec = sample();
+        rec.answers.insert("nested".into(), json!({"a": null}));
+        let err = to_text(&rec).unwrap_err().to_string();
+        assert!(err.contains("nested"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn record_file_mode_is_0644() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), &sample()).unwrap();
+        let mode = std::fs::metadata(dir.path().join(RECORD_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o644);
+    }
+
+    #[test]
+    fn record_future_schema_message() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(RECORD_FILE),
+            "schema = 2\nsource = \"s\"\nversion = \"v1.0.0\"\ncommit = \"c\"\nfuture = 1\n",
+        )
+        .unwrap();
+        let err = read(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("unsupported record schema 2"), "{err}");
+        assert!(!err.contains("future"), "{err}");
     }
 
     #[cfg(unix)]

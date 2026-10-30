@@ -165,8 +165,11 @@ fn coerce_str(q: &Question, raw: &str) -> Result<Value> {
             .parse::<i64>()
             .map(Value::from)
             .map_err(|_| bad_value(q, raw, "expected an integer")),
-        QuestionKind::Yaml => serde_norway::from_str::<Value>(raw)
-            .map_err(|e| bad_value(q, raw, &format!("invalid YAML: {e}"))),
+        QuestionKind::Yaml => match serde_norway::from_str::<Value>(raw) {
+            Ok(Value::Null) => Err(empty(q)),
+            Ok(value) => Ok(value),
+            Err(e) => Err(bad_value(q, raw, &format!("invalid YAML: {e}"))),
+        },
         QuestionKind::Choice => match_choice(q, &Value::String(raw.to_string()))?
             .ok_or_else(|| bad_value(q, raw, "not one of the choices")),
         QuestionKind::MultiChoice => {
@@ -204,8 +207,16 @@ fn multi_choice(q: &Question, items: &[Value]) -> Result<Value> {
     Ok(Value::Array(out))
 }
 
+/// A null answer: the record (TOML) cannot store it, so it is refused while collecting.
+fn empty(q: &Question) -> anyhow::Error {
+    anyhow!("answer `{}` is empty", q.name)
+}
+
 /// Checks a JSON value (record, prompt or non-string default) against the question's type.
 fn coerce_json(q: &Question, value: &Value) -> Result<Value> {
+    if value.is_null() {
+        return Err(empty(q));
+    }
     if let Value::String(s) = value
         && q.kind != QuestionKind::Yaml
     {
@@ -580,6 +591,27 @@ choices = ["a", "b", "c"]
         ] {
             let err = parse_data(&c, &[pair.to_string()]).unwrap_err().to_string();
             assert!(err.contains(needle), "{pair}: {err}");
+        }
+    }
+
+    #[test]
+    fn null_answer_rejected() {
+        let c = cfg(
+            "[[questions]]\nname = \"extra\"\ntype = \"yaml\"\n[[questions]]\nname = \"s\"\ntype = \"str\"\ndefault = \"x\"\n",
+        );
+        for raw in ["extra=", "extra=~", "extra=null"] {
+            let err = parse_data(&c, &[raw.to_string()]).unwrap_err().to_string();
+            assert!(err.contains("answer `extra` is empty"), "{raw}: {err}");
+        }
+        for name in ["extra", "s"] {
+            let k = known(&[("extra", json!({})), (name, serde_json::Value::Null)]);
+            let err = collect(&c, &jinja(&c), &k, true, &mut NoPrompt)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains(&format!("answer `{name}` is empty")),
+                "{name}: {err}"
+            );
         }
     }
 

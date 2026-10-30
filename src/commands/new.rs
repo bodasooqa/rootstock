@@ -73,24 +73,24 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
     );
     check_trust(&cfg.hooks, Phase::New, opts.common.trust, interactive())?;
     project.finish()?;
+    // Every fallible step runs before the first write (design rule 11).
+    let record_text = record::to_text(&Record {
+        schema: 1,
+        source,
+        version: version.clone(),
+        commit: side.commit().to_string(),
+        answers: collected.recorded,
+        inventory: plan.inventory.clone(),
+    })?;
 
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     apply(&plan, dir)?;
     run_trusted(&cfg.hooks, Phase::New, dir)
         .context("files were written; hooks failed; the record was not written")?;
-    record::write(
-        dir,
-        &Record {
-            schema: 1,
-            source,
-            version: version.clone(),
-            commit: side.commit().to_string(),
-            answers: collected.recorded,
-            inventory: plan.inventory.clone(),
-        },
-    )?;
+    record::write_text(dir, &record_text)
+        .context("files were written; the record was not written")?;
     if opts.git {
-        init_git(dir)?;
+        init_git(dir).context("project created; git init failed")?;
     }
     eprintln!("created {} from {} {version}", dir.display(), opts.template);
     Ok(Report {

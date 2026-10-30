@@ -134,21 +134,21 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
         interactive(),
     )?;
     project.finish()?;
+    // Every fallible step runs before the first write (design rule 11).
+    let record_text = record::to_text(&Record {
+        schema: 1,
+        source: rec.source.clone(),
+        version: version.clone(),
+        commit: target_side.commit().to_string(),
+        answers: target_collected.recorded,
+        inventory: plan.inventory.clone(),
+    })?;
 
     apply(&plan, dir)?;
     run_trusted(&target_cfg.hooks, Phase::Update, dir)
         .context("files were written; hooks failed; the record was not updated")?;
-    record::write(
-        dir,
-        &Record {
-            schema: 1,
-            source: rec.source.clone(),
-            version: version.clone(),
-            commit: target_side.commit().to_string(),
-            answers: target_collected.recorded,
-            inventory: plan.inventory.clone(),
-        },
-    )?;
+    record::write_text(dir, &record_text)
+        .context("files were written; the record was not updated")?;
     eprintln!("updated to {version}");
     Ok(Report {
         version,

@@ -126,6 +126,69 @@ fn new_config_parse_error_printed_once() {
     assert_eq!(stderr.matches("root = [ \"tpl\"").count(), 1, "{stderr}");
 }
 
+/// A template with a yaml question, so that an answer TOML cannot store is possible.
+fn yaml_template() -> TemplateRepo {
+    let repo = TemplateRepo::new();
+    repo.file(
+        "rootstock.toml",
+        "schema = 1\nroot = \"tpl\"\n[[questions]]\nname = \"extra\"\ntype = \"yaml\"\ndefault = \"{}\"\n",
+    )
+    .file("tpl/a.txt", "a\n")
+    .tag("v1.0.0");
+    repo
+}
+
+#[test]
+fn new_unstorable_answer_writes_nothing() {
+    let repo = yaml_template();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("p");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--defaults", "--data", "extra={a: null}"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("extra"));
+    assert!(!dir.exists(), "nothing may be written");
+}
+
+#[test]
+fn update_unstorable_answer_writes_nothing() {
+    let repo = yaml_template();
+    let (_tmp, dir) = new_project(&repo);
+    repo.file("tpl/a.txt", "a2\n").tag("v1.1.0");
+    update(&dir)
+        .args(["--data", "extra={a: null}"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("extra"));
+    assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "a\n");
+}
+
+#[test]
+fn new_git_init_failure_says_project_created() {
+    let repo = TemplateRepo::new();
+    repo.file(
+        "rootstock.toml",
+        "schema = 1\nroot = \"tpl\"\n[[hooks]]\nrun = \"printf x > .git\"\n",
+    )
+    .file("tpl/a.txt", "a\n")
+    .tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("p");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--defaults", "--git", "--trust"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "project created; git init failed: ",
+        ));
+    assert!(dir.join(".rootstock.toml").exists());
+}
+
 #[test]
 fn new_refuses_existing_record() {
     let repo = template_v1();
