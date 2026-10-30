@@ -16,7 +16,7 @@ Merged into `docs/design.md`. Decided at the grooming that opens stage 3, on the
 
 **Changing an answer at the current version** *(my call)*. §Commands promises that `--data` "changes an answer". But step 2 stopped at "already at the target", so an answer could not be changed without a version step. Now step 2 stops there only when no answer changes. Otherwise the update renders the same version twice, with the old answers and with the new ones.
 
-**A Copier template that is itself a Copier project** *(my call)*. Some repositories hold both `copier.yml` and their own `.copier-answers.yml`. On those, `import-copier` refused, because it did not know which side to convert, and no flag chooses the side. Now it converts both sides in one run: each side passes its own checks, and nothing is written until both have.
+**A Copier template that is itself a Copier project** *(my call)*. Some repositories hold both `copier.yml` and their own `.copier-answers.yml`. On those, `import-copier` refused, because it did not know which side to convert, and no flag chooses the side. Now it converts both sides in one run: each side passes its own checks, and nothing is written until both have. Afterwards such a repository holds its own `.rootstock.toml` next to `rootstock.toml`. When the template root is the template directory, that file was a render error: rootstock reserves the record's name. Now it is skipped at the top of the template directory, like `rootstock.toml` (§Template format). A template file that renders to the record's name is still an error.
 
 **Confirmed as built, no text change** *(my call)*:
 - a `blocked` path, being out of the inventory, behaves afterwards as deleted by the project;
