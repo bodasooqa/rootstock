@@ -51,7 +51,8 @@ fn new_project(repo: &TemplateRepo) -> (TempDir, PathBuf) {
     rootstock()
         .args(["new", &repo.url()])
         .arg(&dir)
-        .args(["--defaults", "--version", "v1.0.0"])
+        // A repository from the start: where files have no mode bit it lives in the index.
+        .args(["--defaults", "--git", "--version", "v1.0.0"])
         .assert()
         .code(0);
     commit_project(&dir, "init");
@@ -312,7 +313,8 @@ fn new_at(repo: &TemplateRepo, version: &str) -> (TempDir, PathBuf) {
     rootstock()
         .args(["new", &repo.url()])
         .arg(&dir)
-        .args(["--defaults", "--version", version])
+        // A repository from the start: where files have no mode bit it lives in the index.
+        .args(["--defaults", "--git", "--version", version])
         .assert()
         .code(0);
     (tmp, dir)

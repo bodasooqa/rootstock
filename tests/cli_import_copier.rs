@@ -166,7 +166,6 @@ fn all_findings_are_listed_and_nothing_is_written() {
 #[test]
 fn symlink_under_the_root_is_a_failure() {
     let repo = small_template();
-    #[cfg(unix)]
     repo.symlink("template/link.txt", "hello.txt.jinja");
     import(repo.path())
         .code(1)

@@ -16,9 +16,9 @@ use crate::answers::{self, Collected, NoPrompt, Prompter};
 use crate::config::{self, CONFIG_FILE, Question, QuestionKind, TemplateConfig};
 use crate::copier::{self, COPIER_FILES, CopierError};
 use crate::jinja::Jinja;
-use crate::plan::{Action, Conflict, Plan};
+use crate::plan::Conflict;
 use crate::record::{Answers, toml_to_json};
-use crate::render::{self, Entry, RenderedTree};
+use crate::render::{self, RenderedTree};
 use crate::source::{Checkout, Source, git, run_git};
 
 /// What a finished command reports back to the CLI.
@@ -364,24 +364,6 @@ pub(crate) fn require_clean_tree(dir: &Path) -> Result<()> {
     ])?;
     if !status.is_empty() {
         bail!("working tree has uncommitted changes; commit or stash first");
-    }
-    Ok(())
-}
-
-/// Refuses, before anything is written, a plan this platform cannot apply:
-/// symlink writes where symlinks are not supported.
-pub(crate) fn refuse_unsupported(plan: &Plan) -> Result<()> {
-    let has_symlink = plan.actions.iter().any(|a| {
-        matches!(
-            a,
-            Action::Write {
-                entry: Entry::Symlink { .. },
-                ..
-            }
-        )
-    });
-    if has_symlink && !cfg!(unix) {
-        return Err(anyhow!("symlinks are not supported on this platform"));
     }
     Ok(())
 }

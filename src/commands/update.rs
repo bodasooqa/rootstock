@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{
     CommonOptions, HookFailed, Report, Side, check_version, index_failure, interactive, load_data,
-    read_data_file, refuse_unsupported, require_clean_tree, target_label,
+    read_data_file, require_clean_tree, target_label,
 };
 use crate::answers::NoPrompt;
 use crate::apply::{
@@ -134,7 +134,6 @@ pub fn run(dir: &Path, opts: &UpdateOptions) -> Result<Report> {
     );
     project.finish()?;
     merge.finish()?;
-    refuse_unsupported(&plan)?;
     // Every fallible step runs before the first write (design rule 11).
     let record_text = record::to_text(&Record {
         schema: 1,

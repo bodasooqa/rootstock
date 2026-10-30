@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{
     CommonOptions, HookFailed, Report, Side, check_version, dir_has_entries, index_failure,
-    interactive, load_data, prompter, refuse_unsupported, target_label,
+    interactive, load_data, prompter, target_label,
 };
 use crate::apply::{DiskProject, GitMerge, apply, check_symlinks_allowed, set_index_modes};
 use crate::config::Phase;
@@ -81,7 +81,6 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
     );
     project.finish()?;
     merge.finish()?;
-    refuse_unsupported(&plan)?;
     // Every fallible step runs before the first write (design rule 11).
     let record_text = record::to_text(&Record {
         schema: 1,
