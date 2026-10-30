@@ -38,7 +38,7 @@
 - **Зависимость:** `minijinja-contrib` с возможностью `pycompat`, той же версии, что `minijinja`. Список библиотек в `CLAUDE.md` дополняется.
 - **Контракты** из таблицы «Источники правды» не меняются. `Cargo.lock` обновляет cargo.
 - **Документация:** раздел формата шаблона в `README.md`.
-- **Тесты:** unit-тесты `src/jinja.rs`, сквозной рендер фрагментов harness.
+- **Тесты:** unit-тесты `src/jinja.rs`, `src/answers.rs`, `src/render.rs`; сквозной тест ошибки `append` в `tests/cli_new_update.rs`; живой рендер harness v0.3.3 и v0.4.5 (задача 4.2).
 
 ## Не входит
 
