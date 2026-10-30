@@ -49,16 +49,16 @@ impl fmt::Display for Finding {
 /// Why a conversion did not produce a result.
 #[derive(Debug, thiserror::Error)]
 pub enum CopierError {
-    #[error("copier.yml is not a single valid YAML document: {0}")]
+    #[error("not a single valid YAML document: {0}")]
     Yaml(#[from] serde_norway::Error),
-    #[error("copier.yml must be a mapping at the top level")]
+    #[error("the top level must be a mapping")]
     NotMapping,
     #[error("cannot read {path}: {source}")]
     Io {
         path: String,
         source: std::io::Error,
     },
-    #[error("copier.yml uses features rootstock cannot convert")]
+    #[error("the template uses features rootstock cannot convert")]
     Unsupported(Vec<Finding>),
     #[error("internal converter error: {0}")]
     Internal(String),
@@ -106,9 +106,22 @@ pub fn convert(yaml: &str, template_dir: &Path) -> Result<Converted, CopierError
     let mut table = toml::Table::new();
     table.insert("schema".into(), toml::Value::Integer(1));
 
-    let root = cx.template_string("_subdirectory", sections.subdirectory, false);
-    let has_root = root.is_some();
-    if let Some(root) = &root {
+    let before = cx.findings.len();
+    let raw_root = cx.template_string("_subdirectory", sections.subdirectory, false);
+    let mut root_valid = cx.findings.len() == before;
+    let root = match raw_root {
+        None => ".".to_string(),
+        Some(raw) => match normalize_root(&raw) {
+            Some(root) => root,
+            None => {
+                cx.find("`_subdirectory`: must be a relative path inside the template");
+                root_valid = false;
+                ".".to_string()
+            }
+        },
+    };
+    let top_level = root == ".";
+    if !top_level {
         table.insert("root".into(), toml::Value::String(root.clone()));
     }
     let suffix = cx
@@ -137,7 +150,7 @@ pub fn convert(yaml: &str, template_dir: &Path) -> Result<Converted, CopierError
                 }
             }
         }
-        None if !has_root => exclude.extend(DEFAULT_EXCLUDE.iter().map(|s| s.to_string())),
+        None if top_level => exclude.extend(DEFAULT_EXCLUDE.iter().map(|s| s.to_string())),
         None => {}
     }
     let mut files = toml::Table::new();
@@ -160,12 +173,9 @@ pub fn convert(yaml: &str, template_dir: &Path) -> Result<Converted, CopierError
     }
 
     let mut remove = Vec::new();
-    cx.scan_tree(
-        template_dir,
-        root.as_deref().unwrap_or("."),
-        &suffix,
-        &mut remove,
-    )?;
+    if root_valid && cx.check_root(template_dir, &root)? {
+        cx.scan_tree(template_dir, &root, &suffix, &mut remove)?;
+    }
 
     if !cx.findings.is_empty() {
         return Err(CopierError::Unsupported(cx.findings));
@@ -199,6 +209,28 @@ fn strings(items: &[String]) -> toml::Value {
     )
 }
 
+/// Normalizes `_subdirectory` the way Copier compares it with `Path()`: no `.`
+/// components, no trailing `/`, empty is `.`. `None` when it is not a relative
+/// path inside the template (same rules as `root` in `config`, plus `:`).
+fn normalize_root(raw: &str) -> Option<String> {
+    if raw.contains(['\\', '\0', ':']) || raw.starts_with('/') {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for part in raw.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => return None,
+            other => parts.push(other),
+        }
+    }
+    Some(if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    })
+}
+
 fn has_jinja(text: &str) -> bool {
     text.contains("{{") || text.contains("{%") || text.contains("{#")
 }
@@ -212,6 +244,7 @@ struct Patterns {
     update_only: Regex,
     update_only_and: Regex,
     task_when: Regex,
+    loose_condition: Regex,
     when_expr: Regex,
 }
 
@@ -223,6 +256,7 @@ impl Patterns {
             var: regex(r"\b(?:_copier_\w*|_folder_name|_external_data)\b")?,
             update_only: regex(&format!(r"(?s){open}\s*-?%\}}(.*){close}"))?,
             update_only_and: regex(&format!(r"(?s){open}\s+and\s+(.+?)\s*-?%\}}(.*){close}"))?,
+            loose_condition: regex(r"\b(?:or|if|else)\b")?,
             task_when: regex(
                 r#"^\{\{-?\s*_copier_operation\s*==\s*(?:'(copy|update)'|"(copy|update)")\s*-?\}\}$"#,
             )?,
@@ -358,10 +392,14 @@ impl Ctx {
 
     /// For an update-only exclude entry, the `_skip_if_exists` entry that makes it redundant.
     fn update_only(&self, entry: &str) -> Option<String> {
+        let has_block = |p: &str| p.contains("{%") || p.contains("%}");
         if let Some(c) = self.pat.update_only.captures(entry) {
-            return Some(c[1].trim().to_string());
+            return (!has_block(&c[1])).then(|| c[1].trim().to_string());
         }
         let c = self.pat.update_only_and.captures(entry)?;
+        if has_block(&c[2]) || self.pat.loose_condition.is_match(&c[1]) {
+            return None;
+        }
         Some(format!("{{% if {} %}}{}{{% endif %}}", c[1].trim(), &c[2]))
     }
 
@@ -635,6 +673,51 @@ impl Ctx {
         }
     }
 
+    /// Checks that the template root is a real directory inside the template:
+    /// every prefix is looked at without following links. Returns false (with a
+    /// finding) when the tree must not be walked.
+    fn check_root(&mut self, template_dir: &Path, root: &str) -> Result<bool, CopierError> {
+        if root == "." {
+            return Ok(true);
+        }
+        let mut prefix = String::new();
+        for part in root.split('/') {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            let path = template_dir.join(&prefix);
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(meta) => meta,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    self.find(format!(
+                        "`_subdirectory`: template root does not exist ({prefix})"
+                    ));
+                    return Ok(false);
+                }
+                Err(source) => {
+                    return Err(CopierError::Io {
+                        path: path.display().to_string(),
+                        source,
+                    });
+                }
+            };
+            if meta.file_type().is_symlink() {
+                self.find(format!(
+                    "`_subdirectory`: template root goes through a symbolic link ({prefix})"
+                ));
+                return Ok(false);
+            }
+            if !meta.is_dir() {
+                self.find(format!(
+                    "`_subdirectory`: template root is not a directory ({prefix})"
+                ));
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Walks the template root: finds the answers-file template and Copier variables.
     fn scan_tree(
         &mut self,
@@ -648,16 +731,6 @@ impl Ctx {
         } else {
             template_dir.join(root)
         };
-        let Ok(meta) = std::fs::symlink_metadata(&base) else {
-            return Ok(());
-        };
-        if meta.file_type().is_symlink() {
-            self.find(format!("`{root}`: the template root is a symbolic link"));
-            return Ok(());
-        }
-        if !meta.is_dir() {
-            return Ok(());
-        }
         let answers = regex(&format!(
             r"^\{{\{{\s*_copier_conf\.answers_file\s*\}}\}}{}$",
             regex::escape(suffix)
@@ -691,6 +764,15 @@ impl Ctx {
         names.sort();
         for os_name in names {
             let name = os_name.to_string_lossy().into_owned();
+            if os_name.to_str().is_none() {
+                let rel = if rel_dir.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{rel_dir}/{name}")
+                };
+                self.find(format!("`{rel}`: file name is not valid UTF-8"));
+                continue;
+            }
             if name == ".git" {
                 continue;
             }
@@ -716,6 +798,12 @@ impl Ctx {
                 remove.push(rel);
                 continue;
             }
+            if !file_type.is_dir() && !file_type.is_file() {
+                self.find(format!(
+                    "{place}: not a regular file, directory or symbolic link"
+                ));
+                continue;
+            }
             self.check_vars(&place, &name);
             if file_type.is_dir() {
                 self.walk(&path, &rel, false, root_is_template_dir, answers, remove)?;
@@ -738,6 +826,9 @@ mod tests {
 
     fn ok(yaml: &str) -> Converted {
         let dir = TempDir::new().unwrap();
+        for root in ["template", "t"] {
+            std::fs::create_dir(dir.path().join(root)).unwrap();
+        }
         convert(yaml, dir.path()).unwrap()
     }
 
@@ -1149,6 +1240,138 @@ c:
     fn git_directory_is_not_walked() {
         let dir = tree(&[("template/.git/config", "_copier_conf")]);
         assert!(convert(TREE_YAML, dir.path()).is_ok());
+    }
+
+    #[test]
+    fn bad_roots_are_findings() {
+        for root in ["../outside", "/abs", "a/../../b", "a:b", "a\\b"] {
+            let dir = tree(&[("keep.txt", "x")]);
+            let f = found_in(&format!("_subdirectory: '{root}'\n"), dir.path());
+            has(&f, "must be a relative path inside the template");
+        }
+    }
+
+    #[test]
+    fn missing_and_file_roots_are_findings() {
+        let dir = tree(&[("file", "x")]);
+        let f = found_in("_subdirectory: nope\n", dir.path());
+        has(&f, "template root does not exist");
+        let f = found_in("_subdirectory: file\n", dir.path());
+        has(&f, "template root is not a directory");
+        let f = found_in("_subdirectory: file/inner\n", dir.path());
+        has(&f, "template root is not a directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_through_a_symlink_is_a_finding_and_nothing_is_scanned() {
+        let outside = tree(&[("b/{{ _copier_conf.answers_file }}.jinja", "x")]);
+        let dir = TempDir::new().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("a")).unwrap();
+        let f = found_in("_subdirectory: a/b\n", dir.path());
+        has(&f, "goes through a symbolic link");
+        let f = found_in("_subdirectory: a\n", dir.path());
+        has(&f, "goes through a symbolic link");
+    }
+
+    #[test]
+    fn root_is_normalized() {
+        for sub in ["\"\"", ".", "./", "./."] {
+            let dir = tree(&[
+                ("copier.yml", "{{ _copier_operation }}"),
+                ("{{ _copier_conf.answers_file }}.jinja", "x"),
+            ]);
+            let c = convert(&format!("_subdirectory: {sub}\n"), dir.path()).unwrap();
+            assert_eq!(c.config.root, ".", "{sub}");
+            assert_eq!(c.config.files.exclude, DEFAULT_EXCLUDE, "{sub}");
+            assert_eq!(c.remove, ["{{ _copier_conf.answers_file }}.jinja"], "{sub}");
+        }
+        let dir = tree(&[("template/{{ _copier_conf.answers_file }}.jinja", "x")]);
+        let c = convert("_subdirectory: ./template/\n", dir.path()).unwrap();
+        assert_eq!(c.config.root, "template");
+        assert_eq!(c.remove, ["template/{{ _copier_conf.answers_file }}.jinja"]);
+    }
+
+    #[test]
+    fn answers_file_follows_a_custom_suffix() {
+        let dir = tree(&[
+            ("template/{{ _copier_conf.answers_file }}.tmpl", "x"),
+            ("template/{{ _copier_conf.answers_file }}.jinja", "x"),
+        ]);
+        let f = found_in(
+            "_subdirectory: template\n_templates_suffix: .tmpl\n",
+            dir.path(),
+        );
+        // `.jinja` is an ordinary file for this suffix, and it mentions a variable.
+        has(&f, "template/{{ _copier_conf.answers_file }}.jinja");
+        assert!(!f.iter().any(|l| l.contains(".tmpl")), "{f:#?}");
+    }
+
+    #[test]
+    fn folder_name_and_external_data_are_findings() {
+        let f = found("q:\n  type: str\n  default: \"{{ _folder_name }}\"\n");
+        has(&f, "_folder_name");
+        let f = found("q:\n  type: str\n  help: \"{{ _external_data.x }}\"\n");
+        has(&f, "_external_data");
+    }
+
+    #[test]
+    fn update_only_forms_with_extra_logic_are_not_recognized() {
+        let f = found(
+            r#"
+_exclude:
+  - "{% if _copier_operation == 'update' and a or b %}p{% endif %}"
+_skip_if_exists:
+  - "{% if a or b %}p{% endif %}"
+"#,
+        );
+        has(&f, "_copier_operation");
+        let f = found(
+            r#"
+_exclude:
+  - "{% if _copier_operation == 'update' %}R{% else %}S{% endif %}"
+_skip_if_exists:
+  - "R{% else %}S"
+"#,
+        );
+        has(&f, "_copier_operation");
+    }
+
+    #[test]
+    fn jinja_comment_in_a_command_is_a_finding() {
+        let f = found("_tasks:\n  - \"echo {# x #}\"\n");
+        has(&f, "Jinja");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_is_a_finding() {
+        let dir = tree(&[("template/a.txt", "x")]);
+        let fifo = dir.path().join("template/pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            eprintln!("skipped: mkfifo is not available");
+            return;
+        }
+        let f = found_in(TREE_YAML, dir.path());
+        has(&f, "template/pipe");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_name_is_a_finding() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tree(&[("template/a.txt", "x")]);
+        let name = std::ffi::OsStr::from_bytes(b"bad-\xff-name");
+        if std::fs::write(dir.path().join("template").join(name), "x").is_err() {
+            eprintln!("skipped: the file system rejects non-UTF-8 names");
+            return;
+        }
+        let f = found_in(TREE_YAML, dir.path());
+        has(&f, "not valid UTF-8");
     }
 
     #[test]
