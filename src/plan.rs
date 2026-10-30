@@ -13,7 +13,13 @@ pub const SIDE_FILE_SUFFIX: &str = ".rootstock-new";
 
 /// Read access to the project's current files; `None` means the path is absent.
 pub trait ProjectView {
+    /// The file or symlink at `path`; `None` when nothing is there, when a
+    /// directory is there, or when a parent component is not a directory.
     fn get(&self, path: &str) -> Option<Entry>;
+
+    /// Everything below directory `dir` that is not a directory (files,
+    /// symlinks), recursively, as full paths; `None` when `dir` is not a directory.
+    fn list_files(&self, dir: &str) -> Option<Vec<RelPath>>;
 }
 
 /// One change to apply to the project.
@@ -40,6 +46,8 @@ pub enum ConflictKind {
     RemovedByTemplate,
     DeletedByProject,
     AddedByBoth,
+    /// The template's path is occupied by something the project keeps.
+    Blocked,
 }
 
 impl ConflictKind {
@@ -52,6 +60,7 @@ impl ConflictKind {
             ConflictKind::RemovedByTemplate => "removed-by-template",
             ConflictKind::DeletedByProject => "deleted-by-project",
             ConflictKind::AddedByBoth => "added-by-both",
+            ConflictKind::Blocked => "blocked",
         }
     }
 }
@@ -309,6 +318,89 @@ fn plan_rename(
     }
 }
 
+/// Memoized project lookups for the block check.
+struct Occupancy<'a> {
+    project: &'a dyn ProjectView,
+    kept: BTreeMap<String, bool>,
+    listed: BTreeMap<String, Option<Vec<RelPath>>>,
+}
+
+impl Occupancy<'_> {
+    /// True when the project has a file or symlink at `path`.
+    fn has_entry(&mut self, path: &str) -> bool {
+        if let Some(found) = self.kept.get(path) {
+            return *found;
+        }
+        let found = self.project.get(path).is_some();
+        self.kept.insert(path.to_string(), found);
+        found
+    }
+
+    fn files_below(&mut self, dir: &str) -> Option<&Vec<RelPath>> {
+        if !self.listed.contains_key(dir) {
+            let files = self.project.list_files(dir);
+            self.listed.insert(dir.to_string(), files);
+        }
+        self.listed.get(dir).and_then(Option::as_ref)
+    }
+
+    /// True when writing `path` would replace something the plan does not delete:
+    /// a file at an ancestor, or files inside a directory at `path`.
+    fn blocks(&mut self, path: &str, deleted: &BTreeSet<&str>) -> bool {
+        let mut ancestor = String::new();
+        let mut segments: Vec<&str> = path.split('/').collect();
+        segments.pop();
+        for segment in segments {
+            if !ancestor.is_empty() {
+                ancestor.push('/');
+            }
+            ancestor.push_str(segment);
+            if !deleted.contains(ancestor.as_str()) && self.has_entry(&ancestor) {
+                return true;
+            }
+        }
+        self.files_below(path)
+            .is_some_and(|files| files.iter().any(|f| !deleted.contains(f.as_str())))
+    }
+}
+
+/// Drops every write whose path is occupied by something the project keeps,
+/// recording a `Blocked` conflict instead. A blocked rename keeps its old name.
+fn drop_blocked(
+    out: &mut Out,
+    inventory: &mut Inventory,
+    project: &dyn ProjectView,
+    pairs: &BTreeMap<&RelPath, &RelPath>,
+) {
+    let mut occupancy = Occupancy {
+        project,
+        kept: BTreeMap::new(),
+        listed: BTreeMap::new(),
+    };
+    // Dropping a rename's delete can block another write, so repeat until stable.
+    loop {
+        let deleted: BTreeSet<&str> = out
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Delete { path } => Some(path.as_str()),
+                Action::Write { .. } => None,
+            })
+            .collect();
+        let blocked = out.actions.iter().position(
+            |a| matches!(a, Action::Write { path, .. } if occupancy.blocks(path, &deleted)),
+        );
+        let Some(index) = blocked else { break };
+        let path = out.actions.remove(index).path().to_string();
+        inventory.remove(&path);
+        if let Some(old) = pairs.get(&path) {
+            out.actions
+                .retain(|a| !matches!(a, Action::Delete { path: p } if p == *old));
+        }
+        out.conflict(&path, ConflictKind::Blocked);
+    }
+}
+
 /// Orders actions: every delete by path, then every write by path.
 fn action_order(a: &Action, b: &Action) -> std::cmp::Ordering {
     let rank = |a: &Action| match a {
@@ -417,6 +509,7 @@ pub fn plan_update(
         }
     }
 
+    drop_blocked(&mut out, &mut new_inventory, project, &pairs);
     out.actions.sort_by(action_order);
     out.conflicts.sort_by(|a, b| a.path.cmp(&b.path));
     Plan {
@@ -438,6 +531,16 @@ mod tests {
     impl ProjectView for BTreeMap<String, Entry> {
         fn get(&self, path: &str) -> Option<Entry> {
             BTreeMap::get(self, path).cloned()
+        }
+
+        fn list_files(&self, dir: &str) -> Option<Vec<RelPath>> {
+            let prefix = format!("{dir}/");
+            let files: Vec<RelPath> = self
+                .keys()
+                .filter(|k| k.starts_with(&prefix))
+                .cloned()
+                .collect();
+            (!files.is_empty()).then_some(files)
         }
     }
 
@@ -872,6 +975,104 @@ mod tests {
                 .find(|(k, _)| k.to_lowercase() == want)
                 .map(|(_, v)| v.clone())
         }
+
+        fn list_files(&self, dir: &str) -> Option<Vec<RelPath>> {
+            let prefix = format!("{}/", dir.to_lowercase());
+            let files: Vec<RelPath> = self
+                .0
+                .keys()
+                .filter(|k| k.to_lowercase().starts_with(&prefix))
+                .cloned()
+                .collect();
+            (!files.is_empty()).then_some(files)
+        }
+    }
+
+    #[test]
+    fn file_becomes_dir_unedited() {
+        let b = tree(&[("docs", file("d\n"), M)]);
+        let t = tree(&[("docs/x", file("x\n"), M)]);
+        let plan = run(
+            &b,
+            &t,
+            &proj(&[("docs", file("d\n"))]),
+            &inv(&[("docs", M)]),
+        );
+        assert_eq!(
+            plan.actions,
+            vec![delete("docs"), write("docs/x", file("x\n"))]
+        );
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(plan.inventory, inv(&[("docs/x", M)]));
+    }
+
+    #[test]
+    fn file_becomes_dir_edited_blocks() {
+        let b = tree(&[("docs", file("d\n"), M)]);
+        let t = tree(&[("docs/x", file("x\n"), M), ("docs/y/z", file("z\n"), M)]);
+        let plan = run(
+            &b,
+            &t,
+            &proj(&[("docs", file("mine\n"))]),
+            &inv(&[("docs", M)]),
+        );
+        assert!(plan.actions.is_empty());
+        assert_eq!(
+            plan.conflicts,
+            vec![
+                conflict("docs", ConflictKind::RemovedByTemplate),
+                conflict("docs/x", ConflictKind::Blocked),
+                conflict("docs/y/z", ConflictKind::Blocked),
+            ]
+        );
+        assert!(plan.inventory.is_empty());
+    }
+
+    #[test]
+    fn dir_becomes_file_unedited() {
+        let b = tree(&[("docs/x", file("x\n"), M)]);
+        let t = tree(&[("docs", file("d\n"), M)]);
+        let plan = run(
+            &b,
+            &t,
+            &proj(&[("docs/x", file("x\n"))]),
+            &inv(&[("docs/x", M)]),
+        );
+        assert_eq!(
+            plan.actions,
+            vec![delete("docs/x"), write("docs", file("d\n"))]
+        );
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(plan.inventory, inv(&[("docs", M)]));
+    }
+
+    #[test]
+    fn dir_becomes_file_with_user_file_blocks() {
+        let b = tree(&[("docs/x", file("x\n"), M)]);
+        let t = tree(&[("docs", file("d\n"), M)]);
+        let p = proj(&[("docs/x", file("x\n")), ("docs/mine", file("m\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("docs/x", M)]));
+        assert_eq!(plan.actions, vec![delete("docs/x")]);
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("docs", ConflictKind::Blocked)]
+        );
+        assert!(plan.inventory.is_empty());
+    }
+
+    #[test]
+    fn blocked_rename_keeps_old_name() {
+        // A file the project keeps sits where the new name's directory would be.
+        let b = tree(&[("d/Readme.md", file("x\n"), M)]);
+        let t = tree(&[("D/README.md", file("y\n"), M)]);
+        let p = proj(&[("d/Readme.md", file("x\n")), ("D", file("mine\n"))]);
+        let plan = run(&b, &t, &p, &inv(&[("d/Readme.md", M)]));
+        assert!(plan.actions.is_empty());
+        assert_eq!(
+            plan.conflicts,
+            vec![conflict("D/README.md", ConflictKind::Blocked)]
+        );
+        assert!(plan.inventory.is_empty());
     }
 
     fn delete(path: &str) -> Action {

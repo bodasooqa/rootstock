@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::path::Path;
 
+use crate::RelPath;
 use crate::plan::{Action, Plan, ProjectView};
 use crate::render::Entry;
 
@@ -34,12 +35,19 @@ impl<'a> DiskProject<'a> {
         self.errors.borrow_mut().push(message);
     }
 
+    /// Runs the parent guard for `path`: `Ok(false)` when a parent is missing or
+    /// is not a directory (the path is absent), an error for a symlinked parent.
+    fn parents_present(&self, path: &str) -> Result<bool, String> {
+        match walk_parents(self.root, path, Walk::Read, "path goes through symlink") {
+            Ok(found) => Ok(found.is_some()),
+            Err(e) => Err(format!("`{path}`: {e}")),
+        }
+    }
+
     fn read(&self, path: &str) -> Result<Option<Entry>, String> {
         let full = self.root.join(path);
-        match existing_parents(self.root, path, "path goes through symlink") {
-            Ok(Some(())) => {}
-            Ok(None) => return Ok(None),
-            Err(e) => return Err(format!("`{path}`: {e}")),
+        if !self.parents_present(path)? {
+            return Ok(None);
         }
         let meta = match std::fs::symlink_metadata(&full) {
             Ok(meta) => meta,
@@ -47,6 +55,10 @@ impl<'a> DiskProject<'a> {
             Err(e) => return Err(format!("`{path}`: {e}")),
         };
         let file_type = meta.file_type();
+        if file_type.is_dir() {
+            // A directory where the template has a file: the plan sees it through `list_files`.
+            return Ok(None);
+        }
         if file_type.is_symlink() {
             let target = std::fs::read_link(&full).map_err(|e| format!("`{path}`: {e}"))?;
             let target = target
@@ -56,15 +68,50 @@ impl<'a> DiskProject<'a> {
             return Ok(Some(Entry::Symlink { target }));
         }
         if !file_type.is_file() {
-            return Err(format!(
-                "`{path}` is a directory or special file, expected a file"
-            ));
+            return Err(format!("`{path}` is a special file, expected a file"));
         }
         let bytes = std::fs::read(&full).map_err(|e| format!("`{path}`: {e}"))?;
         Ok(Some(Entry::File {
             bytes,
             executable: is_executable(&meta),
         }))
+    }
+
+    fn list(&self, dir: &str) -> Result<Option<Vec<RelPath>>, String> {
+        if !self.parents_present(dir)? {
+            return Ok(None);
+        }
+        match std::fs::symlink_metadata(self.root.join(dir)) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("`{dir}`: {e}")),
+        }
+        let mut out = Vec::new();
+        let mut pending = vec![dir.to_string()];
+        while let Some(current) = pending.pop() {
+            let entries = std::fs::read_dir(self.root.join(&current))
+                .map_err(|e| format!("`{current}`: {e}"))?;
+            for item in entries {
+                let item = item.map_err(|e| format!("`{current}`: {e}"))?;
+                let name = item
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| format!("`{current}`: a file name is not valid UTF-8"))?;
+                let rel = format!("{current}/{name}");
+                if rel == ".git" {
+                    continue;
+                }
+                // `file_type` does not follow symlinks.
+                let file_type = item.file_type().map_err(|e| format!("`{rel}`: {e}"))?;
+                if file_type.is_dir() {
+                    pending.push(rel);
+                } else {
+                    out.push(rel);
+                }
+            }
+        }
+        Ok(Some(out))
     }
 }
 
@@ -96,6 +143,23 @@ impl ProjectView for DiskProject<'_> {
             }
         }
     }
+
+    fn list_files(&self, dir: &str) -> Option<Vec<RelPath>> {
+        if let Err(e) = check_path(dir) {
+            self.record(e.to_string());
+            return None;
+        }
+        if dir.split('/').next() == Some(".git") {
+            return None;
+        }
+        match self.list(dir) {
+            Ok(files) => files,
+            Err(message) => {
+                self.record(message);
+                None
+            }
+        }
+    }
 }
 
 /// Applies the plan's actions in order under `root`.
@@ -120,6 +184,8 @@ fn apply_one(action: &Action, root: &Path) -> anyhow::Result<()> {
             let parent = create_parents(root, path)?;
             if let Ok(meta) = std::fs::symlink_metadata(&full)
                 && meta.is_dir()
+                // Deletes run first: a directory they emptied gives way to the file.
+                && std::fs::remove_dir(&full).is_err()
             {
                 anyhow::bail!("a directory exists at this path");
             }
@@ -148,13 +214,23 @@ fn apply_one(action: &Action, root: &Path) -> anyhow::Result<()> {
     }
 }
 
-/// Walks the parent components of `path` below `root`, refusing symlinks and
-/// non-directories. Missing components are created one at a time when `create`
-/// is set; otherwise a missing component yields `None`.
+/// How `walk_parents` treats a missing or non-directory component.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Walk {
+    /// Create missing components; a non-directory is an error.
+    Create,
+    /// A missing component yields `None`; a non-directory is an error.
+    Existing,
+    /// A missing or non-directory component yields `None`.
+    Read,
+}
+
+/// Walks the parent components of `path` below `root`, refusing symlinks;
+/// missing and non-directory components are handled per `mode`.
 fn walk_parents(
     root: &Path,
     path: &str,
-    create: bool,
+    mode: Walk,
     symlink_message: &str,
 ) -> anyhow::Result<Option<std::path::PathBuf>> {
     let mut current = root.to_path_buf();
@@ -167,11 +243,14 @@ fn walk_parents(
                 anyhow::bail!("{symlink_message} `{}`", current.display())
             }
             Ok(meta) if !meta.is_dir() => {
+                if mode == Walk::Read {
+                    return Ok(None);
+                }
                 anyhow::bail!("`{}` is not a directory", current.display())
             }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if !create {
+                if mode != Walk::Create {
                     return Ok(None);
                 }
                 std::fs::create_dir(&current)?;
@@ -188,7 +267,12 @@ fn create_parents(root: &Path, path: &str) -> anyhow::Result<std::path::PathBuf>
     let mut components: Vec<&str> = path.split('/').collect();
     components.pop();
     parent.extend(components);
-    walk_parents(root, path, true, "refusing to write through symlink")?;
+    walk_parents(
+        root,
+        path,
+        Walk::Create,
+        "refusing to write through symlink",
+    )?;
     Ok(parent)
 }
 
@@ -198,7 +282,7 @@ pub(crate) fn existing_parents(
     path: &str,
     symlink_message: &str,
 ) -> anyhow::Result<Option<()>> {
-    Ok(walk_parents(root, path, false, symlink_message)?.map(|_| ()))
+    Ok(walk_parents(root, path, Walk::Existing, symlink_message)?.map(|_| ()))
 }
 
 /// Rejects paths that could leave the root: empty, absolute, or with `""`, `.`, `..` segments.
@@ -377,14 +461,70 @@ mod tests {
     }
 
     #[test]
-    fn disk_view_records_directory_error() {
+    fn disk_view_directory_is_absent() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let view = DiskProject::new(dir.path());
         assert_eq!(view.get("sub"), None);
+        view.finish().unwrap();
+    }
+
+    #[test]
+    fn disk_view_file_parent_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f"), "x").unwrap();
+        let view = DiskProject::new(dir.path());
+        assert_eq!(view.get("f/x"), None);
+        assert_eq!(view.get("f/x/y"), None);
+        view.finish().unwrap();
+    }
+
+    #[test]
+    fn disk_view_lists_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("d/e/empty")).unwrap();
+        std::fs::write(root.join("d/a"), "1").unwrap();
+        std::fs::write(root.join("d/e/b"), "2").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("a", root.join("d/l")).unwrap();
+        let view = DiskProject::new(root);
+        let mut files = view.list_files("d").unwrap();
+        files.sort();
+        let mut want = vec!["d/a", "d/e/b"];
+        if cfg!(unix) {
+            want.push("d/l");
+        }
+        assert_eq!(files, want);
+        assert_eq!(view.list_files("d/e/empty"), Some(vec![]));
+        assert_eq!(view.list_files("d/a"), None);
+        assert_eq!(view.list_files("missing"), None);
+        assert_eq!(view.list_files("d/a/x"), None);
+        view.finish().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_view_list_files_follows_no_links() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("f"), "secret").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("s")).unwrap();
+        let view = DiskProject::new(dir.path());
+        assert_eq!(view.list_files("s"), None);
+        view.finish().unwrap();
+        let view = DiskProject::new(dir.path());
+        assert_eq!(view.list_files("s/x"), None);
         let err = view.finish().unwrap_err().to_string();
-        assert!(err.contains("sub"), "{err}");
-        assert!(err.contains("directory or special file"), "{err}");
+        assert!(err.contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn apply_replaces_emptied_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("docs")).unwrap();
+        apply(&plan(vec![write_file("docs", b"d", false)]), dir.path()).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("docs")).unwrap(), b"d");
     }
 
     #[cfg(unix)]
@@ -510,6 +650,7 @@ mod tests {
     fn apply_failure_reports_progress() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("dir")).unwrap();
+        std::fs::write(dir.path().join("dir/kept"), "k").unwrap();
         let p = plan(vec![
             write_file("ok", b"1", false),
             write_file("dir", b"2", false),
