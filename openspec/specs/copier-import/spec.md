@@ -11,7 +11,7 @@
 - есть `copier.yml` или `copier.yaml` — сторона шаблона;
 - их нет, но есть `.copier-answers.yml` — сторона проекта;
 - нет ни того, ни другого — код 1, ничего не записано;
-- есть и файл шаблона, и `.copier-answers.yml` — код 1, ничего не записано.
+- есть и файл шаблона, и `.copier-answers.yml` — обе стороны за один запуск (требование «Шаблон, который сам проект Copier'а»).
 
 Команда на стороне шаблона MUST завершаться с кодом 1, ничего не записав, в трёх случаях (design D1 change'а `stage2-import-copier-template`):
 - `rootstock.toml` уже есть;
@@ -34,7 +34,7 @@
 
 #### Scenario: Шаблон и проект сразу
 - **WHEN** в каталоге лежат и `copier.yml`, и `.copier-answers.yml`
-- **THEN** код 1, ничего не записано, сообщение называет оба файла
+- **THEN** конвертируются обе стороны за один запуск, по требованию «Шаблон, который сам проект Copier'а»
 
 ### Requirement: Ключи шаблона Copier
 
@@ -278,3 +278,28 @@
 #### Scenario: new из шаблона Copier
 - **WHEN** `new` запущена на теге, где есть только `copier.yml`
 - **THEN** код 1, сообщение советует `import-copier`, ничего не записано
+
+### Requirement: Шаблон, который сам проект Copier'а
+
+Если в каталоге лежат и `copier.yml` (или `copier.yaml`), и `.copier-answers.yml`, `rootstock import-copier` SHALL конвертировать обе стороны за один запуск (ТЗ: §import-copier, 1.3). Сторона шаблона пишет `rootstock.toml` по своим правилам, сторона проекта пишет `.rootstock.toml` и удаляет `.copier-answers.yml` по своим.
+
+Все проверки обеих сторон MUST проходить до первой записи. Сюда входят:
+- чистое дерево;
+- уже существующие `rootstock.toml` и `.rootstock.toml`;
+- неподдерживаемое в `copier.yml`;
+- `_commit`, который не является тегом;
+- выгрузка и рендер шаблона-родителя.
+
+Если хоть одна проверка не прошла, итог — код 1, и ничего не записано. Код выхода и список `blocked` — как у стороны проекта.
+
+#### Scenario: Обе стороны
+- **WHEN** в чистом репозитории лежат `copier.yml` из подмножества и `.copier-answers.yml` с тегом родительского шаблона
+- **THEN** появляются `rootstock.toml` и `.rootstock.toml`, `.copier-answers.yml` удалён, `copier.yml` на месте, код 0
+
+#### Scenario: Сторона шаблона не проходит
+- **WHEN** в `copier.yml` есть неподдерживаемый ключ, а `.copier-answers.yml` корректен
+- **THEN** код 1, ни `rootstock.toml`, ни `.rootstock.toml` не записаны, `.copier-answers.yml` на месте
+
+#### Scenario: Сторона проекта не проходит
+- **WHEN** `copier.yml` корректен, а `_commit` в `.copier-answers.yml` не является тегом
+- **THEN** код 1, `rootstock.toml` не записан
