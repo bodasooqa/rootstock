@@ -2,6 +2,8 @@
 
 Date: 2026-10-29. Written by Claude from a conversation with the owner (bodasooqa). "The owner decided" marks the owner's decisions; "my call" marks decisions I made that the owner may overturn.
 
+Revision 1.1 (2026-10-30) is merged into this text; its changes are marked "(1.1)", and the reasons are in `docs/design-revisions.md`.
+
 ## Intent
 
 rootstock is a command-line tool, written in Rust and shipped as a single binary, that creates a project from a template **and later updates that project to newer versions of the template without losing the project's own edits.**
@@ -48,7 +50,7 @@ The owner decided to build a new tool rather than extend Baker: the parts that m
 - **Running Copier templates unconverted.** The owner decided on an own format plus a one-time converter. Reading `copier.yml` as-is would promise compatibility that cannot be kept: Copier templates often load Python Jinja extensions, minijinja differs from Jinja2 in small ways (each one a spurious diff on update), and we would have to reproduce the very Copier behaviours we are moving away from.
 - **Talking to GitHub or any other host.** rootstock does not open pull requests, set labels or know about CI. harness keeps its own workflow and calls `rootstock update` from it. *(My call.)*
 - **Migration scripts between major template versions** (Copier's `_migrations`). harness handles majors with manual steps in its CHANGELOG. Hooks that run on update cover the simple cases. Can be added later. *(My call.)*
-- **Rename detection.** A renamed template file is a delete plus an add (see the update rules). *(My call.)*
+- **Rename detection.** A renamed template file is a delete plus an add (see the update rules). *(My call.)* A rename that only changes the case of a name is treated as one file only where the file system folds case and the project still has that file; the project's edits then move to the new spelling by the usual merge. Anywhere else it is a delete plus an add, so a starter file the project deleted can come back under its new spelling. *(Owner decided, 1.1.)*
 - **Python, or any runtime besides the binary and `git`.**
 
 ## Anti-goals
@@ -65,10 +67,10 @@ Taken from the owner's own words about harness: **conflicts on update are a norm
 
 ## Concepts
 
-- **Template** — a git repository (or a subdirectory of one) containing a `rootstock.toml` and the files to render.
+- **Template** — a git repository (or a subdirectory of one) containing a `rootstock.toml` and the files to render. The directory that holds `rootstock.toml` is the **template directory**. *(1.1)*
 - **Version** — a git tag of the template repository, semver `vX.Y.Z`. A project records both the tag and the exact commit.
 - **Answers** — the values the user gave to the template's questions.
-- **Record** — a file at the project root, `.rootstock.toml`, holding the template source, the version (tag and commit), the answers and the inventory. It is committed with the project and is the only link between project and template. *(File name my call.)*
+- **Record** — a file at the project root, `.rootstock.toml`, holding the template source (with its subdirectory, if any *(1.1)*), the version (tag and commit), the answers and the inventory. It is committed with the project and is the only link between project and template. *(File name my call.)*
 - **Inventory** — the list of paths rootstock emitted into the project, each with its class. It lets rootstock tell "the project deleted this file" from "this file was never emitted".
 - **File classes:**
   - **managed** (default) — rootstock keeps it in sync with the template on every update, merging with the project's edits.
@@ -77,16 +79,17 @@ Taken from the owner's own words about harness: **conflicts on update are a norm
 
 ## Template format
 
-Template configuration lives in `rootstock.toml` at the template root. *(TOML my call: native to the Rust ecosystem and free of YAML's implicit typing. Copier and Baker use YAML.)*
+Template configuration lives in `rootstock.toml` in the template directory *(1.1)*. *(TOML my call: native to the Rust ecosystem and free of YAML's implicit typing. Copier and Baker use YAML.)*
 
 It declares:
 
-- **Questions**, in order. Types: `bool`, `str`, `int`, `choice` (single), `multichoice`, `yaml` (structured value). Each may have `help`, `default` (may be a Jinja expression over earlier answers), `when` (Jinja expression; a question whose `when` is false is not asked, takes its default, and is not written to the record — same as Copier) and `validator` (Jinja expression that renders to an error message, empty when valid).
-- **Template root** — subdirectory holding the files (harness uses `template/`).
+- **Questions**, in order. Types: `bool`, `str`, `int`, `choice` (single), `multichoice`, `yaml` (structured value). Each may have `help`, `default` (may be a Jinja expression over earlier answers), `when` (Jinja expression; a question whose `when` is false is not asked, takes its default, and is not written to the record — same as Copier) and `validator` (Jinja expression that renders to an error message, empty when valid). As in Copier, `default` and `validator` are templates (`{{ … }}`) rendered over the earlier answers, while `when` is a bare expression. *(Owner decided, 1.1.)*
+- **Template root** — subdirectory of the template directory holding the files (harness uses `template/`).
 - **Templated files** — suffix `.jinja` by default (configurable): such files are rendered and the suffix dropped. Everything else is copied byte for byte. File and directory names are always rendered; a name that renders empty is not emitted. That is how `{% if rust %}Cargo.toml{% endif %}` works, as in Copier.
 - **Jinja environment options** — `trim_blocks`, `lstrip_blocks`, `keep_trailing_newline`, all configurable. `keep_trailing_newline` defaults to true.
 - **Class rules** — gitignore-style glob lists for `starter` and `exclude`, evaluated against the rendered path. A pattern may contain Jinja over the answers (harness's `{{ spec_path }}/**`). Patterns render with the answers on every step, including the base render during update. This avoids the Copier bug where `_skip_if_exists` rendered without answers turned `{{ spec_path }}/**` into `/**`.
-- **Includes** — `{% include %}` and `{% import %}` resolve against the template root. A configurable list of partial directories is excluded from output.
+- **Includes** — `{% include %}` and `{% import %}` resolve against the template directory, not the template root, as in Copier: harness's `template/_partials/…` paths carry over unchanged. The include base is not configurable. *(Owner decided, 1.1.)* A configurable list of partial directories is excluded from output.
+- **Paths and links** *(owner decided, 1.1)*. A rendered path containing `\`, `:` or a NUL byte is refused. A template symlink is refused at render when its path or target is not ASCII, its target is absolute, contains `~`, or points outside the project.
 - **Hooks** — shell commands with a `when` of `new`, `update` or both, run in the project directory after files are written. Hooks run only with `--trust` or after an interactive confirmation, since they execute arbitrary commands.
 - **Minimum rootstock version.**
 
@@ -94,19 +97,20 @@ Filters and tests: minijinja's built-ins, plus `regex_search` with the semantics
 
 ## Commands
 
-- `rootstock new <template> <dir> [--version vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust]` — creates the project at the given version (default: latest semver tag), writes the record. Does not run `git init` unless the directory is empty and `--git` is passed *(my call)*.
-- `rootstock update [--to vX.Y.Z] [--data k=v]... [--defaults] [--trust]` — updates the project in the current directory. `--data` changes an answer: the base renders with the old answers, the new side with the new ones.
-- `rootstock status [--format json]` — current version, latest available, whether the step is a major bump. Replaces harness's `next-version.sh`.
+- `rootstock new <template> <dir> [--subdir path] [--version vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust] [--git] [--format text|json]` — creates the project at the given version (default: latest semver tag), writes the record. Does not run `git init` unless the directory is empty and `--git` is passed *(my call)*; `--git` with a non-empty directory is an error *(owner decided, 1.1)*. A non-empty directory is otherwise allowed: a file already there is treated as "— / managed / present" and differing content is an `added-by-both` conflict *(owner decided, 1.1)*. `--format` applies to the conflict list *(1.1)*.
+- `--subdir` names the template directory inside the template repository, for every kind of source; the record keeps it next to the source, so `update` and `status` use it without the flag. A local path may also point straight into the subdirectory. *(Owner decided, 1.1.)*
+- `rootstock update [--to vX.Y.Z] [--data k=v]... [--data-file f] [--defaults] [--trust] [--format text|json]` — updates the project in the current directory. `--data` (and `--data-file` *(1.1)*) changes an answer: the base renders with the old answers, the new side with the new ones.
+- `rootstock status [--format text|json]` — current version, latest available, whether the step is a major bump. Replaces harness's `next-version.sh`.
 - `rootstock check` — fails if any managed file contains unresolved conflict markers or the record is inconsistent with the tree. For CI.
 - `rootstock import-copier` — see below.
 
-Template sources: `https://…`, `git@…:…`, `gh:owner/repo` shorthand, and a local path. For a local path, the version is a tag in that repository; `--version HEAD` renders the working tree, for template development.
+Template sources: `https://…`, `git@…:…`, `gh:owner/repo` shorthand, and a local path. For a local path, the version is a tag in that repository; `--version HEAD` renders the working tree, for template development, including untracked and ignored files *(owner decided, 1.1)*.
 
 ## How update works
 
-1. **Clean tree required.** If the working tree has uncommitted changes, refuse. Every update can then be reviewed and undone with git. *(My call, after rusticate.)*
-2. **Resolve versions.** Read the record. Target = `--to` or the latest semver tag. Already at the target: exit 0, nothing to do.
-3. **Ask new questions.** Questions added by the new version take `--data`, then their default under `--defaults`. A new question with no default and no answer is an error when there is no terminal.
+1. **Clean tree required.** If the working tree has uncommitted changes, refuse. Every update can then be reviewed and undone with git. *(My call, after rusticate.)* Likewise, if a managed file still holds conflict markers from an earlier update, refuse with exit 1: merging over unresolved markers would bury them. *(Owner decided, 1.1.)*
+2. **Resolve versions.** Read the record. Target = `--to` or the latest semver tag. Already at the target: exit 0, nothing to do. `--to` may name an older tag than the recorded one *(owner decided, 1.1)*.
+3. **Ask new questions.** Questions added by the new version take `--data`, then their default under `--defaults`. A new question with no default and no answer is an error when there is no terminal. Without `--defaults` and without a terminal, a new question is an error even when it has a default *(owner decided, 1.1)*.
 4. **Render twice into temporary directories:** the *base* (recorded commit, recorded answers) and the *target* (target commit, current answers). Class rules are evaluated per side with that side's answers.
 5. **Apply per path**, with project = the file on disk:
 
@@ -124,15 +128,17 @@ Template sources: `https://…`, `git@…:…`, `gh:owner/repo` shorthand, and a
    | managed | — | ≠ base | keep, report as conflict ("removed by template, edited by project") |
    | managed | — | absent | nothing |
    | managed | starter | present | nothing; from now on it belongs to the project |
-   | starter | managed | any | three-way merge against the base render; the template takes the file back |
+   | managed | starter | absent | nothing *(owner decided, 1.1)* |
+   | starter | managed | any | three-way merge against the base render; the template takes the file back. Absent in the project: create *(owner decided, 1.1)* |
    | any | excluded or not emitted | — | as "managed → —" if it was managed, nothing if starter |
 
-6. **Binary files** (managed): if the project's copy equals the base, replace it; otherwise keep the project's copy, write the target next to it as `<name>.rootstock-new`, and report a conflict.
-7. **Permissions and links.** The executable bit follows the template file (rendered or copied). Symlinks are reproduced as symlinks, never followed.
+6. **Binary files** (managed): if the project's copy equals the base, replace it; otherwise keep the project's copy, write the target next to it as `<name>.rootstock-new`, and report a conflict. A binary file the template did not change (base = target) is left as the project has it, with no side file and no conflict; otherwise every update would report it again. If the template itself emits `<name>.rootstock-new`, no side file is written and the conflict is still reported. A file is binary when its first 8000 bytes contain a NUL or it is not valid UTF-8. *(Owner decided, 1.1.)*
+7. **Permissions and links.** The executable bit follows the template file (rendered or copied). Symlinks are reproduced as symlinks, never followed. Like a binary file, a symlink the template did not change is left as the project has it. Links that differ in target, or a file on one side and a link on the other, that cannot be resolved by the table are a `symlink` conflict, and the project's entry is kept. *(Owner decided, 1.1.)*
 8. **Bytes in, bytes out.** No line-ending conversion. The merge works on lines but preserves the file's line endings and final newline.
 9. **Conflict markers** are git-style (`<<<<<<< project`, `=======`, `>>>>>>> template vX.Y.Z`), so `git diff --check`, editors and harness's `conflict-markers.sh` see them.
-10. **Run update hooks**, then write the new record: new version, current answers, new inventory.
-11. **Exit codes:** `0` clean, `1` error (nothing written, or a clear statement of what was), `2` done with conflicts. Every outcome the table or rule 6 calls a conflict — markers in a file, a `.rootstock-new` next to a binary, "removed by template, edited by project", "deleted by project, changed by template" — gives exit 2. There is no "reported but clean" state: CI reads only the exit code, so anything that needs a human must be exit 2. The conflicting paths with their kind are printed one per line on stdout, or as JSON with `--format json`.
+10. **Run update hooks**, then write the new record: new version, current answers, new inventory. Hooks that need trust, without `--trust` and without a terminal to confirm, stop the whole command before anything is written *(owner decided, 1.1)*.
+11. **Exit codes:** `0` clean, `1` error (nothing written, or a clear statement of what was), `2` done with conflicts. Every outcome the table or rule 6 calls a conflict — markers in a file, a `.rootstock-new` next to a binary, "removed by template, edited by project", "deleted by project, changed by template" — gives exit 2. There is no "reported but clean" state: CI reads only the exit code, so anything that needs a human must be exit 2. The conflicting paths with their kind are printed one per line on stdout, or as JSON with `--format json`. The kinds are `markers`, `binary`, `symlink`, `removed-by-template`, `deleted-by-project`, `added-by-both` and `blocked` *(1.1)*.
+12. **Blocked paths** *(owner decided, 1.1)*. When a path the template emits is taken by something the project keeps — a file where the template needs a directory, or a directory with files or subdirectories where it needs a file — the template's entry is dropped, kept out of the inventory and reported as a `blocked` conflict. Nothing the project keeps is removed to make room.
 
 New and update share one renderer and one apply step; `new` is an update from an empty base into an empty project.
 
@@ -152,7 +158,7 @@ Converts once; afterwards Copier is not needed.
 ## Stages
 
 1. **Core.** Template format, `new`, `update`, `status`, `check`, managed and starter files, the full update table. **Done when** tests on synthetic templates cover every row of the update table, binary files, permissions, symlinks, line endings, `when` and changed answers.
-2. **Copier import and parity.** `import-copier` on both sides. **Done when:**
+2. **Copier import and parity.** `import-copier` on both sides; also `new --subdir`, and includes resolved only against the template directory (the `include_root` key goes away) *(1.1)*. **Done when:**
    - the latest harness release, converted, renders byte for byte identical to Copier 9.19's output for every valid combination of the answers `rust`, `frontend`, `monorepo`, `linear`, `telegram`, `orca`, `doc_form` — excluding `.copier-answers.yml` versus `.rootstock.toml`, which are compared by content (same answers, same commit);
    - updating a copy of screener from harness v0.3.3 to the latest release with rootstock (after `import-copier`) gives the same tree as `copier update`, except where Copier's known defects differ (starter files recreated after deletion, settings lost because of the `/**` render); each such difference is listed and justified.
 3. **harness moves over**, in two releases:
