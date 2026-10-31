@@ -1,7 +1,7 @@
 schema = 1
 source = "gh:bodasooqa/harness"
-version = "v0.5.0"
-commit = "b00d3b4d54938b5262413193df7049f121cae9bc"
+version = "v1.0.0"
+commit = "eabd8cdb9aae5f50788a170a11f4b3293d541d21"
 
 [answers]
 decisions_path = "knowledge/decisions.md"

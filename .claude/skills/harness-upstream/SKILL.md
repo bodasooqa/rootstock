@@ -5,7 +5,7 @@ description: Use when the harness itself needs a change — a managed file of th
 
 # Улучшение обвязки — PR в шаблон
 
-Обвязка проекта — из шаблона (`.copier-answers.yml`: откуда и какая версия). Управляемые файлы обновляются у всех проектов разом, поэтому их не правят в проекте. Правка управляемого файла здесь пропадёт или станет конфликтом на ближайшем обновлении. Улучшение уходит в шаблон и возвращается выпуском.
+Обвязка проекта — из шаблона (`.rootstock.toml`: откуда и какая версия). Управляемые файлы обновляются у всех проектов разом, поэтому их не правят в проекте. Правка управляемого файла здесь пропадёт или станет конфликтом на ближайшем обновлении. Улучшение уходит в шаблон и возвращается выпуском.
 
 ## 1. Общее или своё
 
@@ -15,15 +15,15 @@ description: Use when the harness itself needs a change — a managed file of th
 | Домен, инварианты, пути, команды этого проекта | точки расширения проекта: `.harness/local/` (хуки по слотам, дополнения агентов), `CLAUDE.md`, свои скиллы и джобы рядом. Их список — `.harness/local/README.md` |
 | Точки расширения не хватает | Это тоже улучшение шаблона: PR добавляет точку, проект ею пользуется |
 
-Стартовые файлы проекта (`CLAUDE.md`, `README.md`, `lefthook.yml`, `biome.json`, `.github/workflows/ci.yml`, каркас кода, документы) принадлежат проекту, их правят здесь. Полный список — `_skip_if_exists` в `copier.yml` шаблона.
+Стартовые файлы проекта (`CLAUDE.md`, `README.md`, `lefthook.yml`, `biome.json`, `.github/workflows/ci.yml`, каркас кода, документы) принадлежат проекту, их правят здесь. Полный список — `starter` в `rootstock.toml` шаблона.
 
 Шаблон публичный: в PR нет домена, путей, имён и секретов проекта, а пример — нейтральный.
 
 ## 2. Где работать
 
-Репозиторий шаблона — `_src_path` из `.copier-answers.yml`. Работа идёт в его клоне, вне дерева проекта. Если клон у владельца уже есть, место спросить один раз: от origin/main заводится своё дерево (`git worktree add`) со своей веткой. Если клона нет, `gh repo clone` в каталог рядом с проектом. Дерево проекта при этом не трогается.
+Репозиторий шаблона — `source` из `.rootstock.toml`. Работа идёт в его клоне, вне дерева проекта. Если клон у владельца уже есть, место спросить один раз: от origin/main заводится своё дерево (`git worktree add`) со своей веткой. Если клона нет, `gh repo clone` в каталог рядом с проектом. Дерево проекта при этом не трогается.
 
-Исходники лежат в `template/`: файлы `.jinja` рендерятся с ответами, общие куски — в `template/_partials/`. Вопросы и списки стартовых и исключённых файлов — `copier.yml`. Устройство — `docs/design.md` шаблона.
+Исходники лежат в `template/`: файлы `.jinja` рендерятся с ответами, общие куски — в `template/_partials/`. Вопросы и списки стартовых и исключённых файлов — `rootstock.toml`. Устройство — `docs/design.md` шаблона.
 
 ## 3. Правка
 
@@ -33,7 +33,7 @@ description: Use when the harness itself needs a change — a managed file of th
    - прослойка Pi — `pi.test.ts`;
    - скрипты `knowledge/` — `template/knowledge/tests/`;
    - доставка обновлений — `template/.harness/update/tests/`;
-   - раскладки и `copier update` — `scripts/check-layouts.sh`, `scripts/check-update.sh`.
+   - раскладки и `rootstock update` — `scripts/check-layouts.sh`, `scripts/check-update.sh`.
 
    Тест краснеет без правки и зеленеет с ней.
 3. Правка. Ответы шаблона (`rust`, `frontend`, пути документов…) — через Jinja, не через частный случай одного проекта.
@@ -43,7 +43,7 @@ description: Use when the harness itself needs a change — a managed file of th
 Из корня шаблона, инструменты — по README шаблона:
 
 - `scripts/check-layouts.sh` — все раскладки, или `--only <раскладка>` на затронутые, но не меньше `full`;
-- `scripts/check-update.sh` — если тронуты `copier.yml`, стартовые файлы или доставка обновлений;
+- `scripts/check-update.sh` — если тронуты `rootstock.toml`, стартовые файлы или доставка обновлений;
 - `shellcheck -x scripts/*.sh`, `actionlint .github/workflows/*.yml`.
 
 ## 5. PR

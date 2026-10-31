@@ -6,7 +6,7 @@
 # Использование:
 #   next-version.sh [--want <тег>] <текущая> < теги
 #       Теги источника — по одному в строке, имена (`v0.2.0`) или ссылки
-#       (`refs/tags/v0.2.0`). Текущая — `_commit` из `.copier-answers.yml`:
+#       (`refs/tags/v0.2.0`). Текущая — `version` из `.rootstock.toml`:
 #       тег `vX.Y.Z` или вывод git describe `vX.Y.Z-N-g<хеш>` (проект создан
 #       не с тега — его версия считается равной тегу, от которого он вырос).
 #       Печатает строки `ключ=значение` для $GITHUB_OUTPUT:
@@ -78,7 +78,7 @@ if [[ ${1:-} == --want ]]; then
   want=$2
   shift 2
 fi
-[[ $# -eq 1 ]] || die "ждём одну текущую версию (_commit из .copier-answers.yml)"
+[[ $# -eq 1 ]] || die "ждём одну текущую версию (version из .rootstock.toml)"
 
 # Хвост git describe `-N-g<хеш>` — коммиты после тега: версия та же.
 current=$1

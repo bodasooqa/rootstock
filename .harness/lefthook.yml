@@ -43,7 +43,7 @@ pre-push:
       glob:
         - ".harness/**"
         - "lefthook.yml"
-        - ".copier-answers.yml"
+        - ".rootstock.toml"
       run: ./.harness/hooks/tests/run.sh
 
     # Прослойка Pi переводит события Pi в те же слоты: её правка и правка хуков

@@ -258,7 +258,7 @@ mkdir -p "$dueproj/.harness" "$dueproj/knowledge" "$dueproj/docs"
 cp -R "$hooks" "$dueproj/.harness/hooks"
 if [ -f "$root/knowledge/due.sh" ]; then
   cp "$root/knowledge/due.sh" "$dueproj/knowledge/"
-  printf 'open_questions_path: knowledge/open-questions.md\nstages_path: docs/stages.md\n' > "$dueproj/.copier-answers.yml"
+  printf '[answers]\nopen_questions_path = "knowledge/open-questions.md"\nstages_path = "docs/stages.md"\n' > "$dueproj/.rootstock.toml"
   printf '| Этап | Состояние |\n|---|---|\n| 1. Каркас | в работе |\n' > "$dueproj/docs/stages.md"
   printf '# Открытые вопросы\n\n## Вопрос\n\nСуть.\n\nНужно к: этапу 1.\n' > "$dueproj/knowledge/open-questions.md"
   due_check() {  # <имя> <prompt> <context|silent>
@@ -837,13 +837,15 @@ lefthook_copy() {  # <каталог>
   cp "$root/lefthook.yml" "$1/"
   cp "$root/.harness/lefthook.yml" "$1/.harness/"
   cp -R "$root/.harness/lefthook" "$1/.harness/"
-  cp "$root/.copier-answers.yml" "$1/"
+  cp "$root/.rootstock.toml" "$1/"
   cp "$root"/knowledge/*.sh "$1/knowledge/"
 }
 
-answer() {  # <ключ> — значение из файла ответов проекта
-  awk -v key="$1" 'index($0, key ":") == 1 { v = substr($0, length(key) + 2); gsub(/^[ \t\047"]+|[ \t\047"]+$/, "", v); print v; exit }' \
-    "$root/.copier-answers.yml"
+answer() {  # <ключ> — значение из таблицы `[answers]` записи шаблона проекта
+  awk -v key="$1" '
+    /^[ \t]*\[/ { inside = ($0 ~ /^[ \t]*\[answers\][ \t]*$/); next }
+    inside && $0 ~ ("^" key "[ \t]*=") { v = substr($0, index($0, "=") + 1); gsub(/^[ \t\047"]+|[ \t\047"]+$/, "", v); print v; exit }
+  ' "$root/.rootstock.toml"
 }
 
 echo

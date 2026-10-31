@@ -1,6 +1,6 @@
 # Правила процесса
 
-Общие правила работы из шаблона [harness](https://github.com/bodasooqa/harness). Файл управляемый: обновляется `copier update`, руками не правится. Своё проект пишет в корневой `CLAUDE.md` (домен, стек, границы пакетов, источники правды, определения) и в `.harness/local/`.
+Общие правила работы из шаблона [harness](https://github.com/bodasooqa/harness). Файл управляемый: обновляется `rootstock update`, руками не правится. Своё проект пишет в корневой `CLAUDE.md` (домен, стек, границы пакетов, источники правды, определения) и в `.harness/local/`.
 
 ## Три места документации
 
@@ -45,7 +45,7 @@
 - `target/**`, `Cargo.lock` — cargo;
 - `.claude/commands/opsx/**`, `.claude/skills/openspec-*/**`, `.pi/prompts/opsx-*`, `.pi/skills/openspec-*/**` — `openspec update`;
 - блоки между метками `<!-- … -->` в документах `knowledge/` — скрипты `knowledge/`;
-- `.copier-answers.yml` и управляемые файлы шаблона — `copier update`;
+- `.rootstock.toml` и управляемые файлы шаблона — `rootstock update`;
 - проектные generated — по таблице «Источники правды» корневого `CLAUDE.md`.
 
 ### Правка файлов

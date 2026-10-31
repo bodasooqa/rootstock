@@ -28,7 +28,7 @@ setup() {
   mkdir -p "$tmp/repo/knowledge" "$tmp/repo/openspec/changes/archive" \
     "$tmp/repo/$(dirname "$questions")" "$tmp/repo/$(dirname "$stages")"
   cp "$script" "$tmp/repo/knowledge/due.sh"
-  printf 'open_questions_path: %s\nstages_path: %s\n' "$questions" "$stages" > "$tmp/repo/.copier-answers.yml"
+  printf '[answers]\nopen_questions_path = "%s"\nstages_path = "%s"\n' "$questions" "$stages" > "$tmp/repo/.rootstock.toml"
   cat > "$tmp/repo/$stages" <<'MD'
 # Этапы
 
@@ -188,8 +188,8 @@ setup <<'MD'
 
 Нужно к: этапу 3.
 MD
-printf 'open_questions_path: knowledge/open-questions.md\n' > "$tmp/repo/.copier-answers.yml"
-check "нет stages_path в ответах — ошибка" 1 "нет ключа stages_path" --overdue
+printf 'stages_path = "docs/spec/03-stages.md"\n\n[answers]\nopen_questions_path = "knowledge/open-questions.md"\n' > "$tmp/repo/.rootstock.toml"
+check "нет stages_path в ответах (вне [answers] не в счёт) — ошибка" 1 "нет ключа stages_path" --overdue
 
 setup <<'MD'
 ## Вопрос

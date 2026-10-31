@@ -29,7 +29,7 @@ setup() {
   rm -rf "$tmp/repo"
   mkdir -p "$tmp/repo/knowledge" "$tmp/repo/$(dirname "$questions")"
   cp "$script" "$tmp/repo/knowledge/"
-  printf 'open_questions_path: %s\n' "$questions" > "$tmp/repo/.copier-answers.yml"
+  printf '[answers]\nopen_questions_path = "%s"\n' "$questions" > "$tmp/repo/.rootstock.toml"
   printf '# Открытые вопросы\n\nГолова.\n\n---\n\n## Первый вопрос\n\nСуть.\n\n---\n\n## Второй вопрос\n\nСуть.\n' \
     > "$tmp/repo/$questions"
 }
