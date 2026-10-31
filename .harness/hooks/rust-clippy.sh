@@ -20,7 +20,7 @@
 # Третий предохранитель: устаревший вердикт не будит — см. `lib/staleness.sh`.
 #
 # Подмена для тестов: `HARNESS_CLIPPY` — команда вместо `cargo clippy`,
-# `HARNESS_CLIPPY_STATE` — каталог состояния вместо временного.
+# `HARNESS_CLIPPY_STATE` — каталог состояния вместо каталога в git дерева.
 set -uo pipefail
 
 here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
@@ -66,8 +66,12 @@ same_repo "${crate_dir:-.}" || exit 0
 # Ключ — корень рабочего дерева, а не текущий каталог: правку может сделать
 # субагент из любого подкаталога, и по `$PWD` состояние разъехалось бы
 # на несколько копий, а с ним и весь смысл подписи.
+# Место — каталог git этого дерева, а не общий временный: в `/tmp` каталог
+# с предсказуемым именем заранее заведёт другой пользователь машины, и запись
+# подписи пойдёт по его ссылке в чужой файл.
 tree=${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")}
-state="${HARNESS_CLIPPY_STATE:-${TMPDIR:-/tmp}/harness-clippy-hook/$(printf '%s' "$tree" | cksum | cut -d' ' -f1)}"
+state=${HARNESS_CLIPPY_STATE:-$(git -C "$tree" rev-parse --path-format=absolute --git-path harness/clippy 2>/dev/null)}
+[ -n "$state" ] || exit 0
 mkdir -p "$state" 2>/dev/null || exit 0
 
 lock="$state/$pkg.lock"
