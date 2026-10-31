@@ -1,5 +1,5 @@
 # Файл ведёт Copier: ответы на вопросы шаблона. Руками не править — `copier update`.
-_commit: v0.4.6
+_commit: v0.5.0
 _src_path: gh:bodasooqa/harness
 decisions_path: knowledge/decisions.md
 doc_form: monolith
