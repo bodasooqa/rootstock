@@ -9,6 +9,7 @@
 <meta property="og:description" content="Project templates that keep growing after you use them. One Rust binary with real three-way updates.">
 <meta property="og:url" content="https://bodasooqa.github.io/rootstock/">
 <link rel="icon" href="mark-light.svg" type="image/svg+xml">
+<script>document.documentElement.classList.add("js");</script>
 <style>
   :root {
     --bg: #0b1220;
@@ -19,6 +20,7 @@
     --text: #e2e8f0;
     --muted: #94a3b8;
     --green: #10b981;
+    --teal: #2dd4bf;
     --rust: #d2622e;
     --amber: #e5c07b;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -30,19 +32,62 @@
     background: var(--bg);
     color: var(--text);
     font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow-x: hidden;
   }
   a { color: inherit; }
   code { font-family: var(--mono); font-size: 0.9em; }
   .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+  .icon { width: 16px; height: 16px; fill: currentColor; flex: none; vertical-align: -3px; }
 
-  nav { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 22px 0; }
+  /* Background: a faint grid and two slow glows behind the hero. */
+  .backdrop { position: absolute; inset: 0 0 auto; height: 900px; overflow: hidden; pointer-events: none; z-index: -1; }
+  .backdrop::before {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000 30%, transparent 75%);
+  }
+  .glow { position: absolute; width: 520px; height: 520px; border-radius: 50%; filter: blur(90px); opacity: 0.32; }
+  .glow.a { background: var(--green); top: -160px; left: 8%; animation: drift 16s ease-in-out infinite alternate; }
+  .glow.b { background: var(--rust); top: 120px; right: 2%; opacity: 0.2; animation: drift 20s ease-in-out infinite alternate-reverse; }
+  @keyframes drift { to { transform: translate(90px, 60px) scale(1.15); } }
+
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid transparent; transition: border-color 0.3s, background 0.3s;
+  }
+  nav.scrolled { background: rgba(11, 18, 32, 0.78); border-bottom-color: var(--rule); }
+  nav .wrap { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-top: 16px; padding-bottom: 16px; }
   nav .logo img { height: 34px; display: block; }
-  nav ul { display: flex; gap: 22px; list-style: none; margin: 0; padding: 0; font-size: 15px; }
-  nav ul a { color: var(--muted); text-decoration: none; }
+  nav ul { display: flex; align-items: center; gap: 22px; list-style: none; margin: 0; padding: 0; font-size: 15px; }
+  nav ul a { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); text-decoration: none; transition: color 0.2s; }
   nav ul a:hover { color: var(--text); }
+  nav .gh {
+    color: var(--text); border: 1px solid var(--rule); border-radius: 8px; padding: 6px 10px;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  nav .gh:hover { border-color: var(--muted); background: rgba(148, 163, 184, 0.08); }
+  nav .stars { display: none; align-items: center; gap: 4px; padding-left: 8px; margin-left: 2px; border-left: 1px solid var(--rule); color: var(--muted); }
+  nav .stars.on { display: inline-flex; }
 
-  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 48px; align-items: center; padding: 56px 0 24px; }
-  h1 { font-size: clamp(32px, 4.6vw, 46px); line-height: 1.08; letter-spacing: -0.025em; margin: 0 0 18px; }
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 48px; align-items: center; padding: 64px 0 24px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px; margin-bottom: 18px; padding: 5px 12px 5px 6px;
+    border: 1px solid var(--rule); border-radius: 999px; font-size: 13px; color: var(--muted); text-decoration: none;
+    transition: border-color 0.2s, color 0.2s;
+  }
+  .badge:hover { border-color: var(--green); color: var(--text); }
+  .badge b { background: rgba(16, 185, 129, 0.15); color: var(--green); border-radius: 999px; padding: 2px 8px; font-weight: 600; }
+  h1 { font-size: clamp(32px, 4.6vw, 48px); line-height: 1.08; letter-spacing: -0.025em; margin: 0 0 18px; }
+  .grad {
+    background: linear-gradient(90deg, var(--green), var(--teal), var(--green));
+    background-size: 200% auto; -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: shimmer 6s linear infinite;
+  }
+  @keyframes shimmer { to { background-position: 200% center; } }
   .lead { color: var(--muted); font-size: 18px; margin: 0 0 26px; }
   .lead strong { color: var(--text); font-weight: 600; }
 
@@ -50,110 +95,235 @@
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
     font-family: var(--mono); font-size: 15px;
     background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    padding: 11px 12px 11px 16px;
+    padding: 9px 9px 9px 16px; transition: border-color 0.2s;
   }
+  .cmd:hover { border-color: rgba(16, 185, 129, 0.5); }
   .cmd span { overflow-x: auto; white-space: nowrap; }
   .cmd span::before { content: "$ "; color: var(--muted); }
   .copy {
-    flex: none; font: 13px/1 ui-sans-serif, system-ui, sans-serif; color: var(--muted);
-    background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; cursor: pointer;
+    flex: none; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+    color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 7px; cursor: pointer;
+    transition: color 0.2s, border-color 0.2s, transform 0.15s;
   }
   .copy:hover { color: var(--text); border-color: var(--muted); }
+  .copy:active { transform: scale(0.92); }
+  .copy .done { display: none; }
+  .copy.copied { color: var(--green); border-color: var(--green); }
+  .copy.copied .idle { display: none; }
+  .copy.copied .done { display: block; animation: pop 0.25s ease-out; }
+  @keyframes pop { from { transform: scale(0.4); } }
 
   .buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-  .btn { display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; border: 1px solid var(--rule); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: 8px;
+    text-decoration: none; font-weight: 600; font-size: 15px; border: 1px solid var(--rule);
+    transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+  }
+  .btn:hover { transform: translateY(-2px); }
   .btn.primary { background: var(--green); border-color: var(--green); color: var(--bg); }
+  .btn.primary:hover { box-shadow: 0 8px 28px -8px rgba(16, 185, 129, 0.7); }
   .btn:not(.primary):hover { border-color: var(--muted); }
+  .btn .icon { transition: transform 0.2s; }
+  .btn:hover .arrow { transform: translateX(3px); }
 
-  .terminal { background: var(--term); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0; }
+  .terminal {
+    position: relative; background: var(--term); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0;
+    box-shadow: 0 30px 80px -30px rgba(16, 185, 129, 0.35), 0 0 0 1px rgba(16, 185, 129, 0.06);
+  }
   .terminal .bar { display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
-  .terminal .bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
-  .terminal .bar b { font-weight: 400; margin-left: 8px; }
+  .terminal .bar i { width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; }
+  .terminal .bar i:nth-child(2) { background: #febc2e; }
+  .terminal .bar i:nth-child(3) { background: #28c840; }
+  .terminal .bar b { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; margin-left: 8px; }
+  .terminal .replay {
+    margin-left: auto; display: inline-flex; padding: 4px; color: var(--muted); background: none; border: 0; border-radius: 5px; cursor: pointer;
+    opacity: 0; transition: opacity 0.3s, color 0.2s;
+  }
+  .terminal .replay.on { opacity: 1; }
+  .terminal .replay:hover { color: var(--text); }
   .terminal pre { margin: 0; padding: 16px 18px; font: 13px/1.6 var(--mono); overflow-x: auto; }
+  .cursor { display: inline-block; width: 8px; height: 1.1em; vertical-align: -3px; background: var(--green); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
   .p { color: var(--muted); }
   .ok { color: var(--green); }
   .bad { color: var(--rust); }
   .mark { color: var(--amber); }
+  .flash { animation: flash 1.2s ease-out; }
+  @keyframes flash { from { background: rgba(229, 192, 123, 0.18); } }
 
-  section { padding: 56px 0 0; }
-  .label { color: var(--green); font-size: 12px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; margin: 0 0 8px; }
+  section { padding: 64px 0 0; }
+  .label { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 12px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; margin: 0 0 8px; }
   h2 { font-size: 28px; letter-spacing: -0.015em; line-height: 1.2; margin: 0 0 10px; }
-  section > p, .sub { color: var(--muted); margin: 0 0 22px; max-width: 680px; }
+  section > p { color: var(--muted); margin: 0 0 22px; max-width: 680px; }
 
   .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-  .card { border: 1px solid var(--rule); border-radius: 12px; padding: 20px; }
+  .card {
+    position: relative; border: 1px solid var(--rule); border-radius: 12px; padding: 22px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(17, 26, 46, 0.6), rgba(17, 26, 46, 0));
+    transition: transform 0.25s, border-color 0.25s, box-shadow 0.25s;
+  }
+  .card:hover { transform: translateY(-4px); border-color: rgba(16, 185, 129, 0.55); box-shadow: 0 16px 40px -20px rgba(16, 185, 129, 0.5); }
+  .card .ic {
+    display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; margin-bottom: 14px;
+    border-radius: 9px; background: rgba(16, 185, 129, 0.12); color: var(--green); transition: transform 0.25s;
+  }
+  .card:nth-child(3) .ic { background: rgba(210, 98, 46, 0.14); color: var(--rust); }
+  .card:hover .ic { transform: rotate(-8deg) scale(1.08); }
+  .card .ic .icon { width: 20px; height: 20px; }
   .card h3 { font-size: 17px; margin: 0 0 6px; }
   .card p { color: var(--muted); margin: 0; font-size: 15px; }
 
-  .flow { display: flex; align-items: stretch; gap: 10px; flex-wrap: wrap; }
-  .flow .step { flex: 1 1 180px; border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; }
-  .flow .step.merge { border-color: var(--green); }
-  .flow .step b { display: block; }
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .flow .step {
+    flex: 1 1 170px; border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px;
+    transition: border-color 0.4s, box-shadow 0.4s;
+  }
+  .flow .step b { display: flex; align-items: center; gap: 8px; }
+  .flow .step b .icon { color: var(--green); }
   .flow .step small { color: var(--muted); font-size: 14px; }
-  .flow .arrow { align-self: center; color: var(--muted); }
-  .more { display: inline-block; margin-top: 16px; color: var(--green); text-decoration: none; font-size: 15px; }
-  .more:hover { text-decoration: underline; }
+  .flow .step.lit { border-color: var(--green); box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.12); }
+  .flow .link { position: relative; flex: 0 0 34px; align-self: center; height: 2px; background: var(--rule); overflow: hidden; }
+  .flow .link::after {
+    content: ""; position: absolute; top: 0; left: -40%; width: 40%; height: 100%;
+    background: linear-gradient(90deg, transparent, var(--green), transparent);
+    animation: travel 2.4s linear infinite;
+  }
+  .flow .link:nth-of-type(2)::after { animation-delay: 0.8s; }
+  .flow .link:nth-of-type(3)::after { animation-delay: 1.6s; }
+  @keyframes travel { to { left: 100%; } }
+  .more { display: inline-flex; align-items: center; gap: 6px; margin-top: 16px; color: var(--green); text-decoration: none; font-size: 15px; }
+  .more .icon { transition: transform 0.2s; }
+  .more:hover .icon { transform: translateX(3px); }
 
   .table { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 15px; min-width: 560px; }
   th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--rule); }
   th { font-weight: 600; }
-  th:nth-child(2), td:nth-child(2) { color: var(--green); font-weight: 600; background: rgba(16, 185, 129, 0.06); }
+  tbody tr { transition: background 0.2s; }
+  tbody tr:hover { background: rgba(148, 163, 184, 0.05); }
+  th:nth-child(2), td:nth-child(2) { color: var(--green); font-weight: 600; background: rgba(16, 185, 129, 0.07); }
   td:first-child { color: var(--muted); }
+  .yes, .no { display: inline-flex; align-items: center; gap: 5px; }
+  .no { color: var(--muted); }
   .note { color: var(--muted); font-size: 14px; margin-top: 12px; }
 
-  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .tabs { position: relative; display: inline-flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; }
   .tabs button {
+    display: inline-flex; align-items: center; gap: 6px;
     font: 14px ui-sans-serif, system-ui, sans-serif; color: var(--muted);
-    background: transparent; border: 1px solid transparent; border-radius: 7px; padding: 7px 14px; cursor: pointer;
+    background: transparent; border: 0; border-radius: 7px; padding: 7px 14px; cursor: pointer; transition: color 0.2s, background 0.2s;
   }
-  .tabs button[aria-selected="true"] { color: var(--text); background: var(--panel); border-color: var(--line); }
+  .tabs button:hover { color: var(--text); }
+  .tabs button[aria-selected="true"] { color: var(--text); background: var(--panel); }
   .panel[hidden] { display: none; }
-  .panel p { color: var(--muted); font-size: 15px; margin: 12px 0 0; }
+  .panel { animation: fade 0.3s ease-out; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } }
+  .downloads { display: flex; flex-wrap: wrap; gap: 10px; }
+  .downloads a {
+    display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border: 1px solid var(--line); border-radius: 9px;
+    background: var(--panel); text-decoration: none; font-size: 15px; transition: border-color 0.2s, transform 0.2s;
+  }
+  .downloads a:hover { border-color: var(--green); transform: translateY(-2px); }
+  .downloads a .icon { color: var(--green); }
+  .downloads small { color: var(--muted); }
 
-  footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; margin-top: 72px; padding: 22px 0 40px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 14px; }
-  footer a { text-decoration: none; margin-left: 18px; }
+  footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-top: 80px; padding: 22px 0 40px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 14px; }
+  footer span { display: inline-flex; align-items: center; gap: 6px; }
+  footer a { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; margin-left: 18px; transition: color 0.2s; }
   footer a:hover { color: var(--text); }
 
+  /* Entrance: hero pieces rise in order, sections as they scroll into view.
+     Only with JS, so the page stays complete without it. */
+  .js .rise { opacity: 0; transform: translateY(14px); animation: rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) forwards; }
+  .js .rise:nth-child(2) { animation-delay: 0.08s; }
+  .js .rise:nth-child(3) { animation-delay: 0.16s; }
+  .js .rise:nth-child(4) { animation-delay: 0.24s; }
+  .js .rise:nth-child(5) { animation-delay: 0.32s; }
+  .js .terminal.rise { animation-delay: 0.3s; }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+  .js .reveal { opacity: 0; transform: translateY(24px); transition: opacity 0.7s ease-out, transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1); }
+  .js .reveal.in { opacity: 1; transform: none; }
+  .js .cards.reveal .card { opacity: 0; transform: translateY(18px); transition: opacity 0.6s, transform 0.6s, border-color 0.25s, box-shadow 0.25s; }
+  .js .cards.reveal.in .card { opacity: 1; transform: none; }
+  .js .cards.reveal.in .card:nth-child(2) { transition-delay: 0.1s; }
+  .js .cards.reveal.in .card:nth-child(3) { transition-delay: 0.2s; }
+  .js .cards.reveal.in .card:hover { transform: translateY(-4px); transition-delay: 0s; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .js .rise, .js .reveal, .js .cards.reveal .card { opacity: 1; transform: none; }
+    html { scroll-behavior: auto; }
+  }
+
   @media (max-width: 860px) {
-    .hero { grid-template-columns: minmax(0, 1fr); gap: 32px; padding-top: 24px; }
+    .hero { grid-template-columns: minmax(0, 1fr); gap: 32px; padding-top: 32px; }
     .cards { grid-template-columns: 1fr; }
-    .flow .arrow { display: none; }
+    .flow { flex-direction: column; gap: 10px; }
+    .flow .step { flex-basis: auto; }
+    .flow .link { display: none; }
   }
   @media (max-width: 560px) {
     .wrap { padding: 0 16px; }
     nav ul { gap: 14px; font-size: 14px; }
     nav ul .wide { display: none; }
+    .cmd { font-size: 13px; padding-left: 12px; }
     footer a { margin: 0 14px 0 0; }
   }
 </style>
 </head>
 <body>
-<div class="wrap">
 
-<nav>
-  <a class="logo" href="./"><img src="logo-dark.svg" alt="rootstock"></a>
-  <ul>
-    <li><a href="https://github.com/bodasooqa/rootstock#readme">Docs</a></li>
-    <li class="wide"><a href="https://github.com/bodasooqa/rootstock/releases">Releases</a></li>
-    <li class="wide"><a href="https://crates.io/crates/rootstock">crates.io</a></li>
-    <li><a href="https://github.com/bodasooqa/rootstock">GitHub</a></li>
-  </ul>
+<!-- Icons: Octicons by GitHub, MIT license (github.com/primer/octicons). -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none">
+  <symbol id="i-github" viewBox="0 0 16 16"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></symbol>
+  <symbol id="i-book" viewBox="0 0 16 16"><path d="M0 1.75A.75.75 0 0 1 .75 1h4.253c1.227 0 2.317.59 3 1.501A3.743 3.743 0 0 1 11.006 1h4.245a.75.75 0 0 1 .75.75v10.5a.75.75 0 0 1-.75.75h-4.507a2.25 2.25 0 0 0-1.591.659l-.622.621a.75.75 0 0 1-1.06 0l-.622-.621A2.25 2.25 0 0 0 5.258 13H.75a.75.75 0 0 1-.75-.75Zm7.251 10.324.004-5.073-.002-2.253A2.25 2.25 0 0 0 5.003 2.5H1.5v9h3.757a3.75 3.75 0 0 1 1.994.574ZM8.755 4.75l-.004 7.322a3.752 3.752 0 0 1 1.992-.572H14.5v-9h-3.495a2.25 2.25 0 0 0-2.25 2.25Z"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 16 16"><path d="M1 7.775V2.75C1 1.784 1.784 1 2.75 1h5.025c.464 0 .91.184 1.238.513l6.25 6.25a1.75 1.75 0 0 1 0 2.474l-5.026 5.026a1.75 1.75 0 0 1-2.474 0l-6.25-6.25A1.752 1.752 0 0 1 1 7.775Zm1.5 0c0 .066.026.13.073.177l6.25 6.25a.25.25 0 0 0 .354 0l5.025-5.025a.25.25 0 0 0 0-.354l-6.25-6.25a.25.25 0 0 0-.177-.073H2.75a.25.25 0 0 0-.25.25ZM6 5a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z"/></symbol>
+  <symbol id="i-package" viewBox="0 0 16 16"><path d="m8.878.392 5.25 3.045c.54.314.872.89.872 1.514v6.098a1.75 1.75 0 0 1-.872 1.514l-5.25 3.045a1.75 1.75 0 0 1-1.756 0l-5.25-3.045A1.75 1.75 0 0 1 1 11.049V4.951c0-.624.332-1.201.872-1.514L7.122.392a1.75 1.75 0 0 1 1.756 0ZM7.875 1.69l-4.63 2.685L8 7.133l4.755-2.758-4.63-2.685a.248.248 0 0 0-.25 0ZM2.5 5.677v5.372c0 .09.047.171.125.216l4.625 2.683V8.432Zm6.25 8.271 4.625-2.683a.25.25 0 0 0 .125-.216V5.677L8.75 8.432Z"/></symbol>
+  <symbol id="i-merge" viewBox="0 0 16 16"><path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 16 16"><path d="M6.5.75V2h3V.75a.75.75 0 0 1 1.5 0V2h1.25c.966 0 1.75.784 1.75 1.75V5h1.25a.75.75 0 0 1 0 1.5H14v3h1.25a.75.75 0 0 1 0 1.5H14v1.25A1.75 1.75 0 0 1 12.25 14H11v1.25a.75.75 0 0 1-1.5 0V14h-3v1.25a.75.75 0 0 1-1.5 0V14H3.75A1.75 1.75 0 0 1 2 12.25V11H.75a.75.75 0 0 1 0-1.5H2v-3H.75a.75.75 0 0 1 0-1.5H2V3.75C2 2.784 2.784 2 3.75 2H5V.75a.75.75 0 0 1 1.5 0Zm5.75 11.75a.25.25 0 0 0 .25-.25v-8.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25ZM5.75 5h4.5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-.75.75h-4.5a.75.75 0 0 1-.75-.75v-4.5A.75.75 0 0 1 5.75 5Zm.75 4.5h3v-3h-3Z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 16 16"><path d="m8.533.133 5.25 1.68A1.75 1.75 0 0 1 15 3.48V7c0 1.566-.32 3.182-1.303 4.682-.983 1.498-2.585 2.813-5.032 3.855a1.697 1.697 0 0 1-1.33 0c-2.447-1.042-4.049-2.357-5.032-3.855C1.32 10.182 1 8.566 1 7V3.48a1.75 1.75 0 0 1 1.217-1.667l5.25-1.68a1.748 1.748 0 0 1 1.066 0Zm-.61 1.429.001.001-5.25 1.68a.251.251 0 0 0-.174.237V7c0 1.36.275 2.666 1.057 3.859.784 1.194 2.121 2.342 4.366 3.298a.196.196 0 0 0 .154 0c2.245-.957 3.582-2.103 4.366-3.297C13.225 9.666 13.5 8.358 13.5 7V3.48a.25.25 0 0 0-.174-.238l-5.25-1.68a.25.25 0 0 0-.153 0ZM11.28 6.28l-3.5 3.5a.75.75 0 0 1-1.06 0l-1.5-1.5a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l.97.97 2.97-2.97a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042Z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></symbol>
+  <symbol id="i-star" viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Zm0 2.445L6.615 5.5a.75.75 0 0 1-.564.41l-3.097.45 2.24 2.184a.75.75 0 0 1 .216.664l-.528 3.084 2.769-1.456a.75.75 0 0 1 .698 0l2.77 1.456-.53-3.084a.75.75 0 0 1 .216-.664l2.24-2.183-3.096-.45a.75.75 0 0 1-.564-.41L8 2.694Z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 16 16"><path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14Z"/><path d="M7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 16 16"><path d="M8.22 2.97a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l2.97-2.97H3.75a.75.75 0 0 1 0-1.5h7.44L8.22 4.03a.75.75 0 0 1 0-1.06Z"/></symbol>
+  <symbol id="i-versions" viewBox="0 0 16 16"><path d="M7.75 14A1.75 1.75 0 0 1 6 12.25v-8.5C6 2.784 6.784 2 7.75 2h6.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 14Zm-.25-1.75c0 .138.112.25.25.25h6.5a.25.25 0 0 0 .25-.25v-8.5a.25.25 0 0 0-.25-.25h-6.5a.25.25 0 0 0-.25.25ZM4.9 3.508a.75.75 0 0 1-.274 1.025.249.249 0 0 0-.126.217v6.5c0 .09.048.173.126.217a.75.75 0 0 1-.752 1.298A1.75 1.75 0 0 1 3 11.25v-6.5c0-.649.353-1.214.874-1.516a.75.75 0 0 1 1.025.274ZM1.625 5.533h.001a.249.249 0 0 0-.126.217v4.5c0 .09.048.173.126.217a.75.75 0 0 1-.752 1.298A1.748 1.748 0 0 1 0 10.25v-4.5a1.748 1.748 0 0 1 .873-1.516.75.75 0 1 1 .752 1.299Z"/></symbol>
+  <symbol id="i-compare" viewBox="0 0 16 16"><path d="M9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM6 12v-1.646a.25.25 0 0 1 .427-.177l2.396 2.396a.25.25 0 0 1 0 .354l-2.396 2.396A.25.25 0 0 1 6 15.146V13.5H5A2.5 2.5 0 0 1 2.5 11V5.372a2.25 2.25 0 1 1 1.5 0V11a1 1 0 0 0 1 1ZM4 3.25a.75.75 0 1 0-1.5 0 .75.75 0 0 0 1.5 0ZM12.75 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></symbol>
+  <symbol id="i-law" viewBox="0 0 16 16"><path d="M8.75.75V2h.985c.304 0 .603.08.867.231l1.29.736c.038.022.08.033.124.033h2.234a.75.75 0 0 1 0 1.5h-.427l2.111 4.692a.75.75 0 0 1-.154.838l-.53-.53.529.531-.001.002-.002.002-.006.006-.006.005-.01.01-.045.04c-.21.176-.441.327-.686.45C14.556 10.78 13.88 11 13 11a4.498 4.498 0 0 1-2.023-.454 3.544 3.544 0 0 1-.686-.45l-.045-.04-.016-.015-.006-.006-.004-.004v-.001a.75.75 0 0 1-.154-.838L12.178 4.5h-.162c-.305 0-.604-.079-.868-.231l-1.29-.736a.245.245 0 0 0-.124-.033H8.75V13h2.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5h2.5V3.5h-.984a.245.245 0 0 0-.124.033l-1.289.737c-.265.15-.564.23-.869.23h-.162l2.112 4.692a.75.75 0 0 1-.154.838l-.53-.53.529.531-.001.002-.002.002-.006.006-.016.015-.045.04c-.21.176-.441.327-.686.45C4.556 10.78 3.88 11 3 11a4.498 4.498 0 0 1-2.023-.454 3.544 3.544 0 0 1-.686-.45l-.045-.04-.016-.015-.006-.006-.004-.004v-.001a.75.75 0 0 1-.154-.838L2.178 4.5H1.75a.75.75 0 0 1 0-1.5h2.234a.249.249 0 0 0 .125-.033l1.288-.737c.265-.15.564-.23.869-.23h.984V.75a.75.75 0 0 1 1.5 0Zm2.945 8.477c.285.135.718.273 1.305.273s1.02-.138 1.305-.273L13 6.327Zm-10 0c.285.135.718.273 1.305.273s1.02-.138 1.305-.273L3 6.327Z"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 16 16"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 16 16"><path d="M0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25Zm1.75-.25a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25ZM7.25 8a.749.749 0 0 1-.22.53l-2.25 2.25a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734L5.44 8 3.72 6.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.25 2.25c.141.14.22.331.22.53Zm1.5 1.5h3a.75.75 0 0 1 0 1.5h-3a.75.75 0 0 1 0-1.5Z"/></symbol>
+</svg>
+
+<div class="backdrop" aria-hidden="true"><div class="glow a"></div><div class="glow b"></div></div>
+
+<nav id="top">
+  <div class="wrap">
+    <a class="logo" href="./"><img src="logo-dark.svg" alt="rootstock"></a>
+    <ul>
+      <li><a href="https://github.com/bodasooqa/rootstock#readme"><svg class="icon"><use href="#i-book"/></svg>Docs</a></li>
+      <li class="wide"><a href="https://github.com/bodasooqa/rootstock/releases"><svg class="icon"><use href="#i-tag"/></svg>Releases</a></li>
+      <li class="wide"><a href="https://crates.io/crates/rootstock"><svg class="icon"><use href="#i-package"/></svg>crates.io</a></li>
+      <li><a class="gh" href="https://github.com/bodasooqa/rootstock"><svg class="icon"><use href="#i-github"/></svg>GitHub<span class="stars"><svg class="icon"><use href="#i-star"/></svg><span id="stars"></span></span></a></li>
+    </ul>
+  </div>
 </nav>
+
+<div class="wrap">
 
 <header class="hero">
   <div>
-    <h1>Project templates that keep growing after you use them.</h1>
-    <p class="lead">Create a project from a versioned git template. Update it to every new version with a real three-way merge. <strong>One Rust binary, no Python.</strong></p>
-    <div class="cmd"><span>cargo install rootstock --locked</span><button class="copy" type="button" data-copy="cargo install rootstock --locked">Copy</button></div>
-    <div class="buttons">
-      <a class="btn primary" href="https://github.com/bodasooqa/rootstock#quick-start">Get started</a>
-      <a class="btn" href="#copier">Coming from Copier →</a>
+    <a class="badge rise" id="release" href="https://github.com/bodasooqa/rootstock/releases"><b>latest</b><span>Releases for Linux, macOS and Windows</span></a>
+    <h1 class="rise">Project templates that <span class="grad">keep growing</span> after you use them.</h1>
+    <p class="lead rise">Create a project from a versioned git template. Update it to every new version with a real three-way merge. <strong>One Rust binary, no Python.</strong></p>
+    <div class="cmd rise"><span>cargo install rootstock --locked</span><button class="copy" type="button" aria-label="Copy" data-copy="cargo install rootstock --locked"><svg class="icon idle"><use href="#i-copy"/></svg><svg class="icon done"><use href="#i-check"/></svg></button></div>
+    <div class="buttons rise">
+      <a class="btn primary" href="https://github.com/bodasooqa/rootstock#quick-start">Get started<svg class="icon arrow"><use href="#i-arrow"/></svg></a>
+      <a class="btn" href="#copier"><svg class="icon"><use href="#i-sync"/></svg>Coming from Copier</a>
     </div>
   </div>
-  <div class="terminal" role="img" aria-label="rootstock update reports one conflict and exits with code 2; the conflicting file holds both the project's edit and the template's">
-    <div class="bar"><i></i><i></i><i></i><b>my-app</b></div>
-<pre><span class="p">$</span> rootstock update
+  <div class="terminal rise" role="img" aria-label="rootstock update reports one conflict and exits with code 2; the conflicting file holds both the project's edit and the template's">
+    <div class="bar"><i></i><i></i><i></i><b><svg class="icon"><use href="#i-terminal"/></svg>my-app</b><button class="replay" type="button" aria-label="Replay"><svg class="icon"><use href="#i-sync"/></svg></button></div>
+<pre id="session"><span class="p">$</span> rootstock update
 <span class="bad">markers</span> src/config.rs
 <span class="p">updated to v1.3.0</span>
 <span class="p">$</span> echo $?
@@ -172,40 +342,43 @@
 </header>
 
 <section>
-  <div class="cards">
+  <div class="cards reveal">
     <div class="card">
+      <span class="ic"><svg class="icon"><use href="#i-cpu"/></svg></span>
       <h3>One binary, no runtime</h3>
       <p>Written in Rust. Linux, macOS and Windows. It needs only <code>git</code> on <code>PATH</code>.</p>
     </div>
     <div class="card">
+      <span class="ic"><svg class="icon"><use href="#i-merge"/></svg></span>
       <h3>Real updates</h3>
       <p>A three-way merge through <code>git merge-file</code>. Only edits that truly overlap become conflicts.</p>
     </div>
     <div class="card">
+      <span class="ic"><svg class="icon"><use href="#i-shield"/></svg></span>
       <h3>Nothing lost silently</h3>
       <p>Every case that needs a person is a conflict and exit code <code>2</code>. CI only has to read the code.</p>
     </div>
   </div>
 </section>
 
-<section>
-  <p class="label">How updates work</p>
+<section class="reveal">
+  <p class="label"><svg class="icon"><use href="#i-merge"/></svg>How updates work</p>
   <h2>Your edits stay, the template's improvements arrive</h2>
   <p>The old and the new template versions are both rendered with the project's answers, and only the difference is merged into the project.</p>
-  <div class="flow">
-    <div class="step"><b>Base</b><small>the recorded version, your answers</small></div>
-    <span class="arrow">→</span>
-    <div class="step"><b>Target</b><small>the new tag, your answers</small></div>
-    <span class="arrow">→</span>
-    <div class="step merge"><b>git merge-file</b><small>into your project, path by path</small></div>
-    <span class="arrow">→</span>
-    <div class="step"><b>Clean or conflicts</b><small>exit code 0 or 2</small></div>
+  <div class="flow" id="flow">
+    <div class="step"><b><svg class="icon"><use href="#i-versions"/></svg>Base</b><small>the recorded version, your answers</small></div>
+    <span class="link"></span>
+    <div class="step"><b><svg class="icon"><use href="#i-tag"/></svg>Target</b><small>the new tag, your answers</small></div>
+    <span class="link"></span>
+    <div class="step"><b><svg class="icon"><use href="#i-merge"/></svg>git merge-file</b><small>into your project, path by path</small></div>
+    <span class="link"></span>
+    <div class="step"><b><svg class="icon"><use href="#i-shield"/></svg>Clean or conflicts</b><small>exit code 0 or 2</small></div>
   </div>
-  <a class="more" href="https://github.com/bodasooqa/rootstock#how-updates-work">The full rules →</a>
+  <a class="more" href="https://github.com/bodasooqa/rootstock#how-updates-work">The full rules<svg class="icon"><use href="#i-arrow"/></svg></a>
 </section>
 
-<section>
-  <p class="label">Compared</p>
+<section class="reveal">
+  <p class="label"><svg class="icon"><use href="#i-compare"/></svg>Compared</p>
   <h2>Copier's model, without Python</h2>
   <div class="table">
     <table>
@@ -215,50 +388,58 @@
       <tbody>
         <tr><td>Runtime</td><td>single binary</td><td>Python</td><td>single binary</td><td>single binary</td></tr>
         <tr><td>Templates</td><td>Jinja (minijinja)</td><td>Jinja2</td><td>Liquid</td><td>Tera</td></tr>
-        <tr><td>Updates generated projects</td><td>✓ three-way</td><td>✓ three-way</td><td>✗ creation only</td><td>✗ creation only</td></tr>
-        <tr><td>Conflicts as an exit code</td><td>✓ <code>2</code></td><td>✗ markers only</td><td>—</td><td>—</td></tr>
+        <tr><td>Updates generated projects</td><td><span class="yes"><svg class="icon"><use href="#i-check"/></svg>three-way</span></td><td><span class="yes"><svg class="icon"><use href="#i-check"/></svg>three-way</span></td><td><span class="no">✗ creation only</span></td><td><span class="no">✗ creation only</span></td></tr>
+        <tr><td>Conflicts as an exit code</td><td><span class="yes"><svg class="icon"><use href="#i-check"/></svg><code>2</code></span></td><td><span class="no">✗ markers only</span></td><td>—</td><td>—</td></tr>
       </tbody>
     </table>
   </div>
   <p class="note">Checked in October 2026.</p>
 </section>
 
-<section id="copier">
-  <p class="label">Coming from Copier</p>
+<section id="copier" class="reveal">
+  <p class="label"><svg class="icon"><use href="#i-sync"/></svg>Coming from Copier</p>
   <h2>One command, old tags included</h2>
   <p>Converts a Copier template, a Copier-generated project, or both in one run. It writes nothing unless the whole conversion succeeds, and old template tags are read as they are.</p>
-  <div class="cmd"><span>rootstock import-copier</span><button class="copy" type="button" data-copy="rootstock import-copier">Copy</button></div>
-  <a class="more" href="https://github.com/bodasooqa/rootstock#coming-from-copier">What it converts →</a>
+  <div class="cmd"><span>rootstock import-copier</span><button class="copy" type="button" aria-label="Copy" data-copy="rootstock import-copier"><svg class="icon idle"><use href="#i-copy"/></svg><svg class="icon done"><use href="#i-check"/></svg></button></div>
+  <a class="more" href="https://github.com/bodasooqa/rootstock#coming-from-copier">What it converts<svg class="icon"><use href="#i-arrow"/></svg></a>
 </section>
 
-<section id="install">
-  <p class="label">Install</p>
+<section id="install" class="reveal">
+  <p class="label"><svg class="icon"><use href="#i-download"/></svg>Install</p>
   <h2>Get it</h2>
   <div class="tabs" role="tablist">
-    <button type="button" role="tab" aria-selected="true" aria-controls="tab-cargo" id="t-cargo">cargo</button>
+    <button type="button" role="tab" aria-selected="true" aria-controls="tab-cargo" id="t-cargo"><svg class="icon"><use href="#i-package"/></svg>cargo</button>
     <button type="button" role="tab" aria-selected="false" aria-controls="tab-linux" id="t-linux">Linux</button>
     <button type="button" role="tab" aria-selected="false" aria-controls="tab-macos" id="t-macos">macOS</button>
     <button type="button" role="tab" aria-selected="false" aria-controls="tab-windows" id="t-windows">Windows</button>
   </div>
   <div class="panel" role="tabpanel" id="tab-cargo" aria-labelledby="t-cargo">
-    <div class="cmd"><span>cargo install rootstock --locked</span><button class="copy" type="button" data-copy="cargo install rootstock --locked">Copy</button></div>
+    <div class="cmd"><span>cargo install rootstock --locked</span><button class="copy" type="button" aria-label="Copy" data-copy="cargo install rootstock --locked"><svg class="icon idle"><use href="#i-copy"/></svg><svg class="icon done"><use href="#i-check"/></svg></button></div>
   </div>
   <div class="panel" role="tabpanel" id="tab-linux" aria-labelledby="t-linux" hidden>
-    <p>Static musl builds: <a class="asset" data-target="x86_64-unknown-linux-musl.tar.gz">x86_64</a> · <a class="asset" data-target="aarch64-unknown-linux-musl.tar.gz">aarch64</a></p>
+    <div class="downloads">
+      <a class="asset" data-target="x86_64-unknown-linux-musl.tar.gz"><svg class="icon"><use href="#i-download"/></svg>x86_64 <small>static, musl</small></a>
+      <a class="asset" data-target="aarch64-unknown-linux-musl.tar.gz"><svg class="icon"><use href="#i-download"/></svg>aarch64 <small>static, musl</small></a>
+    </div>
   </div>
   <div class="panel" role="tabpanel" id="tab-macos" aria-labelledby="t-macos" hidden>
-    <p><a class="asset" data-target="aarch64-apple-darwin.tar.gz">Apple silicon</a> · <a class="asset" data-target="x86_64-apple-darwin.tar.gz">Intel</a></p>
+    <div class="downloads">
+      <a class="asset" data-target="aarch64-apple-darwin.tar.gz"><svg class="icon"><use href="#i-download"/></svg>Apple silicon</a>
+      <a class="asset" data-target="x86_64-apple-darwin.tar.gz"><svg class="icon"><use href="#i-download"/></svg>Intel</a>
+    </div>
   </div>
   <div class="panel" role="tabpanel" id="tab-windows" aria-labelledby="t-windows" hidden>
-    <p><a class="asset" data-target="x86_64-pc-windows-msvc.zip">x86_64</a></p>
+    <div class="downloads">
+      <a class="asset" data-target="x86_64-pc-windows-msvc.zip"><svg class="icon"><use href="#i-download"/></svg>x86_64</a>
+    </div>
   </div>
   <p class="note">Every <a href="https://github.com/bodasooqa/rootstock/releases">release</a> lists the checksums in <code>SHA256SUMS</code>. rootstock needs <code>git</code> on <code>PATH</code>.</p>
 </section>
 
 <footer>
-  <span>MIT OR Apache-2.0</span>
+  <span><svg class="icon"><use href="#i-law"/></svg>MIT OR Apache-2.0</span>
   <span>
-    <a href="https://github.com/bodasooqa/rootstock#readme">Docs</a><a href="https://crates.io/crates/rootstock">crates.io</a><a href="https://github.com/bodasooqa/rootstock">GitHub</a>
+    <a href="https://github.com/bodasooqa/rootstock#readme"><svg class="icon"><use href="#i-book"/></svg>Docs</a><a href="https://crates.io/crates/rootstock"><svg class="icon"><use href="#i-package"/></svg>crates.io</a><a href="https://github.com/bodasooqa/rootstock"><svg class="icon"><use href="#i-github"/></svg>GitHub</a>
   </span>
 </footer>
 
@@ -266,16 +447,19 @@
 <script>
   const repo = "bodasooqa/rootstock";
   const releases = `https://github.com/${repo}/releases`;
+  const api = `https://api.github.com/repos/${repo}`;
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 
   for (const button of document.querySelectorAll(".copy")) {
     button.addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText(button.dataset.copy);
-        button.textContent = "Copied";
+        button.classList.add("copied");
+        setTimeout(() => button.classList.remove("copied"), 1500);
       } catch {
-        button.textContent = "Select and copy";
+        button.title = "Select the command and copy it";
       }
-      setTimeout(() => { button.textContent = "Copy"; }, 1500);
     });
   }
 
@@ -290,17 +474,96 @@
     });
   }
 
+  const nav = document.getElementById("top");
+  const onScroll = () => nav.classList.toggle("scrolled", scrollY > 8);
+  addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+
+  // Sections fade in once, as they enter the viewport.
+  const reveal = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        entry.target.classList.add("in");
+        reveal.unobserve(entry.target);
+      }
+    }
+  }, { threshold: 0.15 });
+  for (const element of document.querySelectorAll(".reveal")) reveal.observe(element);
+
+  // The update flow lights its steps one after another, in step with the
+  // pulses that run along the links between them.
+  const steps = document.querySelectorAll("#flow .step");
+  if (!still) {
+    let lit = 0;
+    setInterval(() => {
+      steps.forEach((step, index) => step.classList.toggle("lit", index === lit));
+      lit = (lit + 1) % steps.length;
+    }, 800);
+  }
+
+  // The terminal replays its own static text: commands are typed, output
+  // appears line by line. Without JS or with reduced motion the text stays as is.
+  const session = document.getElementById("session");
+  const replay = document.querySelector(".replay");
+  const lines = session.innerHTML.split("\n");
+  const prompt = '<span class="p">$</span> ';
+  let run = 0;
+  async function play() {
+    const id = ++run;
+    replay.classList.remove("on");
+    session.innerHTML = `${lines.join("\n")}\n${prompt}`;
+    session.style.minHeight = `${session.offsetHeight}px`;
+    session.innerHTML = "";
+    const cursor = '<span class="cursor"></span>';
+    let shown = "";
+    await wait(500);
+    for (const line of lines) {
+      if (id !== run) return;
+      if (line.startsWith(prompt)) {
+        const command = line.slice(prompt.length);
+        for (let i = 0; i <= command.length; i++) {
+          if (id !== run) return;
+          session.innerHTML = `${shown}${prompt}${command.slice(0, i)}${cursor}`;
+          await wait(38 + Math.random() * 45);
+        }
+        shown += `${line}\n`;
+        await wait(380);
+      } else {
+        shown += line.includes('class="mark"') && line.includes("&lt;")
+          ? `<span class="flash">${line}</span>\n`
+          : `${line}\n`;
+        session.innerHTML = shown + cursor;
+        await wait(110);
+      }
+    }
+    session.innerHTML = shown + prompt + cursor;
+    replay.classList.add("on");
+  }
+  replay.addEventListener("click", play);
+  if (!still) play();
+
   // Archive names carry the version, so links point at the latest release
   // once its tag is known, and at the releases page until then.
   const assets = document.querySelectorAll(".asset");
   for (const link of assets) link.href = `${releases}/latest`;
-  fetch(`https://api.github.com/repos/${repo}/releases/latest`)
+  fetch(`${api}/releases/latest`)
     .then((response) => (response.ok ? response.json() : Promise.reject()))
     .then(({ tag_name: tag }) => {
       for (const link of assets) {
         link.href = `${releases}/download/${tag}/rootstock-${tag}-${link.dataset.target}`;
         link.title = `rootstock-${tag}-${link.dataset.target}`;
       }
+      const badge = document.getElementById("release");
+      badge.href = `${releases}/tag/${tag}`;
+      badge.querySelector("span").textContent = `${tag} for Linux, macOS and Windows`;
+    })
+    .catch(() => {});
+  fetch(api)
+    .then((response) => (response.ok ? response.json() : Promise.reject()))
+    .then(({ stargazers_count: stars }) => {
+      if (!stars) return;
+      document.getElementById("stars").textContent = stars;
+      document.querySelector(".stars").classList.add("on");
     })
     .catch(() => {});
 </script>
