@@ -14,7 +14,7 @@ with a real three-way merge: your edits stay, the template's improvements arrive
 [![crates.io](https://img.shields.io/crates/v/rootstock.svg)](https://crates.io/crates/rootstock)
 [![License: MIT OR Apache-2.0](https://img.shields.io/crates/l/rootstock.svg)](#license)
 
-[Install](#install) · [Quick start](#quick-start) · [How updates work](#how-updates-work) · [Commands](#commands) · [Writing a template](#writing-a-template) · [Coming from Copier](#coming-from-copier)
+[Website](https://bodasooqa.github.io/rootstock/) · [Install](#install) · [Quick start](#quick-start) · [How updates work](#how-updates-work) · [Commands](#commands) · [Writing a template](#writing-a-template) · [Coming from Copier](#coming-from-copier)
 
 </div>
 
@@ -295,8 +295,9 @@ The specification is [`docs/design.md`](docs/design.md); it is the source of tru
 - `src/cli.rs`, `src/commands/{mod,new,update,status,check,import_copier}.rs` - CLI, the terminal dialog and the commands
 - `tests/` - end-to-end scenarios through the binary (`cli_*.rs`), fixtures in `tests/support/`; `tests/parity/` - the Copier parity checks of Stage 2 (not run in CI)
 - `docs/design.md` - the specification
-- `assets/` - the logo, light and dark
-- `.github/workflows/ci.yml` - tests on Linux, macOS and Windows; `release.yml` - binaries on GitHub Releases for a `vX.Y.Z` tag
+- `assets/` - the logo, light and dark, and the mark
+- `site/` - the project page on GitHub Pages, one static HTML file
+- `.github/workflows/ci.yml` - tests on Linux, macOS and Windows; `release.yml` - binaries on GitHub Releases for a `vX.Y.Z` tag; `pages.yml` - publishes `site/` when it changes on `main`
 
 </details>
 
