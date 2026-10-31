@@ -90,20 +90,21 @@ markers Makefile
 
 The CI bump and the new `test` line merged on their own. Your `fmt` target is still there. The one line both sides changed is marked:
 
-```makefile
-fmt:
-	cargo fmt --check
+  <!-- Indented two spaces so the markers below are not at the start of a line: CI fails on real conflict markers. -->
+  ```makefile
+  fmt:
+  	cargo fmt --check
 
-test:
-	cargo test --all-targets
+  test:
+  	cargo test --all-targets
 
-lint:
-<<<<<<< project
-	cargo clippy -- -D warnings
-=======
-	cargo clippy --all-targets
->>>>>>> template v1.1.0
-```
+  lint:
+  <<<<<<< project
+  	cargo clippy -- -D warnings
+  =======
+  	cargo clippy --all-targets
+  >>>>>>> template v1.1.0
+  ```
 
 Resolve the conflict, run `rootstock check` to confirm nothing is left, and commit. Every update is an ordinary diff in git, easy to review and easy to undo.
 
