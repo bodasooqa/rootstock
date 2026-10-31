@@ -162,6 +162,19 @@ echo "session-tree.sh"
 check "внутри репозитория"            session-tree.sh '{}'                                       context "$staging_repo"
 check "вне репозитория"               session-tree.sh '{}'                                       silent  "$plain"
 
+# Сессия, начатая в чужом клоне, не исполняет его код: `knowledge/due.sh`
+# берётся из проекта хука, как у knowledge-due.sh, а не из дерева каталога.
+foreign=$(new_repo) || exit 1
+mkdir -p "$foreign/knowledge"
+printf '#!/usr/bin/env bash\n: > "%s/foreign-due-ran"\n' "$base" > "$foreign/knowledge/due.sh"
+chmod +x "$foreign/knowledge/due.sh"
+(cd "$foreign" && printf '{}' | "$hooks/session-tree.sh" >/dev/null 2>&1)
+if [ -e "$base/foreign-due-ran" ]; then
+  bad "due.sh чужого клона не исполняется" "скрипт не запущен" "запущен"
+else
+  ok "due.sh чужого клона не исполняется"
+fi
+
 out=$(cd "$staging_repo" && printf '{}' | "$hooks/session-tree.sh" 2>/dev/null)
 case "$out" in
   *"ОБЩЕМ каталоге"*) ok "общий каталог назван" ;;
@@ -459,6 +472,17 @@ if has rust-clippy.sh; then
   { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "clippy молчит на правке субагента" || bad "clippy молчит на правке субагента" "молчание, код 0" "код $code: $out"
   out=$(clippy_run first); code=$?
   { [ $code -eq 2 ] && [ -n "$out" ]; } && ok "clippy будит на той же правке главной сессии" || bad "clippy будит на той же правке главной сессии" "код 2 с текстом" "код $code: $out"
+
+  # Состояние не лежит в общем временном каталоге: там его заранее подложит
+  # другой пользователь машины, и файл подписи окажется ссылкой на чужой файл.
+  # Место состояния — каталог git дерева проекта.
+  shared_tmp=$(new_tmp)
+  rm -rf "$clippydir/.git/harness"
+  out=$(CLAUDE_PROJECT_DIR="$clippydir" FAKE_CLIPPY_OUT="$clippystate/first.txt" HARNESS_CLIPPY="$fake" TMPDIR="$shared_tmp" \
+    bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$(file_ev "$clippydir/crates/core/src/lib.rs")" "$hooks/rust-clippy.sh"); code=$?
+  { [ $code -eq 2 ] && [ ! -e "$shared_tmp/harness-clippy-hook" ] && [ -d "$clippydir/.git/harness/clippy" ]; } \
+    && ok "состояние clippy — в каталоге git проекта" \
+    || bad "состояние clippy — в каталоге git проекта" "код 2, состояние в .git/harness/clippy" "код $code, во временном: $(ls "$shared_tmp")"
 
   # Правка идёт пачкой: пока проверка считает, исполнитель трогает ещё файлы.
   # Вердикт о состоянии, которого на диске уже нет, будить не должен. Поддельный
