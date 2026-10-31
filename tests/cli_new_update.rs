@@ -1691,3 +1691,34 @@ fn new_emits_the_executable_bit_of_the_tree() {
         assert_eq!(mode_of("plain.txt") & 0o111, 0);
     }
 }
+
+/// Windows keeps the executable bit only in the index, and a hook of `new` that
+/// commits must already find it there.
+#[cfg(windows)]
+#[test]
+fn new_in_an_existing_repository_has_the_bit_in_the_index_before_hooks() {
+    let repo = TemplateRepo::new();
+    repo.file(
+        "rootstock.toml",
+        "schema = 1\n\n[[hooks]]\nrun = \"git add -A && git -c user.name=T -c user.email=t@example.com commit -q -m new\"\nwhen = [\"new\"]\n",
+    )
+    .file("run.sh", "#!/bin/sh\n");
+    repo.exec("run.sh").tag("v1.0.0");
+    let tmp = TempDir::new().unwrap();
+    git_in(tmp.path(), &["init", "-q", "-b", "main"]);
+    let dir = tmp.path().join("proj");
+    rootstock()
+        .args(["new", &repo.url()])
+        .arg(&dir)
+        .args(["--defaults", "--trust"])
+        .assert()
+        .code(0);
+    // The commit the hook made, not the index: the index gets the bit after the
+    // hooks too, the commit only if it was there before them.
+    let tree = git_in(&dir, &["ls-tree", "-r", "HEAD"]);
+    assert!(
+        tree.lines()
+            .any(|l| l.starts_with("100755") && l.ends_with("run.sh")),
+        "{tree}"
+    );
+}
