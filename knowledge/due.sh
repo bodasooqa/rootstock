@@ -18,14 +18,14 @@
 # считается отсутствующим — как и любое правило обвязки, которое держится
 # только прозой.
 #
-# Пути берутся из `.copier-answers.yml` в корне проекта: `open_questions_path` —
+# Пути берутся из `.rootstock.toml` в корне проекта: `open_questions_path` —
 # файл вопросов, `stages_path` — файл с таблицей состояния этапов
 # (`| N. Название | состояние |`, состояния «в работе», «закрыт»; строка может
 # покрывать диапазон «4–8. …»). Архив changes — `openspec/changes/archive`.
 set -euo pipefail
 
 root=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
-answers="$root/.copier-answers.yml"
+answers="$root/.rootstock.toml"
 
 mode=${1:-}
 case "$mode" in
@@ -45,12 +45,14 @@ case "$mode" in
     ;;
 esac
 
-# Значение ключа верхнего уровня из файла ответов: `ключ: значение`, кавычки снимаются.
+# Значение ключа из таблицы `[answers]` записи шаблона: `ключ = "значение"`,
+# кавычки снимаются. Экранирование в строке не раскрывается: в путях его нет.
 answer() {
   local key=$1 value
   value=$(awk -v key="$key" -v q="'" '
-    index($0, key ":") == 1 {
-      v = substr($0, length(key) + 2)
+    /^[ \t]*\[/ { inside = ($0 ~ /^[ \t]*\[answers\][ \t]*$/); next }
+    inside && $0 ~ ("^" key "[ \t]*=") {
+      v = substr($0, index($0, "=") + 1)
       sub(/^[ \t]+/, "", v)
       sub(/[ \t]+$/, "", v)
       f = substr(v, 1, 1)

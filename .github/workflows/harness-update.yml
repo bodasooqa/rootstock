@@ -1,16 +1,11 @@
 # Обновление харнесса: новая версия шаблона приходит в проект PR'ом.
 # Управляемый файл: обновляется шаблоном, руками не правится.
 #
-# Раз в сутки и вручную сверяет теги шаблона с версией проекта (`_commit` в
-# .copier-answers.yml). Есть новее — обновление до неё, конфликты маркерами
-# в файлах, PR «Обновление харнесса до vX.Y.Z» из ветки harness/update-vX.Y.Z.
-# Вливает его harness-automerge.yml после зелёного CI.
-#
-# Инструмент — по формату целевого тега (.harness/update/update.sh): тег
-# с copier.yml обновляется `copier update`; тег с rootstock.toml — rootstock:
-# сначала `rootstock import-copier` отдельным коммитом (проект переходит
-# с .copier-answers.yml на .rootstock.toml на своей версии), затем
-# `rootstock update` до тега.
+# Раз в сутки и вручную сверяет теги шаблона с версией проекта (`version` в
+# .rootstock.toml). Есть новее — `rootstock update` до неё
+# (.harness/update/update.sh), конфликты маркерами в файлах, PR «Обновление
+# харнесса до vX.Y.Z» из ветки harness/update-vX.Y.Z. Вливает его
+# harness-automerge.yml после зелёного CI.
 #
 # Метки PR (создаются здесь же):
 #   harness:major     мажорная версия — вливается вручную, см. CHANGELOG шаблона;
@@ -45,13 +40,11 @@ permissions:
   contents: read
 
 env:
-  COPIER_VERSION: 9.19.1
-  # rootstock — для тегов шаблона в его формате. Сменил версию — смени и суммы
-  # архивов в шаге «rootstock» (SHA256SUMS выпуска).
+  # Сменил версию rootstock — смени и суммы архивов в шаге «rootstock»
+  # (SHA256SUMS выпуска).
   ROOTSTOCK_VERSION: 0.1.0
-  # gh и uv — на случай раннера, где их нет (шаг «Инструменты»).
+  # gh — на случай раннера, где его нет (шаг «Инструменты»).
   GH_VERSION: 2.102.0
-  UV_VERSION: 0.12.24
   TEMPLATE_URL: ${{ vars.HARNESS_TEMPLATE_URL || 'https://github.com/bodasooqa/harness' }}
 
 jobs:
@@ -67,34 +60,25 @@ jobs:
       WANT: ${{ inputs.version }}
       EVENT: ${{ github.event_name }}
     steps:
-      # На hosted-раннере gh и pipx есть, на своём их может не быть. Недостающее
+      # На hosted-раннере gh есть, на своём его может не быть. Тогда он
       # ставится закреплённой версией в каталог джоба, система раннера не
       # трогается. Тот же шаг — в harness-automerge.yml.
       - name: Инструменты
         run: |
           set -euo pipefail
-          need_gh=0 need_uv=0
-          command -v gh >/dev/null 2>&1 || need_gh=1
-          command -v pipx >/dev/null 2>&1 || command -v uvx >/dev/null 2>&1 || need_uv=1
-          [ $need_gh = 0 ] && [ $need_uv = 0 ] && exit 0
+          command -v gh >/dev/null 2>&1 && exit 0
           case "$(uname -s)/$(uname -m)" in
-            Linux/x86_64) gh_arch=amd64 uv_arch=x86_64 ;;
-            Linux/aarch64|Linux/arm64) gh_arch=arm64 uv_arch=aarch64 ;;
+            Linux/x86_64) gh_arch=amd64 ;;
+            Linux/aarch64|Linux/arm64) gh_arch=arm64 ;;
             *)
-              echo "::error title=Нет gh или uv::На раннере $(uname -s)/$(uname -m) нужны gh и pipx или uv: сам шаг ставит их только на Linux x86_64 и arm64."
+              echo "::error title=Нет gh::На раннере $(uname -s)/$(uname -m) нужен gh: сам шаг ставит его только на Linux x86_64 и arm64."
               exit 1 ;;
           esac
           bin="$RUNNER_TEMP/harness-bin"
           mkdir -p "$bin"
-          if [ $need_gh = 1 ]; then
-            name="gh_${GH_VERSION}_linux_${gh_arch}"
-            curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${name}.tar.gz" \
-              | tar -xz -C "$bin" --strip-components=2 "${name}/bin/gh"
-          fi
-          if [ $need_uv = 1 ]; then
-            curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${uv_arch}-unknown-linux-gnu.tar.gz" \
-              | tar -xz -C "$bin" --strip-components=1
-          fi
+          name="gh_${GH_VERSION}_linux_${gh_arch}"
+          curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${name}.tar.gz" \
+            | tar -xz -C "$bin" --strip-components=2 "${name}/bin/gh"
           echo "$bin" >>"$GITHUB_PATH"
 
       # Владелец токена — автор PR обновления и его коммитов. Ту же подпись
@@ -119,11 +103,19 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          answers=.copier-answers.yml
-          value() { sed -n "s/^$1: //p" "$answers" | tr -d "'\""; }
-          # Источник обновления — `_src_path` файла ответов: copier update берёт
-          # шаблон оттуда, а теги здесь — из TEMPLATE_URL. Разойтись они не
-          # должны, иначе версия придёт из одного репозитория, а файлы из другого.
+          record=.rootstock.toml
+          if [ ! -f "$record" ]; then
+            echo "::error title=Нет .rootstock.toml::Проект не на rootstock. С Copier проект переходит выпуском-мостом v0.5.x: обнови харнесс до него, затем до этой версии. Шаги — CHANGELOG.md шаблона, раздел v1.0.0."
+            exit 1
+          fi
+          # Ключ верхнего уровня записи (до первой таблицы): `ключ = "значение"`.
+          value() {
+            awk -v key="$1" '/^[ \t]*\[/ { exit }
+              $0 ~ ("^" key "[ \t]*=") { v = substr($0, index($0, "=") + 1); gsub(/^[ \t"\047]+|[ \t"\047]+$/, "", v); print v; exit }' "$record"
+          }
+          # Источник обновления — `source` записи: rootstock update берёт шаблон
+          # оттуда, а теги здесь — из TEMPLATE_URL. Разойтись они не должны,
+          # иначе версия придёт из одного репозитория, а файлы из другого.
           norm() {
             local u=$1
             case "$u" in
@@ -133,13 +125,13 @@ jobs:
             u=${u%/}
             printf '%s' "${u%.git}"
           }
-          src=$(value _src_path)
+          src=$(value source)
           if [ "$(norm "$src")" != "$(norm "$TEMPLATE_URL")" ]; then
-            echo "::error title=Источник шаблона::_src_path в $answers ($src) не совпадает с источником тегов ($TEMPLATE_URL). Поправь _src_path или переменную HARNESS_TEMPLATE_URL."
+            echo "::error title=Источник шаблона::source в $record ($src) не совпадает с источником тегов ($TEMPLATE_URL). Поправь source или переменную HARNESS_TEMPLATE_URL."
             exit 1
           fi
           git ls-remote --tags --refs "$TEMPLATE_URL" | cut -f2 >"$RUNNER_TEMP/tags"
-          out=$(.harness/update/next-version.sh ${WANT:+--want "$WANT"} "$(value _commit)" <"$RUNNER_TEMP/tags")
+          out=$(.harness/update/next-version.sh ${WANT:+--want "$WANT"} "$(value version)" <"$RUNNER_TEMP/tags")
           printf '%s\n' "$out" | tee -a "$GITHUB_OUTPUT"
           next=$(printf '%s\n' "$out" | sed -n 's/^next=//p')
           current=$(printf '%s\n' "$out" | sed -n 's/^current=//p')
@@ -177,21 +169,10 @@ jobs:
           fi
           echo "skip=false" >>"$GITHUB_OUTPUT"
 
-      - name: Формат
-        id: format
-        if: steps.version.outputs.next != '' && steps.existing.outputs.skip == 'false'
-        env:
-          NEXT: ${{ steps.version.outputs.next }}
-        run: |
-          set -euo pipefail
-          tool=$(.harness/update/update.sh format "$NEXT")
-          echo "Тег $NEXT обновляется инструментом $tool." | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "tool=$tool" >>"$GITHUB_OUTPUT"
-
       # rootstock закреплённой версии из его выпуска на GitHub, со сверкой
       # суммы архива, в каталог джоба; система раннера не трогается.
       - name: rootstock
-        if: steps.format.outputs.tool == 'rootstock'
+        if: steps.version.outputs.next != '' && steps.existing.outputs.skip == 'false'
         run: |
           set -euo pipefail
           case "$(uname -s)/$(uname -m)" in
@@ -228,48 +209,31 @@ jobs:
           NEXT: ${{ steps.version.outputs.next }}
           CURRENT: ${{ steps.version.outputs.current }}
           MAJOR: ${{ steps.version.outputs.major }}
-          TOOL: ${{ steps.format.outputs.tool }}
           LOGIN: ${{ steps.me.outputs.login }}
           EMAIL: ${{ steps.me.outputs.email }}
         run: |
           set -euo pipefail
           branch="harness/update-$NEXT"
 
-          # Коммиты — подписью владельца токена: и свои, и временные коммиты
-          # copier. Глобальный git config не трогаем: раннер может быть своим.
+          # Коммит — подписью владельца токена. Глобальный git config не
+          # трогаем: раннер может быть своим.
           export GIT_AUTHOR_NAME="$LOGIN" GIT_COMMITTER_NAME="$LOGIN"
           export GIT_AUTHOR_EMAIL="$EMAIL" GIT_COMMITTER_EMAIL="$EMAIL"
 
-          # copier закреплённой версии, без установки в систему раннера.
-          if [ "$TOOL" = copier ]; then
-            if command -v pipx >/dev/null 2>&1; then
-              export COPIER="pipx run --spec copier==$COPIER_VERSION copier"
-            elif command -v uvx >/dev/null 2>&1; then
-              export COPIER="uvx --from copier==$COPIER_VERSION copier"
-            else
-              echo "::error title=Нет pipx и uv::Для copier на раннере нужен pipx или uv."
-              exit 1
-            fi
-          fi
-
-          # Обновление и коммиты; конфликты — строками `<вид> <путь>`.
-          conflicts=$(.harness/update/update.sh apply "$TOOL" "$NEXT")
+          # Обновление и коммит; конфликты — строками `<вид> <путь>`.
+          conflicts=$(.harness/update/update.sh "$NEXT")
           push_url="${GITHUB_SERVER_URL/https:\/\//https://x-access-token:$GH_TOKEN@}/$REPO.git"
           git push --quiet --force "$push_url" "HEAD:refs/heads/$branch"
 
           gh label create harness:major -R "$REPO" --force --color B60205 \
             --description "Мажорная версия харнесса: вливается вручную"
           gh label create harness:conflict -R "$REPO" --force --color D93F0B \
-            --description "Конфликт обновления харнесса: маркеры в файлах"
+            --description "Конфликт обновления харнесса: разбирается вручную"
 
           body="$RUNNER_TEMP/body.md"
           labels=()
           {
             echo "Обновление харнесса с $CURRENT до [$NEXT]($TEMPLATE_URL/releases/tag/$NEXT)."
-            if [ "$TOOL" = rootstock ]; then
-              echo
-              echo "**Проект переходит с Copier на rootstock.** Первый коммит — \`rootstock import-copier\`: \`.rootstock.toml\` вместо \`.copier-answers.yml\` на прежней версии, файлы проекта не меняются. Второй — само обновление, \`rootstock update\`."
-            fi
             if [ "$MAJOR" = true ]; then
               labels+=(--label harness:major)
               echo

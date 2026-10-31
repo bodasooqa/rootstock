@@ -63,7 +63,7 @@ jobs:
               - "!openspec/**"
               - "!.mcp.json"
               - "!lefthook.yml"
-              - "!.copier-answers.yml"
+              - "!.rootstock.toml"
 
       - id: any
         uses: dorny/paths-filter@v3
@@ -75,7 +75,7 @@ jobs:
               - .pi/**
               - knowledge/**
               - lefthook.yml
-              - .copier-answers.yml
+              - .rootstock.toml
               - "knowledge/open-questions.md"
               - "knowledge/stages.md"
               - rust-toolchain.toml
@@ -105,7 +105,7 @@ jobs:
       - name: Тесты
         run: cargo test
 
-  # Маркеры конфликта слияния. Конфликт обновления харнесса (copier update)
+  # Маркеры конфликта слияния. Конфликт обновления харнесса (rootstock update)
   # остаётся маркерами в файлах, и PR с ним обязан быть красным — иначе
   # harness-automerge.yml его вольёт. Идёт на любую правку, без фильтра:
   # маркер может оказаться в любом файле.

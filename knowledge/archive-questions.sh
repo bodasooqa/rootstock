@@ -14,12 +14,12 @@
 #                                  в индексе обычно нет, и без этого перенос
 #                                  делился бы на два коммита
 #
-# Путь к файлу вопросов — `open_questions_path` из `.copier-answers.yml`; архив —
+# Путь к файлу вопросов — `open_questions_path` из `.rootstock.toml`; архив —
 # тот же путь с суффиксом `-closed` (`open-questions.md` → `open-questions-closed.md`).
 set -euo pipefail
 
 root=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
-answers="$root/.copier-answers.yml"
+answers="$root/.rootstock.toml"
 
 mode=${1:-}
 case "$mode" in
@@ -39,9 +39,11 @@ if [[ ! -f "$answers" ]]; then
   exit 1
 fi
 
+# Таблица `[answers]` записи шаблона: `open_questions_path = "путь"`.
 open=$(awk -v q="'" '
-  index($0, "open_questions_path:") == 1 {
-    v = substr($0, length("open_questions_path:") + 1)
+  /^[ \t]*\[/ { inside = ($0 ~ /^[ \t]*\[answers\][ \t]*$/); next }
+  inside && /^open_questions_path[ \t]*=/ {
+    v = substr($0, index($0, "=") + 1)
     sub(/^[ \t]+/, "", v)
     sub(/[ \t]+$/, "", v)
     f = substr(v, 1, 1)
