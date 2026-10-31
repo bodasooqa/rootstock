@@ -2,9 +2,15 @@
 # Управляемый файл: обновляется шаблоном, руками не правится.
 #
 # Раз в сутки и вручную сверяет теги шаблона с версией проекта (`_commit` в
-# .copier-answers.yml). Есть новее — `copier update` до неё, конфликты
-# маркерами в файлах, PR «Обновление харнесса до vX.Y.Z» из ветки
-# harness/update-vX.Y.Z. Вливает его harness-automerge.yml после зелёного CI.
+# .copier-answers.yml). Есть новее — обновление до неё, конфликты маркерами
+# в файлах, PR «Обновление харнесса до vX.Y.Z» из ветки harness/update-vX.Y.Z.
+# Вливает его harness-automerge.yml после зелёного CI.
+#
+# Инструмент — по формату целевого тега (.harness/update/update.sh): тег
+# с copier.yml обновляется `copier update`; тег с rootstock.toml — rootstock:
+# сначала `rootstock import-copier` отдельным коммитом (проект переходит
+# с .copier-answers.yml на .rootstock.toml на своей версии), затем
+# `rootstock update` до тега.
 #
 # Метки PR (создаются здесь же):
 #   harness:major     мажорная версия — вливается вручную, см. CHANGELOG шаблона;
@@ -40,6 +46,9 @@ permissions:
 
 env:
   COPIER_VERSION: 9.19.1
+  # rootstock — для тегов шаблона в его формате. Сменил версию — смени и суммы
+  # архивов в шаге «rootstock» (SHA256SUMS выпуска).
+  ROOTSTOCK_VERSION: 0.1.0
   # gh и uv — на случай раннера, где их нет (шаг «Инструменты»).
   GH_VERSION: 2.102.0
   UV_VERSION: 0.12.24
@@ -168,42 +177,83 @@ jobs:
           fi
           echo "skip=false" >>"$GITHUB_OUTPUT"
 
-      - name: copier update и PR
+      - name: Формат
+        id: format
+        if: steps.version.outputs.next != '' && steps.existing.outputs.skip == 'false'
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          tool=$(.harness/update/update.sh format "$NEXT")
+          echo "Тег $NEXT обновляется инструментом $tool." | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "tool=$tool" >>"$GITHUB_OUTPUT"
+
+      # rootstock закреплённой версии из его выпуска на GitHub, со сверкой
+      # суммы архива, в каталог джоба; система раннера не трогается.
+      - name: rootstock
+        if: steps.format.outputs.tool == 'rootstock'
+        run: |
+          set -euo pipefail
+          case "$(uname -s)/$(uname -m)" in
+            Linux/x86_64) target=x86_64-unknown-linux-musl sum=575a7587822bbdc0f661d8fe6d02309757056386eb835a82b1012e6751bf088c ;;
+            Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-musl sum=93d4feb3b5bccd67c96106e829f84aaa2ab96c846f8e5ade4318bc18e956b5b4 ;;
+            Darwin/arm64) target=aarch64-apple-darwin sum=972a063eb1ac1fa2125ef86e06c7568f92f9dd25cd8a7a9bb619ec2a2010083e ;;
+            Darwin/x86_64) target=x86_64-apple-darwin sum=a9474430a4a3fbd4613c9d0454478603204be06a6b4bd39c827efe3ca899c180 ;;
+            *)
+              echo "::error title=Нет rootstock::На раннере $(uname -s)/$(uname -m) шаг не ставит rootstock: только Linux и macOS, x86_64 и arm64."
+              exit 1 ;;
+          esac
+          name="rootstock-v${ROOTSTOCK_VERSION}-${target}"
+          archive="$RUNNER_TEMP/$name.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/bodasooqa/rootstock/releases/download/v${ROOTSTOCK_VERSION}/${name}.tar.gz"
+          if command -v sha256sum >/dev/null 2>&1; then
+            got=$(sha256sum "$archive" | cut -d' ' -f1)
+          else
+            got=$(shasum -a 256 "$archive" | cut -d' ' -f1)
+          fi
+          if [ "$got" != "$sum" ]; then
+            echo "::error title=Сумма rootstock::Архив $name.tar.gz не совпал с закреплённой суммой: $got вместо $sum."
+            exit 1
+          fi
+          bin="$RUNNER_TEMP/rootstock-bin"
+          mkdir -p "$bin"
+          tar -xzf "$archive" -C "$bin" --strip-components=1 "$name/rootstock"
+          echo "$bin" >>"$GITHUB_PATH"
+          "$bin/rootstock" --version
+
+      - name: Обновление и PR
         if: steps.version.outputs.next != '' && steps.existing.outputs.skip == 'false'
         env:
           NEXT: ${{ steps.version.outputs.next }}
           CURRENT: ${{ steps.version.outputs.current }}
           MAJOR: ${{ steps.version.outputs.major }}
+          TOOL: ${{ steps.format.outputs.tool }}
           LOGIN: ${{ steps.me.outputs.login }}
           EMAIL: ${{ steps.me.outputs.email }}
         run: |
           set -euo pipefail
           branch="harness/update-$NEXT"
 
-          # Коммиты — подписью владельца токена: и свой, и временные коммиты
+          # Коммиты — подписью владельца токена: и свои, и временные коммиты
           # copier. Глобальный git config не трогаем: раннер может быть своим.
           export GIT_AUTHOR_NAME="$LOGIN" GIT_COMMITTER_NAME="$LOGIN"
           export GIT_AUTHOR_EMAIL="$EMAIL" GIT_COMMITTER_EMAIL="$EMAIL"
 
           # copier закреплённой версии, без установки в систему раннера.
-          if command -v pipx >/dev/null 2>&1; then
-            copier() { pipx run --spec "copier==$COPIER_VERSION" copier "$@"; }
-          elif command -v uvx >/dev/null 2>&1; then
-            copier() { uvx --from "copier==$COPIER_VERSION" copier "$@"; }
-          else
-            echo "::error title=Нет pipx и uv::Для copier на раннере нужен pipx или uv."
-            exit 1
+          if [ "$TOOL" = copier ]; then
+            if command -v pipx >/dev/null 2>&1; then
+              export COPIER="pipx run --spec copier==$COPIER_VERSION copier"
+            elif command -v uvx >/dev/null 2>&1; then
+              export COPIER="uvx --from copier==$COPIER_VERSION copier"
+            else
+              echo "::error title=Нет pipx и uv::Для copier на раннере нужен pipx или uv."
+              exit 1
+            fi
           fi
 
-          # Конфликт copier оставляет маркерами в файлах (--conflict inline)
-          # и помечает файл неслитым в индексе.
-          copier update --trust --defaults --conflict inline --vcs-ref "$NEXT"
-          unmerged=$(git diff --name-only --diff-filter=U)
-          git add -A
-          markers=$(.harness/update/conflict-markers.sh 2>/dev/null || true)
-          conflicts=$(printf '%s\n%s\n' "$unmerged" "$markers" | sed '/^$/d' | sort -u)
-
-          git commit --quiet --no-verify -m "Обновление харнесса до $NEXT"
+          # Обновление и коммиты; конфликты — строками `<вид> <путь>`.
+          conflicts=$(.harness/update/update.sh apply "$TOOL" "$NEXT")
           push_url="${GITHUB_SERVER_URL/https:\/\//https://x-access-token:$GH_TOKEN@}/$REPO.git"
           git push --quiet --force "$push_url" "HEAD:refs/heads/$branch"
 
@@ -216,6 +266,10 @@ jobs:
           labels=()
           {
             echo "Обновление харнесса с $CURRENT до [$NEXT]($TEMPLATE_URL/releases/tag/$NEXT)."
+            if [ "$TOOL" = rootstock ]; then
+              echo
+              echo "**Проект переходит с Copier на rootstock.** Первый коммит — \`rootstock import-copier\`: \`.rootstock.toml\` вместо \`.copier-answers.yml\` на прежней версии, файлы проекта не меняются. Второй — само обновление, \`rootstock update\`."
+            fi
             if [ "$MAJOR" = true ]; then
               labels+=(--label harness:major)
               echo
@@ -224,11 +278,14 @@ jobs:
             if [ -n "$conflicts" ]; then
               labels+=(--label harness:conflict)
               echo
-              echo "**Конфликт:** правки проекта разошлись с шаблоном, маркеры в файлах — разреши в этой ветке и влей вручную после зелёного CI (коммит не от обновления автовливание не пропускает):"
+              echo "**Конфликт:** правки проекта разошлись с шаблоном (вид — в скобках; \`markers\` — маркеры в файле) — разреши в этой ветке и влей вручную после зелёного CI (коммит не от обновления автовливание не пропускает):"
               echo
-              # Обратные кавычки здесь — разметка Markdown, а не подстановка.
+              # Строка — `<вид> <путь>`, путь может быть с пробелами. Обратные
+              # кавычки в формате — разметка Markdown, а не подстановка.
               # shellcheck disable=SC2016
-              printf '%s\n' "$conflicts" | sed 's/.*/- `&`/'
+              printf '%s\n' "$conflicts" | while read -r kind path; do
+                printf -- '- `%s` (%s)\n' "$path" "$kind"
+              done
             fi
             echo
             echo "Без меток \`harness:major\` и \`harness:conflict\` PR вливается сам после зелёного CI (harness-automerge.yml)."
