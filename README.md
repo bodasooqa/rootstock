@@ -182,7 +182,7 @@ rootstock import-copier
 | `1` | error: bad arguments, unreadable record, failed `check`, … Nothing written, or a clear statement of what was |
 | `2` | `new`, `update` or `import-copier` finished with conflicts; they are listed one per line, `<kind> <path>` |
 
-Stdout carries only command output (conflict lists, status, JSON); everything else goes to stderr. That makes rootstock easy to drive from CI: run `rootstock update`, open a pull request, and label it when the exit code is `2`. That is how [harness](https://github.com/bodasooqa/harness) delivers its updates to every project once it moves to rootstock.
+Stdout carries only command output (conflict lists, status, JSON); everything else goes to stderr. That makes rootstock easy to drive from CI: run `rootstock update`, open a pull request, and label it when the exit code is `2`. That is how [harness](https://github.com/bodasooqa/harness) delivers its updates to every project.
 
 ## Writing a template
 
@@ -262,7 +262,7 @@ Template files are read from the git tree with `core.autocrlf=false` and `core.e
 
 ## Status
 
-`0.1` is the first public release. Stage 1 (the core) and Stage 2 (Copier import and parity) are done. Stage 3 is in progress: [harness](https://github.com/bodasooqa/harness) moves from Copier to rootstock, and its daily update pull requests keep working as they do now. Homebrew is planned.
+`0.1` is the first public release. All three stages of the specification are done: the core, Copier import and parity, and the move of [harness](https://github.com/bodasooqa/harness) from Copier to rootstock. harness v1.0.0 is a rootstock template, and its projects take its updates through `rootstock update`. Homebrew is planned.
 
 ## Development
 

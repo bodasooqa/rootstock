@@ -118,6 +118,9 @@ pub(crate) fn git_command(program: &str) -> Command {
         cmd.env_remove(var);
     }
     cmd.stdin(Stdio::null());
+    // Decisions are made on git's message text (`classify_work_tree` looks for
+    // "not a git repository"), and git may translate its messages.
+    cmd.env("LC_ALL", "C");
     cmd
 }
 
@@ -458,8 +461,16 @@ fn resolve(dir: &str, rev: &str) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     const REFUSAL: &str = "template URL carries credentials";
+
+    #[test]
+    fn git_command_pins_the_locale() {
+        let cmd = git_command("git");
+        let lc_all = cmd.get_envs().find(|(k, _)| *k == "LC_ALL");
+        assert_eq!(lc_all, Some((OsStr::new("LC_ALL"), Some(OsStr::new("C")))));
+    }
 
     #[test]
     fn verbatim_prefix_is_stripped() {

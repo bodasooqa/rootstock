@@ -6,4 +6,4 @@
 |---|---|
 | 1. Core | закрыт |
 | 2. Copier import | закрыт |
-| 3. harness migration | в работе |
+| 3. harness migration | закрыт |

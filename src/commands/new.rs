@@ -99,23 +99,32 @@ pub fn run(opts: &NewOptions) -> Result<Report> {
 
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     apply(&plan, dir)?;
+    // Before the hooks, which may commit: a project inside an existing
+    // repository has an index already (outside one this does nothing). A path
+    // git refuses is reported at the end, after the hooks and the output.
+    let mut failed = set_index_modes(&plan, dir);
     let report = Report {
         version,
         conflicts: plan.conflicts.clone(),
     };
     if let Err(e) = run_trusted(&cfg.hooks, Phase::New, dir, shell.as_ref()) {
-        let e = e.context("files were written; hooks failed; the record was not written");
+        let mut e = e.context("files were written; hooks failed; the record was not written");
+        if let Some(index) = index_failure(&failed, false) {
+            e = e.context(format!("{index:#}"));
+        }
         return Err(HookFailed::new(report, e).into());
     }
     record::write_text(dir, &record_text)
         .context("files were written; the record was not written")?;
     if opts.git {
         init_git(dir).context("project created; git init failed")?;
+        // A fresh repository had no index before; paths already reported stay single.
+        for path in set_index_modes(&plan, dir) {
+            if !failed.contains(&path) {
+                failed.push(path);
+            }
+        }
     }
-    // Only now is there an index to hold the executable bits (a project in a
-    // repository has one already). A path git refuses does not stop the command:
-    // it is reported once the rest is done.
-    let failed = set_index_modes(&plan, dir);
     eprintln!(
         "created {} from {} {}",
         dir.display(),
