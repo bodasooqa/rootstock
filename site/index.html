@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rootstock: project templates that keep growing</title>
+<meta name="description" content="Create a project from a versioned git template, then update it to every new template version with a real three-way merge. One Rust binary, no Python.">
+<meta property="og:title" content="rootstock">
+<meta property="og:description" content="Project templates that keep growing after you use them. One Rust binary with real three-way updates.">
+<meta property="og:url" content="https://bodasooqa.github.io/rootstock/">
+<link rel="icon" href="mark-light.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #111a2e;
+    --term: #060a14;
+    --line: #1f2a44;
+    --rule: rgba(148, 163, 184, 0.22);
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --green: #10b981;
+    --rust: #d2622e;
+    --amber: #e5c07b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  a { color: inherit; }
+  code { font-family: var(--mono); font-size: 0.9em; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+  nav { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 22px 0; }
+  nav .logo img { height: 34px; display: block; }
+  nav ul { display: flex; gap: 22px; list-style: none; margin: 0; padding: 0; font-size: 15px; }
+  nav ul a { color: var(--muted); text-decoration: none; }
+  nav ul a:hover { color: var(--text); }
+
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 48px; align-items: center; padding: 56px 0 24px; }
+  h1 { font-size: clamp(32px, 4.6vw, 46px); line-height: 1.08; letter-spacing: -0.025em; margin: 0 0 18px; }
+  .lead { color: var(--muted); font-size: 18px; margin: 0 0 26px; }
+  .lead strong { color: var(--text); font-weight: 600; }
+
+  .cmd {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    font-family: var(--mono); font-size: 15px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 11px 12px 11px 16px;
+  }
+  .cmd span { overflow-x: auto; white-space: nowrap; }
+  .cmd span::before { content: "$ "; color: var(--muted); }
+  .copy {
+    flex: none; font: 13px/1 ui-sans-serif, system-ui, sans-serif; color: var(--muted);
+    background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; cursor: pointer;
+  }
+  .copy:hover { color: var(--text); border-color: var(--muted); }
+
+  .buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+  .btn { display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; border: 1px solid var(--rule); }
+  .btn.primary { background: var(--green); border-color: var(--green); color: var(--bg); }
+  .btn:not(.primary):hover { border-color: var(--muted); }
+
+  .terminal { background: var(--term); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0; }
+  .terminal .bar { display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  .terminal .bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+  .terminal .bar b { font-weight: 400; margin-left: 8px; }
+  .terminal pre { margin: 0; padding: 16px 18px; font: 13px/1.6 var(--mono); overflow-x: auto; }
+  .p { color: var(--muted); }
+  .ok { color: var(--green); }
+  .bad { color: var(--rust); }
+  .mark { color: var(--amber); }
+
+  section { padding: 56px 0 0; }
+  .label { color: var(--green); font-size: 12px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; margin: 0 0 8px; }
+  h2 { font-size: 28px; letter-spacing: -0.015em; line-height: 1.2; margin: 0 0 10px; }
+  section > p, .sub { color: var(--muted); margin: 0 0 22px; max-width: 680px; }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card { border: 1px solid var(--rule); border-radius: 12px; padding: 20px; }
+  .card h3 { font-size: 17px; margin: 0 0 6px; }
+  .card p { color: var(--muted); margin: 0; font-size: 15px; }
+
+  .flow { display: flex; align-items: stretch; gap: 10px; flex-wrap: wrap; }
+  .flow .step { flex: 1 1 180px; border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; }
+  .flow .step.merge { border-color: var(--green); }
+  .flow .step b { display: block; }
+  .flow .step small { color: var(--muted); font-size: 14px; }
+  .flow .arrow { align-self: center; color: var(--muted); }
+  .more { display: inline-block; margin-top: 16px; color: var(--green); text-decoration: none; font-size: 15px; }
+  .more:hover { text-decoration: underline; }
+
+  .table { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; min-width: 560px; }
+  th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--rule); }
+  th { font-weight: 600; }
+  th:nth-child(2), td:nth-child(2) { color: var(--green); font-weight: 600; background: rgba(16, 185, 129, 0.06); }
+  td:first-child { color: var(--muted); }
+  .note { color: var(--muted); font-size: 14px; margin-top: 12px; }
+
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .tabs button {
+    font: 14px ui-sans-serif, system-ui, sans-serif; color: var(--muted);
+    background: transparent; border: 1px solid transparent; border-radius: 7px; padding: 7px 14px; cursor: pointer;
+  }
+  .tabs button[aria-selected="true"] { color: var(--text); background: var(--panel); border-color: var(--line); }
+  .panel[hidden] { display: none; }
+  .panel p { color: var(--muted); font-size: 15px; margin: 12px 0 0; }
+
+  footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; margin-top: 72px; padding: 22px 0 40px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 14px; }
+  footer a { text-decoration: none; margin-left: 18px; }
+  footer a:hover { color: var(--text); }
+
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: minmax(0, 1fr); gap: 32px; padding-top: 24px; }
+    .cards { grid-template-columns: 1fr; }
+    .flow .arrow { display: none; }
+  }
+  @media (max-width: 560px) {
+    .wrap { padding: 0 16px; }
+    nav ul { gap: 14px; font-size: 14px; }
+    nav ul .wide { display: none; }
+    footer a { margin: 0 14px 0 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav>
+  <a class="logo" href="./"><img src="logo-dark.svg" alt="rootstock"></a>
+  <ul>
+    <li><a href="https://github.com/bodasooqa/rootstock#readme">Docs</a></li>
+    <li class="wide"><a href="https://github.com/bodasooqa/rootstock/releases">Releases</a></li>
+    <li class="wide"><a href="https://crates.io/crates/rootstock">crates.io</a></li>
+    <li><a href="https://github.com/bodasooqa/rootstock">GitHub</a></li>
+  </ul>
+</nav>
+
+<header class="hero">
+  <div>
+    <h1>Project templates that keep growing after you use them.</h1>
+    <p class="lead">Create a project from a versioned git template. Update it to every new version with a real three-way merge. <strong>One Rust binary, no Python.</strong></p>
+    <div class="cmd"><span>cargo install rootstock --locked</span><button class="copy" type="button" data-copy="cargo install rootstock --locked">Copy</button></div>
+    <div class="buttons">
+      <a class="btn primary" href="https://github.com/bodasooqa/rootstock#quick-start">Get started</a>
+      <a class="btn" href="#copier">Coming from Copier →</a>
+    </div>
+  </div>
+  <div class="terminal" role="img" aria-label="rootstock update reports one conflict and exits with code 2; the conflicting file holds both the project's edit and the template's">
+    <div class="bar"><i></i><i></i><i></i><b>my-app</b></div>
+<pre><span class="p">$</span> rootstock update
+<span class="bad">markers</span> src/config.rs
+<span class="p">updated to v1.3.0</span>
+<span class="p">$</span> echo $?
+<span class="bad">2</span>
+<span class="p">$</span> git diff --stat
+ .github/workflows/ci.yml |  6 <span class="ok">++++</span><span class="bad">--</span>
+ Cargo.toml               |  2 <span class="ok">+</span><span class="bad">-</span>
+ src/config.rs            | 10 <span class="ok">++++++</span><span class="bad">----</span>
+<span class="p">$</span> sed -n 12,16p src/config.rs
+<span class="mark">&lt;&lt;&lt;&lt;&lt;&lt;&lt; project</span>
+    timeout: Duration::from_secs(30),
+<span class="mark">=======</span>
+    timeout: Duration::from_secs(10), retries: 3,
+<span class="mark">&gt;&gt;&gt;&gt;&gt;&gt;&gt; template v1.3.0</span></pre>
+  </div>
+</header>
+
+<section>
+  <div class="cards">
+    <div class="card">
+      <h3>One binary, no runtime</h3>
+      <p>Written in Rust. Linux, macOS and Windows. It needs only <code>git</code> on <code>PATH</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Real updates</h3>
+      <p>A three-way merge through <code>git merge-file</code>. Only edits that truly overlap become conflicts.</p>
+    </div>
+    <div class="card">
+      <h3>Nothing lost silently</h3>
+      <p>Every case that needs a person is a conflict and exit code <code>2</code>. CI only has to read the code.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="label">How updates work</p>
+  <h2>Your edits stay, the template's improvements arrive</h2>
+  <p>The old and the new template versions are both rendered with the project's answers, and only the difference is merged into the project.</p>
+  <div class="flow">
+    <div class="step"><b>Base</b><small>the recorded version, your answers</small></div>
+    <span class="arrow">→</span>
+    <div class="step"><b>Target</b><small>the new tag, your answers</small></div>
+    <span class="arrow">→</span>
+    <div class="step merge"><b>git merge-file</b><small>into your project, path by path</small></div>
+    <span class="arrow">→</span>
+    <div class="step"><b>Clean or conflicts</b><small>exit code 0 or 2</small></div>
+  </div>
+  <a class="more" href="https://github.com/bodasooqa/rootstock#how-updates-work">The full rules →</a>
+</section>
+
+<section>
+  <p class="label">Compared</p>
+  <h2>Copier's model, without Python</h2>
+  <div class="table">
+    <table>
+      <thead>
+        <tr><th></th><th>rootstock</th><th>Copier</th><th>cargo-generate</th><th>kickstart</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Runtime</td><td>single binary</td><td>Python</td><td>single binary</td><td>single binary</td></tr>
+        <tr><td>Templates</td><td>Jinja (minijinja)</td><td>Jinja2</td><td>Liquid</td><td>Tera</td></tr>
+        <tr><td>Updates generated projects</td><td>✓ three-way</td><td>✓ three-way</td><td>✗ creation only</td><td>✗ creation only</td></tr>
+        <tr><td>Conflicts as an exit code</td><td>✓ <code>2</code></td><td>✗ markers only</td><td>—</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">Checked in October 2026.</p>
+</section>
+
+<section id="copier">
+  <p class="label">Coming from Copier</p>
+  <h2>One command, old tags included</h2>
+  <p>Converts a Copier template, a Copier-generated project, or both in one run. It writes nothing unless the whole conversion succeeds, and old template tags are read as they are.</p>
+  <div class="cmd"><span>rootstock import-copier</span><button class="copy" type="button" data-copy="rootstock import-copier">Copy</button></div>
+  <a class="more" href="https://github.com/bodasooqa/rootstock#coming-from-copier">What it converts →</a>
+</section>
+
+<section id="install">
+  <p class="label">Install</p>
+  <h2>Get it</h2>
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" aria-selected="true" aria-controls="tab-cargo" id="t-cargo">cargo</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="tab-linux" id="t-linux">Linux</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="tab-macos" id="t-macos">macOS</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="tab-windows" id="t-windows">Windows</button>
+  </div>
+  <div class="panel" role="tabpanel" id="tab-cargo" aria-labelledby="t-cargo">
+    <div class="cmd"><span>cargo install rootstock --locked</span><button class="copy" type="button" data-copy="cargo install rootstock --locked">Copy</button></div>
+  </div>
+  <div class="panel" role="tabpanel" id="tab-linux" aria-labelledby="t-linux" hidden>
+    <p>Static musl builds: <a class="asset" data-target="x86_64-unknown-linux-musl.tar.gz">x86_64</a> · <a class="asset" data-target="aarch64-unknown-linux-musl.tar.gz">aarch64</a></p>
+  </div>
+  <div class="panel" role="tabpanel" id="tab-macos" aria-labelledby="t-macos" hidden>
+    <p><a class="asset" data-target="aarch64-apple-darwin.tar.gz">Apple silicon</a> · <a class="asset" data-target="x86_64-apple-darwin.tar.gz">Intel</a></p>
+  </div>
+  <div class="panel" role="tabpanel" id="tab-windows" aria-labelledby="t-windows" hidden>
+    <p><a class="asset" data-target="x86_64-pc-windows-msvc.zip">x86_64</a></p>
+  </div>
+  <p class="note">Every <a href="https://github.com/bodasooqa/rootstock/releases">release</a> lists the checksums in <code>SHA256SUMS</code>. rootstock needs <code>git</code> on <code>PATH</code>.</p>
+</section>
+
+<footer>
+  <span>MIT OR Apache-2.0</span>
+  <span>
+    <a href="https://github.com/bodasooqa/rootstock#readme">Docs</a><a href="https://crates.io/crates/rootstock">crates.io</a><a href="https://github.com/bodasooqa/rootstock">GitHub</a>
+  </span>
+</footer>
+
+</div>
+<script>
+  const repo = "bodasooqa/rootstock";
+  const releases = `https://github.com/${repo}/releases`;
+
+  for (const button of document.querySelectorAll(".copy")) {
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(button.dataset.copy);
+        button.textContent = "Copied";
+      } catch {
+        button.textContent = "Select and copy";
+      }
+      setTimeout(() => { button.textContent = "Copy"; }, 1500);
+    });
+  }
+
+  const tabs = document.querySelectorAll('[role="tab"]');
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => {
+      for (const other of tabs) {
+        const selected = other === tab;
+        other.setAttribute("aria-selected", String(selected));
+        document.getElementById(other.getAttribute("aria-controls")).hidden = !selected;
+      }
+    });
+  }
+
+  // Archive names carry the version, so links point at the latest release
+  // once its tag is known, and at the releases page until then.
+  const assets = document.querySelectorAll(".asset");
+  for (const link of assets) link.href = `${releases}/latest`;
+  fetch(`https://api.github.com/repos/${repo}/releases/latest`)
+    .then((response) => (response.ok ? response.json() : Promise.reject()))
+    .then(({ tag_name: tag }) => {
+      for (const link of assets) {
+        link.href = `${releases}/download/${tag}/rootstock-${tag}-${link.dataset.target}`;
+        link.title = `rootstock-${tag}-${link.dataset.target}`;
+      }
+    })
+    .catch(() => {});
+</script>
+</body>
+</html>
