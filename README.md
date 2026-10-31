@@ -1,6 +1,9 @@
 <div align="center">
 
-# rootstock
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/bodasooqa/rootstock/main/assets/logo-dark.svg">
+  <img alt="rootstock" src="https://raw.githubusercontent.com/bodasooqa/rootstock/main/assets/logo-light.svg" width="320">
+</picture>
 
 **Project templates that keep growing after you use them.**
 
@@ -292,6 +295,7 @@ The specification is [`docs/design.md`](docs/design.md); it is the source of tru
 - `src/cli.rs`, `src/commands/{mod,new,update,status,check,import_copier}.rs` - CLI, the terminal dialog and the commands
 - `tests/` - end-to-end scenarios through the binary (`cli_*.rs`), fixtures in `tests/support/`; `tests/parity/` - the Copier parity checks of Stage 2 (not run in CI)
 - `docs/design.md` - the specification
+- `assets/` - the logo, light and dark
 - `.github/workflows/ci.yml` - tests on Linux, macOS and Windows; `release.yml` - binaries on GitHub Releases for a `vX.Y.Z` tag
 
 </details>
