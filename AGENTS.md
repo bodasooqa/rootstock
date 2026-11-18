@@ -1,29 +1,61 @@
 # AGENTS.md — rootstock
 
-What the project does, in one paragraph. The spec — `docs/design.md` — is the source of truth about behavior; this file holds the working rules.
+rootstock — CLI на Rust (один бинарник, аналог Copier): создаёт проект из версионируемого git-шаблона и обновляет его до новых версий шаблона трёхсторонним слиянием, не теряя правок проекта. ТЗ — `docs/design.md`: источник истины о поведении, этот файл — правила работы.
 
-Shared process rules come from the [harness](https://github.com/bodasooqa/harness) template, in the managed file `.harness/process.md`: read it in full before starting work. Claude Code gets it via an import from `CLAUDE.md`, Pi via the `.pi/extensions/harness.ts` shim, other agents read the file themselves. This file belongs to the project: the template no longer touches it. Project rules are written here, not in `CLAUDE.md`: that file only pulls in this one and the process rules for Claude Code.
+Общие правила процесса — из шаблона [harness](https://github.com/bodasooqa/harness), в управляемом файле `.harness/process.md`: прочитай его целиком до начала работы. Claude Code получает его импортом из `CLAUDE.md`, Pi — прослойкой `.pi/extensions/harness.ts`, остальные агенты читают файл сами. Этот файл — проектный: шаблон его больше не трогает. Правила проекта пишутся здесь, а не в `CLAUDE.md`: тот только подключает этот файл и правила процесса для Claude Code.
 
-## Project stack
+## Стек проекта
 
-Languages, key libraries, and rules for using them that the shared rules don't cover.
+Rust stable, edition 2024, один крейт `rootstock` (lib + bin `rootstock`), лицензия MIT OR Apache-2.0. Библиотеки: clap (derive), serde, toml, serde_json, serde_norway (YAML), minijinja, minijinja-contrib (`pycompat`), regex, ignore, semver, inquire, thiserror, anyhow, tempfile; в тестах assert_cmd и predicates. Git — через CLI `git` (`std::process::Command`), не libgit2; трёхстороннее слияние текста — тоже через него (`git merge-file`), как у Copier.
 
-## Package boundaries
+Правила проекта, которые **переопределяют** общие правила процесса:
 
-Map of packages and the dependency graph between them; invariants this graph upholds.
+- **Язык.** Публичный текст (README, docs), сообщения CLI, комментарии и doc-комментарии в коде и **сообщения коммитов** — по-английски. Это заменяет «комментарии русские» из общих правил; обвязка, `AGENTS.md`, артефакты OpenSpec и `knowledge/` остаются русскими.
+- **Коммиты.** Префиксы `feat:`, `fix:`, `test:`, `docs:`, `chore:`. Строки `Co-Authored-By` (и любых других трейлеров) в сообщениях нет никогда.
+- **Диагностика.** `tracing` в проекте нет: stdout несёт только вывод команд (списки конфликтов, статус, JSON), всё остальное — в stderr. `println!` для диагностики запрещён. `unwrap()`/`expect()` вне тестов запрещены.
+- **Коды выхода.** `0` — чисто, `1` — ошибка, `2` — выполнено с конфликтами.
+- **Байты.** Байты на входе — байты на выходе: никакой конвертации окончаний строк.
 
-Read the local `AGENTS.md` of every package you touch, even when your session started at the project root. The neighboring `CLAUDE.md` imports those rules for Claude Code.
+## Границы пакетов
 
-## Sources of truth
+Один крейт, пакетов нет; границы — модули. Ядро (config, record, jinja, answers, render, merge, plan, copier) только читает свои объявленные входы: конфиг, запись, checkout шаблона, подключения. Из ядра пишет только `record`, и только `.rootstock.toml`. git, терминала и stderr у ядра нет; `merge` и `plan` чисты полностью. Остальной ввод-вывод — на краях: source, apply, hooks, cli, commands.
 
-What in the repository is a contract or generated, and how it changes. Changing any row of this table is a procedure, not a file edit: the `contract-change` skill.
+| Файл | Ответственность |
+|---|---|
+| `src/config.rs` | модель и валидация `rootstock.toml` |
+| `src/record.rs` | модель `.rootstock.toml`, инвентарь, чтение/запись |
+| `src/jinja.rs` | окружение minijinja из опций, фильтры, помощники выражений и шаблонов |
+| `src/answers.rs` | сбор ответов: заданные, дефолты, `when`, валидаторы; вопросы — через `Prompter` |
+| `src/render.rs` | рендер checkout'а шаблона в `RenderedTree` с классами файлов |
+| `src/merge.rs` | определение бинарных файлов, поиск маркеров, трейт слияния `Merge3` |
+| `src/plan.rs` | таблица обновления: `plan_update` (чистая функция) |
+| `src/source.rs` | источники шаблонов, теги, checkout'ы через `git` |
+| `src/apply.rs` | выполнение `Plan` на диске; входы плана с края: `DiskProject` (файлы проекта) и `GitMerge` (слияние через `git merge-file`) |
+| `src/hooks.rs` | запуск хуков с проверкой доверия |
+| `src/copier.rs` | ядро: конвертация `copier.yml` в `rootstock.toml`, проверка дерева шаблона на неподдерживаемое, разбор `.copier-answers.yml`; только чтение |
+| `src/cli.rs`, `src/commands/{mod,new,update,status,check,import_copier}.rs` | CLI, терминальный диалог (`TerminalPrompter`) и команды |
+| `tests/support/mod.rs` | построитель фикстуры `TemplateRepo` (git-репозиторий с тегами во временном каталоге) |
+| `tests/cli_*.rs` | сквозные сценарии через бинарник |
+| `tests/parity/` | сверка с Copier 9.19 для приёмки этапа 2 (`render.sh`, `update.sh`, общие `env.sh` и `compare.py`); не в CI |
 
-| What | Where | Who changes it |
+Общие типы живут в `pub mod` из `src/lib.rs`. Пути внутри деревьев — `RelPath`: `String` с разделителем `/`, не начинается с `/`, без компонентов `..`.
+
+## Источники правды
+
+Что в репозитории является контрактом или generated и как оно меняется. Изменение любой строки этой таблицы — процедура, а не правка файла: скилл `contract-change`.
+
+| Что | Где | Кто меняет |
 |---|---|---|
-| Domain model, requirements, defaults | `docs/design.md`, revision journal `docs/design-revisions.md` | revisions per the owner's decisions |
-| OpenSpec commands and skills | `.claude/commands/opsx/`, `.claude/skills/openspec-*/`, `.pi/prompts/opsx-*`, `.pi/skills/openspec-*/`, `.agents/skills/openspec-*/` | **generated**, only `openspec update` |
-| Document tables of contents and summary blocks | blocks between `<!-- … -->` markers in `knowledge/` | **generated**, only the `knowledge/` scripts |
+| План этапа 1 | `openspec/changes/stage1-core/tasks.md` | главная сессия, по ходу работы |
+| `Cargo.lock` | корень | **generated**, только cargo |
+| Доменная модель, требования, дефолты | `docs/design.md`, журнал ревизий `docs/design-revisions.md` | ревизии по решениям владельца |
+| Команды и скиллы OpenSpec | `.claude/commands/opsx/`, `.claude/skills/openspec-*/`, `.pi/prompts/opsx-*`, `.pi/skills/openspec-*/`, `.agents/skills/openspec-*/` | **generated**, только `openspec update` |
+| Оглавления и сводные блоки документов | блоки между метками `<!-- … -->` в `knowledge/` | **generated**, только скрипты `knowledge/` |
 
-## Definitions
+## Определения
 
-Domain terms that are easy to confuse — briefly, with a link to the spec section.
+- **Шаблон** — git-репозиторий с `rootstock.toml` и версиями-тегами `vX.Y.Z`; «последняя» — максимальный не-пререлизный semver-тег. **Проект** — результат `new`; его запись — `.rootstock.toml` (инвентарь, ответы, версия шаблона). Оба файла несут `schema = 1`.
+- **Мажорный подъём** — мажор цели больше текущего (как в `next-version.sh` harness).
+- Суффикс шаблонизируемых файлов по умолчанию `.jinja`; бинарный побочный файл — суффикс `.rootstock-new`; маркеры конфликта — `<<<<<<< project`, `=======`, `>>>>>>> template <version>` в начале строки.
+
+Полные определения — `docs/design.md`.
