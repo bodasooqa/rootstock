@@ -72,6 +72,7 @@ jobs:
             harness:
               - .harness/**
               - .claude/**
+              - .codex/**
               - .pi/**
               - knowledge/**
               - lefthook.yml
@@ -142,6 +143,9 @@ jobs:
       # Pi layer: the extension handlers with a fake Pi API on top of the same hooks.
       - name: Pi layer tests
         run: bun test ./.harness/hooks/tests/pi.test.ts
+
+      - name: Codex adapter tests
+        run: bash ./.harness/hooks/tests/codex.test.sh
 
       - name: knowledge/ tests
         run: for t in knowledge/tests/*.sh; do "./$t" || exit 1; done

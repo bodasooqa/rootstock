@@ -1,7 +1,7 @@
 schema = 1
 source = "gh:bodasooqa/harness"
-version = "v2.1.0"
-commit = "8284dd7c9b38c4a0e893be1e4625b15b7847359a"
+version = "v2.1.1"
+commit = "10cc77d6a5cd6266c080c4146416e5cc52e7b44a"
 
 [answers]
 chat_language = "Russian"
