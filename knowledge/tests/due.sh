@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Тесты `knowledge/due.sh`. Проверка, стоящая на воротах, обязана быть проверена
-# сама: гейт, который молча ничего не находит, хуже отсутствующего.
+# Tests for `knowledge/due.sh`. A check guarding a gate must be checked
+# itself: a gate that silently finds nothing is worse than no gate.
 #
-# Каждый случай — на срабатывание и на пропуск: просрочка находится там, где она
-# есть, и не выдумывается там, где её нет. Проект синтетический, во временном
-# каталоге: свой файл ответов, своя таблица этапов, свой список вопросов.
+# Every case covers both firing and passing: overdue is found where it exists
+# and is not invented where it does not. The project is synthetic, in a
+# temporary directory: its own answers file, stage table and question list.
 #
-# Запуск: knowledge/tests/due.sh
+# Run: knowledge/tests/due.sh
 set -uo pipefail
 
 here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
@@ -18,10 +18,10 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 ok()  { pass=$((pass + 1)); printf '  ok   %s\n' "$1"; }
-bad() { fail=$((fail + 1)); printf '  ПРОВАЛ %s\n     ожидалось: %s\n     получено: %s\n' "$1" "$2" "${3:-<пусто>}"; }
+bad() { fail=$((fail + 1)); printf '  FAIL %s\n     expected: %s\n     got: %s\n' "$1" "$2" "${3:-<empty>}"; }
 
-# Отдельный проект на случай. Пути вопросов и таблицы этапов — аргументами,
-# по умолчанию как в форме catalog; список вопросов — со stdin.
+# A separate project per case. Paths of the questions and the stage table are
+# arguments, catalog-form defaults; the question list comes from stdin.
 setup() {
   local questions=${1:-knowledge/open-questions.md} stages=${2:-docs/spec/03-stages.md}
   rm -rf "$tmp/repo"
@@ -30,17 +30,17 @@ setup() {
   cp "$script" "$tmp/repo/knowledge/due.sh"
   printf '[answers]\nopen_questions_path = "%s"\nstages_path = "%s"\n' "$questions" "$stages" > "$tmp/repo/.rootstock.toml"
   cat > "$tmp/repo/$stages" <<'MD'
-# Этапы
+# Stages
 
-| Этап | Состояние |
+| Stage | State |
 |---|---|
-| 1. Каркас | закрыт |
-| 2. Хранилище | закрыт |
-| 3. API | в работе |
-| 4–8. Остальное | не начаты |
+| 1. Skeleton | closed |
+| 2. Storage | closed |
+| 3. API | in progress |
+| 4–8. The rest | not started |
 MD
   {
-    printf '# Открытые вопросы\n\n'
+    printf '# Open questions\n\n'
     cat
   } > "$tmp/repo/$questions"
 }
@@ -52,7 +52,7 @@ run() {
   printf '%s\n%s' "$code" "$out"
 }
 
-# check <имя> <ожидаемый код|!0> <ожидаемая подстрока|-> [аргументы due.sh]
+# check <name> <expected code|!0> <expected substring|-> [due.sh arguments]
 check() {
   local name=$1 want_code=$2 want_text=$3
   shift 3
@@ -63,11 +63,11 @@ check() {
   if [ "$want_code" = "!0" ] && [ "$code" != 0 ]; then
     :
   elif [ "$code" != "$want_code" ]; then
-    bad "$name" "код $want_code" "код $code: $out"
+    bad "$name" "exit $want_code" "exit $code: $out"
     return
   fi
   if [ "$want_text" != "-" ] && [[ "$out" != *"$want_text"* ]]; then
-    bad "$name" "в выводе «$want_text»" "$out"
+    bad "$name" "\"$want_text\" in output" "$out"
     return
   fi
   ok "$name"
@@ -76,144 +76,144 @@ check() {
 echo "due.sh --overdue"
 
 setup <<'MD'
-## Вопрос к закрытому этапу
+## Question for a closed stage
 
-Суть.
+Gist.
 
-Нужно к: этапу 2, где формат хранения всё равно потребует решения.
+Due: stage 2, where the storage format will need a decision anyway.
 MD
-check "вопрос к закрытому этапу — просрочка" 1 "Вопрос к закрытому этапу" --overdue
+check "question for a closed stage — overdue" 1 "Question for a closed stage" --overdue
 
 setup <<'MD'
-## Вопрос к этапу впереди
+## Question for a stage ahead
 
-Суть.
+Gist.
 
-Нужно к: этапу 4, где появляется второй клиент.
+Due: stage 4, where a second client appears.
 MD
-check "вопрос к будущему этапу — не просрочка" 0 "Просроченных вопросов нет" --overdue
+check "question for a future stage — not overdue" 0 "No overdue questions" --overdue
 
 setup <<'MD'
-## Вопрос к этапу в работе
+## Question for the stage in progress
 
-Суть.
+Gist.
 
-Нужно к: этапу 3, где появляется API.
+Due: stage 3, where the API appears.
 MD
-check "вопрос к текущему этапу — не просрочка" 0 "Просроченных вопросов нет" --overdue
+check "question for the current stage — not overdue" 0 "No overdue questions" --overdue
 
 setup <<'MD'
-## Вопрос без срока
+## Question without a deadline
 
-Суть есть, а строки «Нужно к» нет.
+There is a gist, but no "Due" line.
 MD
-check "вопрос без срока — просрочка" 1 "строки «Нужно к:» нет" --overdue
+check "question without a deadline — overdue" 1 'no "Due:" line' --overdue
 
 setup <<'MD'
-## Вопрос с прозаическим сроком
+## Question with a prose deadline
 
-Суть.
+Gist.
 
-Нужно к: этапу, где пользователей станет больше одного.
+Due: the stage where there is more than one user.
 MD
-check "прозаический срок — просрочка" 1 "срок не назван этапом" --overdue
+check "prose deadline — overdue" 1 "deadline does not name a stage" --overdue
 
 setup <<'MD'
-## ~~Закрытый вопрос~~ — закрыт 10.09.2026
+## ~~Closed question~~ — closed 2026-09-10
 
-Суть.
+Gist.
 
-Нужно к: этапу 1.
+Due: stage 1.
 MD
-check "зачёркнутый вопрос не считается" 0 "Просроченных вопросов нет" --overdue
+check "struck-through question is not counted" 0 "No overdue questions" --overdue
 
 setup <<'MD'
-## Вопрос к заархивированному change
+## Question for an archived change
 
-Суть.
+Gist.
 
-Нужно к: `stage3-public-api`, где это и станет видно.
+Due: `stage3-public-api`, where this becomes visible.
 MD
 mkdir -p "$tmp/repo/openspec/changes/archive/2026-09-10-stage3-public-api"
-check "change заархивирован — просрочка" 1 "заархивирован" --overdue
+check "change archived — overdue" 1 "is archived" --overdue
 
 setup <<'MD'
-## Вопрос к живому change
+## Question for a live change
 
-Суть.
+Gist.
 
-Нужно к: `stage3-public-api`, где это и станет видно.
+Due: `stage3-public-api`, where this becomes visible.
 MD
-check "change не заархивирован — не просрочка" 0 "Просроченных вопросов нет" --overdue
+check "change not archived — not overdue" 0 "No overdue questions" --overdue
 
-# Номер этапа из второго предложения сроком не является: срок — первое.
+# A stage number from the second sentence is not a deadline: the deadline is the first.
 setup <<'MD'
-## Срок в одном предложении, номер этапа — в другом
+## Deadline in one sentence, stage number in another
 
-Суть.
+Gist.
 
-Нужно к: этапу, где записей станет больше тысячи. С этапа 2 вопрос снят.
+Due: the stage where there are more than a thousand records. Since stage 2 the question is moot.
 MD
-check "номер этапа из соседнего предложения не берётся" 1 "срок не назван этапом" --overdue
+check "stage number from the next sentence is not taken" 1 "deadline does not name a stage" --overdue
 
-# Пример формата в блоке кода — не вопрос, даже с «Нужно к:» без номера.
+# A format example in a code block is not a question, even with "Due:" without a number.
 setup <<'MD'
-Формат:
+Format:
 
 ```markdown
-## Заголовок вопроса
+## Question title
 
-Нужно к: этапу N.
+Due: stage N.
 ```
 
 ---
 MD
-check "пример формата в блоке кода не считается" 0 "Просроченных вопросов нет" --overdue
+check "format example in a code block is not counted" 0 "No overdue questions" --overdue
 
 echo
-echo "due.sh — пути из файла ответов"
+echo "due.sh — paths from the answers file"
 
-# Форма monolith: вопросы и таблица этапов лежат там, куда указывают ответы.
+# Monolith form: questions and stage table live where the answers point.
 setup docs/questions.md README.md <<'MD'
-## Вопрос к закрытому этапу
+## Question for a closed stage
 
-Суть.
+Gist.
 
-Нужно к: этапу 1.
+Due: stage 1.
 MD
-check "путь вопросов из ответов в отчёте" 1 "docs/questions.md:" --overdue
+check "questions path from the answers in the report" 1 "docs/questions.md:" --overdue
 
 setup <<'MD'
-## Вопрос
+## Question
 
-Нужно к: этапу 3.
+Due: stage 3.
 MD
 printf 'stages_path = "docs/spec/03-stages.md"\n\n[answers]\nopen_questions_path = "knowledge/open-questions.md"\n' > "$tmp/repo/.rootstock.toml"
-check "нет stages_path в ответах (вне [answers] не в счёт) — ошибка" 1 "нет ключа stages_path" --overdue
+check "no stages_path in the answers (outside [answers] does not count) — error" 1 "has no key stages_path" --overdue
 
 setup <<'MD'
-## Вопрос
+## Question
 
-Нужно к: этапу 3.
+Due: stage 3.
 MD
-printf '# Этапы\n\nТаблицы нет.\n' > "$tmp/repo/docs/spec/03-stages.md"
-check "нет таблицы этапов — ошибка" '!0' "не нашлось таблицы состояния этапов" --overdue
+printf '# Stages\n\nNo table.\n' > "$tmp/repo/docs/spec/03-stages.md"
+check "no stage table — error" '!0' "no stage state table found" --overdue
 
 echo
-echo "due.sh — отчёт"
+echo "due.sh — report"
 
 setup <<'MD'
-## Вопрос к этапу в работе
+## Question for the stage in progress
 
-Суть.
+Gist.
 
-Нужно к: этапу 3, где появляется API.
+Due: stage 3, where the API appears.
 MD
-check "без аргумента берётся этап в работе" 0 "Открытые вопросы к этапу 3"
-check "номер этапа аргументом"             0 "Открытые вопросы к этапу 4" 4
-check "к названному этапу вопросов нет"    0 "К этому этапу вопросов не адресовано" 4
-check "непонятный аргумент"                2 "непонятный аргумент" --что-то
+check "without an argument the stage in progress is taken" 0 "Open questions for stage 3"
+check "stage number as an argument"                       0 "Open questions for stage 4" 4
+check "no questions for the named stage"                  0 "No questions are addressed to this stage" 4
+check "unknown argument"                                  2 "unknown argument" --something
 
 echo
-printf 'итого: %d прошло, %d провалено\n' "$pass" "$fail"
+printf 'total: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

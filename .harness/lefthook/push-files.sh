@@ -1,23 +1,26 @@
-#!/usr/bin/env bash
-# pre-push: файлы, которые этот пуш отправляет, — для глобов джобов.
+#!/bin/sh
+# pre-push: the files this push sends, for job globs.
 #
-# Свой список вместо встроенного у lefthook. Без upstream (первый пуш ветки,
-# заведённой с --no-track) lefthook берёт `git diff --name-only HEAD origin/main`:
-# сравнение двух вершин, а не от общего предка. Ветка, отставшая от main,
-# получала в список чужие правки, влитые в main после ответвления, и дорогие
-# джобы гонялись на пуше одних docs.
+# POSIX sh, not bash: lefthook calls it as `sh ./…` (on Windows `files:` runs
+# without a shell), and on Linux `sh` is dash.
 #
-# Здесь база — то, что на origin уже есть у этой ветки (`@{push}`), а без неё —
-# общий предок с origin/main. Сравнение тремя точками: только то, что
-# появилось в ветке.
-set -uo pipefail
+# Our own list instead of lefthook's built-in one. Without an upstream (first
+# push of a branch created with --no-track) lefthook uses
+# `git diff --name-only HEAD origin/main`: a comparison of two tips, not from the
+# common ancestor. A branch behind main got other people's changes merged into
+# main after it branched off, and expensive jobs ran on a docs-only push.
+#
+# Here the base is what origin already has for this branch (`@{push}`), and
+# without it, the common ancestor with origin/main. Three-dot comparison: only
+# what appeared in the branch.
+set -u
 
 if base=$(git rev-parse --verify --quiet '@{push}'); then
   :
 elif base=$(git merge-base HEAD origin/main 2>/dev/null); then
   :
 else
-  # Не с чем сравнить: лучше лишняя проверка, чем молча пропущенная.
+  # Nothing to compare against: an extra check is better than a silently skipped one.
   git ls-files
   exit 0
 fi

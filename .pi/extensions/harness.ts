@@ -1,17 +1,21 @@
 /**
- * Прослойка обвязки для Pi: события Pi → `.harness/hooks/dispatch.sh <слот>` со входом JSON
- * в форме Claude Code. Управляемый файл: обновляется шаблоном, руками не правится.
+ * The harness shim for Pi: Pi events → `.harness/hooks/dispatch.sh <slot>` with JSON input
+ * in Claude Code form. A managed file: updated by the template, not edited by hand.
  *
- * Логики хуков здесь нет — она в shell-скриптах, общих с Claude Code. Прослойка только
- * переводит событие Pi в событие Claude, зовёт диспетчер и переводит его ответ обратно.
- * Имена инструментов отдаются в форме Claude (`bash` → `Bash`), чтобы хуки не знали
- * про агента. Слоты и контракт ответа — `.harness/hooks/README.md`.
+ * There is no hook logic here — it lives in shell scripts shared with Claude Code. The shim only
+ * translates a Pi event into a Claude event, calls the dispatcher and translates its answer back.
+ * Tool names are given in Claude form (`bash` → `Bash`) so the hooks don't know about
+ * the agent. Slots and the response contract — `.harness/hooks/README.md`.
  *
- * Сверх хуков прослойка доводит до модели общие правила процесса: Pi не понимает импорт
- * `@.harness/process.md` из `CLAUDE.md` и берёт файл как есть, поэтому `.harness/process.md`
- * добавляется в context files сессии рядом с `CLAUDE.md`.
+ * Beyond hooks, the shim brings the shared process rules to the model. The project's main rules
+ * file is `AGENTS.md`; `CLAUDE.md` next to it holds imports for Claude Code (`@AGENTS.md`,
+ * `@.harness/process.md`). Pi doesn't understand `@file` imports and loads one file per directory,
+ * `AGENTS.md` before `CLAUDE.md`, so the shim adds `.harness/process.md` to the session's context
+ * files right after the main file, and the main file too if Pi didn't take it. For a project
+ * not yet moved to `AGENTS.md`, the main file is `CLAUDE.md`, as before; a `CLAUDE.md`
+ * with its own rules next to `AGENTS.md` is brought in too (`projectInstructions`).
  *
- * Зависимостей npm нет: только встроенные модули и типы Pi.
+ * No npm dependencies: only built-in modules and Pi types.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -33,33 +37,58 @@ type Slot =
   | "pre-bash"
   | "post-bash"
   | "post-edit"
-  | "post-edit-async";
+  | "post-edit-async"
+  | "subagent-stop";
 
 type Content = NonNullable<ToolResultEventResult["content"]>;
 
 interface SlotResult {
-  /** Код выхода диспетчера; `null` — не запустился или убит по таймауту. */
+  /** The dispatcher's exit code; `null` — didn't start or was killed on timeout. */
   code: number | null;
   stdout: string;
   stderr: string;
 }
 
 interface Verdict {
-  /** Отказ: причина для модели (pre-bash, prompt) или текст пробуждения. */
+  /** Denial: the reason for the model (pre-bash, prompt) or the wake-up text. */
   block?: string;
-  /** Контекст модели (`additionalContext` или простой текст там, где он контекст). */
+  /** Model context (`additionalContext` or plain text where it counts as context). */
   context?: string;
-  /** Сообщение человеку: ошибка хука или `systemMessage`. */
+  /** Message to the human: a hook error or `systemMessage`. */
   notice?: string;
 }
 
-/** Корень проекта: расширение лежит в `<корень>/.pi/extensions/`. */
+/** Project root: the extension lives in `<root>/.pi/extensions/`. */
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const dispatcher = join(root, ".harness", "hooks", "dispatch.sh");
 const processRules = join(root, ".harness", "process.md");
-const projectInstructions = join(root, "CLAUDE.md");
+const agentsInstructions = join(root, "AGENTS.md");
+const claudeInstructions = join(root, "CLAUDE.md");
 
-/** Таймауты слотов — те же, что в `.claude/settings.json`. */
+/** The text has only `@file` imports and HTML comments — no rules of its own. */
+function importsOnly(text: string): boolean {
+  return text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .split("\n")
+    .every((line) => line.trim() === "" || line.trim().startsWith("@"));
+}
+
+/**
+ * The project's rules files in order, the first is the main one: `AGENTS.md`, or without it `CLAUDE.md`.
+ * With `AGENTS.md`, the `CLAUDE.md` file holds imports for Claude Code and isn't needed in Pi. But if
+ * it has rules of its own, it follows: a template update creates the starter `AGENTS.md`
+ * as a stub even in a project that still keeps its rules in `CLAUDE.md`. Checked on every
+ * turn: a project that moved to `AGENTS.md` mid-session doesn't keep the old choice.
+ */
+function projectInstructions(): string[] {
+  if (!existsSync(agentsInstructions)) return [claudeInstructions];
+  if (existsSync(claudeInstructions) && !importsOnly(readFileSync(claudeInstructions, "utf8"))) {
+    return [agentsInstructions, claudeInstructions];
+  }
+  return [agentsInstructions];
+}
+
+/** Slot timeouts — the same as in `.claude/settings.json`. */
 const timeouts: Record<Slot, number> = {
   "session-start": 20_000,
   "session-end": 15_000,
@@ -68,22 +97,29 @@ const timeouts: Record<Slot, number> = {
   "post-bash": 10_000,
   "post-edit": 60_000,
   "post-edit-async": 300_000,
+  "subagent-stop": 600_000,
 };
 
-/** На каких слотах простой текст хука — контекст модели (как у Claude Code). */
+/** Slots where a hook's plain text is model context (as in Claude Code). */
 const plainIsContext: ReadonlySet<Slot> = new Set(["session-start", "prompt"]);
 
-/** Имена инструментов Pi → Claude Code. */
+/** Tool names Pi → Claude Code. */
 const claudeToolName: Record<string, string> = {
   bash: "Bash",
   edit: "Edit",
   write: "Write",
 };
 
-/** Метка субагента `pi-subagents` в системном промпте ребёнка. */
+/** The `pi-subagents` subagent tag in the child's system prompt. */
 const activeAgentTag = /<active_agent name="([^"]+)"\s*\/>/;
 
-/** Запуск диспетчера слота: событие на stdin, сбор вывода, таймаут. Нет диспетчера — молчание. */
+/**
+ * An executor is a `*-developer` agent. The same selection as the `matcher` of the `subagent-stop`
+ * slot in `.claude/settings.json`: a project hook of the slot sees the same executors in both agents.
+ */
+const executorAgent = /-developer$/;
+
+/** Runs the slot's dispatcher: event on stdin, output collection, timeout. No dispatcher — silence. */
 function runSlot(
   slot: Slot,
   payload: Record<string, unknown>,
@@ -111,7 +147,7 @@ function runSlot(
     track?.(child);
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      finish({ code: null, stdout, stderr: `${stderr}\nслот ${slot}: таймаут` });
+      finish({ code: null, stdout, stderr: `${stderr}\nslot ${slot}: timeout` });
     }, timeouts[slot]);
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
@@ -136,11 +172,11 @@ function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
-/** Ответ диспетчера → решение прослойки. Контракт — `.harness/hooks/README.md`, «Выход». */
+/** The dispatcher's answer → the shim's decision. Contract — `.harness/hooks/README.md`, "Output". */
 function interpret(slot: Slot, result: SlotResult): Verdict {
   const stderr = result.stderr.trim();
   if (result.code === 2) {
-    return { block: stderr || `хук слота ${slot} отказал без причины` };
+    return { block: stderr || `the ${slot} slot hook denied without a reason` };
   }
   const verdict: Verdict = {};
   const out = result.stdout.trim();
@@ -155,11 +191,11 @@ function interpret(slot: Slot, result: SlotResult): Verdict {
   if (json) {
     const specific = record(json.hookSpecificOutput);
     if (specific?.permissionDecision === "deny") {
-      verdict.block = text(specific.permissionDecisionReason) ?? text(json.reason) ?? "отказ хука";
+      verdict.block = text(specific.permissionDecisionReason) ?? text(json.reason) ?? "hook denial";
     } else if (json.decision === "block") {
-      verdict.block = text(json.reason) ?? "отказ хука";
+      verdict.block = text(json.reason) ?? "hook denial";
     } else if (json.continue === false) {
-      verdict.block = text(json.stopReason) ?? "отказ хука";
+      verdict.block = text(json.stopReason) ?? "hook denial";
     }
     verdict.context = text(specific?.additionalContext);
     verdict.notice = text(json.systemMessage);
@@ -180,7 +216,7 @@ function notify(ctx: ExtensionContext, message: string, level: "info" | "warning
   }
 }
 
-/** Имя субагента `pi-subagents`, если сессия — его ребёнок. */
+/** The `pi-subagents` subagent name, if the session is its child. */
 function activeAgent(prompt: string | undefined): string | undefined {
   return prompt ? activeAgentTag.exec(prompt)?.[1] : undefined;
 }
@@ -193,7 +229,7 @@ function systemPrompt(ctx: ExtensionContext): string | undefined {
   }
 }
 
-/** Путь инструмента Pi → абсолютный, как `file_path` у Claude Code. */
+/** A Pi tool path → absolute, like Claude Code's `file_path`. */
 function absolutePath(path: string, cwd: string): string {
   const bare = path.startsWith("@") ? path.slice(1) : path;
   if (bare === "~" || bare.startsWith("~/")) return join(homedir(), bare.slice(1));
@@ -229,13 +265,19 @@ function sessionEndReason(reason: SessionShutdownEvent["reason"]): string {
 }
 
 export default function harness(pi: ExtensionAPI) {
-  /** Контекст для модели, ждущий первого запуска агента (session-start, prompt). */
+  /** Context for the model waiting for the agent's first run (session-start, prompt). */
   let pending: string[] = [];
-  /** Контекст `pre-bash`, который приедет модели вместе с результатом команды. */
+  /** `pre-bash` context that will reach the model together with the command result. */
   const preContext = new Map<string, string>();
-  /** Фоновые прогоны `post-edit-async`: на выходе их убивают. */
+  /** Background `post-edit-async` runs: they are killed on exit. */
   const background = new Set<ChildProcess>();
   let closed = false;
+  /**
+   * The run continues because of a `subagent-stop` denial — like Claude Code's `stop_hook_active`:
+   * the same run isn't held a second time. Reset by a new run (`before_agent_start`;
+   * a continuation after a denial doesn't call it).
+   */
+  let stopHookActive = false;
 
   const base = (ctx: ExtensionContext, event: string, prompt?: string) => {
     const payload: Record<string, unknown> = {
@@ -244,7 +286,7 @@ export default function harness(pi: ExtensionAPI) {
       cwd: ctx.cwd,
       hook_event_name: event,
     };
-    // Claude Code кладёт `agent_id` только в события субагента; хуки по нему молчат.
+    // Claude Code puts `agent_id` only into subagent events; hooks stay silent on it.
     const agent = activeAgent(prompt ?? systemPrompt(ctx));
     if (agent) {
       payload.agent_id = agent;
@@ -258,10 +300,10 @@ export default function harness(pi: ExtensionAPI) {
   };
 
   /**
-   * `post-edit-async` — как `async` + `asyncRewake` у Claude Code. Прогон идёт в фоне,
-   * результат правки модель получает сразу. Код 2 будит модель текстом из stderr: в простое
-   * сообщение начинает новый ход, посреди работы приходит перед следующим запросом к модели.
-   * Контекст без кода 2 ждёт следующего хода и не будит.
+   * `post-edit-async` — like Claude Code's `async` + `asyncRewake`. The run goes in the background,
+   * the model gets the edit result immediately. Exit 2 wakes the model with the stderr text: when idle
+   * the message starts a new turn, mid-work it arrives before the next request to the model.
+   * Context without exit 2 waits for the next turn and doesn't wake.
    */
   const startAsync = (payload: Record<string, unknown>, ctx: ExtensionContext) => {
     let child: ChildProcess | undefined;
@@ -289,7 +331,7 @@ export default function harness(pi: ExtensionAPI) {
 
   pi.on("session_start", async (event, ctx) => {
     closed = false;
-    // Сессия-ребёнок `pi-subagents`: у Claude Code SessionStart субагента не бывает.
+    // A `pi-subagents` child session: Claude Code has no subagent SessionStart.
     if (activeAgent(systemPrompt(ctx))) return;
     const payload = { ...base(ctx, "SessionStart"), source: sessionSource(event.reason) };
     const verdict = interpret("session-start", await runSlot("session-start", payload, ctx.cwd));
@@ -305,7 +347,7 @@ export default function harness(pi: ExtensionAPI) {
     if (activeAgent(systemPrompt(ctx))) return;
     const payload = { ...base(ctx, "SessionEnd"), reason: sessionEndReason(event.reason) };
     const result = await runSlot("session-end", payload, ctx.cwd);
-    // Выход сессии — человеку: модели после него уже нет.
+    // Session exit goes to the human: there is no model after it.
     const out = [result.stdout.trim(), result.code === 0 ? "" : result.stderr.trim()]
       .filter((part) => part !== "")
       .join("\n");
@@ -326,26 +368,58 @@ export default function harness(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", (event) => {
+    stopHookActive = false;
     const options = event.systemPromptOptions;
     const known = (path: string) =>
       options.contextFiles.some((file) => file.path === path) || event.systemPrompt.includes(path);
-    // Pi грузит из каталога один context file (AGENTS.md раньше CLAUDE.md) и не понимает
-    // импорт `@файл`. Правила проекта и общие правила процесса доводятся до модели здесь.
+    // Pi loads one context file per directory (AGENTS.md before CLAUDE.md) and doesn't understand
+    // `@file` imports. The project rules and the shared process rules reach the model here.
+    const instructions = projectInstructions();
     const extra: Array<{ path: string; content: string }> = [];
-    for (const path of [projectInstructions, processRules]) {
+    for (const path of [...instructions, processRules]) {
       if (!known(path) && existsSync(path)) {
         extra.push({ path, content: readFileSync(path, "utf8") });
       }
     }
     if (extra.length > 0) {
-      const at = options.contextFiles.findIndex((file) => file.path === projectInstructions);
+      // Right after the last project rules file Pi has already taken.
+      const at = Math.max(
+        ...instructions.map((path) => options.contextFiles.findIndex((file) => file.path === path)),
+      );
       options.contextFiles.splice(at === -1 ? options.contextFiles.length : at + 1, 0, ...extra);
     }
-    // Ребёнок `pi-subagents` не забирает контекст главной сессии.
+    // A `pi-subagents` child doesn't take the main session's context.
     if (activeAgent(event.systemPrompt) || pending.length === 0) return undefined;
     const content = pending.join("\n\n");
     pending = [];
     return { message: { customType: "harness-hook", content, display: true } };
+  });
+
+  /**
+   * `subagent-stop` — like Claude Code's `SubagentStop`. A `pi-subagents` child is a session of the
+   * same process with this same extension, and `agent_before_settle` in it is the last point before
+   * the child's run ends and the answer goes to the parent. A slot denial is a message to the
+   * child's model and one continuation of the run. In the main session the slot isn't called: the
+   * template doesn't wire `Stop` in Claude Code either.
+   */
+  pi.on("agent_before_settle", async (event, ctx) => {
+    if (event.outcome !== "completed") return undefined;
+    const agent = activeAgent(systemPrompt(ctx));
+    if (!agent || !executorAgent.test(agent)) return undefined;
+    const payload = { ...base(ctx, "SubagentStop"), stop_hook_active: stopHookActive };
+    const verdict = interpret("subagent-stop", await runSlot("subagent-stop", payload, ctx.cwd));
+    report(ctx, verdict);
+    // In Claude Code both a denial and context on this event continue the agent's work.
+    const content = verdict.block ?? verdict.context;
+    if (!content) return undefined;
+    stopHookActive = true;
+    return {
+      entries: [
+        ...event.entries,
+        { type: "custom_message" as const, customType: "harness-hook", content, display: true },
+      ],
+      continue: true,
+    };
   });
 
   pi.on("tool_call", async (event, ctx) => {

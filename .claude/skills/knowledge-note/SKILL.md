@@ -3,61 +3,63 @@ name: knowledge-note
 description: Use when recording something learned — a decision and its reason, a defect review found, a question the spec does not answer, or a quirk of an external API. Decides which of the three documentation places it belongs to and the shape of the entry.
 ---
 
-# Запись в knowledge
+# Recording in knowledge
 
-Три места документации не смешиваются: ТЗ (`docs/design.md`) — требования (владеет владелец, читаем и спрашиваем), `openspec/specs/` — реализованное поведение, `knowledge/` — почему так и что выяснили. Ошибка адресом дороже, чем кажется: требование, дописанное в knowledge, никем не утверждено, а поведение, описанное там, разойдётся с `openspec/specs/` молча.
+First check `.harness/local/skills/knowledge-note.md`: if the file exists, read it before starting work. It is the project addendum — the project's own kinds of entries and their shape; where it disagrees with the text below, the addendum wins.
 
-## Куда
+The three documentation places don't mix: the spec (`docs/design.md`) holds requirements (owned by the owner; we read it and ask), `openspec/specs/` holds implemented behavior, `knowledge/` holds why it is so and what we found out. A wrong address costs more than it seems: a requirement written into knowledge is approved by nobody, and behavior described there will silently drift from `openspec/specs/`.
 
-| Запись начинается с… | Куда |
+## Where
+
+| The entry starts with… | Where |
 |---|---|
-| «Система обязана…» | Это требование. Либо оно уже в ТЗ, либо его надо спросить. Никуда здесь. |
-| «При таком-то входе система делает…» | Поведение. `openspec/specs/`, через OpenSpec. |
-| «Выбрали X вместо Y, потому что…» | `knowledge/decisions.md` |
-| «Ревью нашло, что…» / «Замер показал, что…» | `knowledge/lessons.md` |
-| «Непонятно, как считать…» / «ТЗ молчит, код решил сам…» | `knowledge/open-questions.md` — и в отчёт по этапу |
-| «Внешний API отдаёт максимум N записей, поэтому…» | тематический файл в `knowledge/` (список — `knowledge/README.md`) |
+| "The system must…" | This is a requirement. Either it is already in the spec, or it has to be asked. Nowhere here. |
+| "Given such-and-such input, the system does…" | Behavior. `openspec/specs/`, via OpenSpec. |
+| "We chose X over Y because…" | `knowledge/decisions.md` |
+| "Review found that…" / "Measurement showed that…" | `knowledge/lessons.md` |
+| "Unclear how to compute…" / "The spec is silent, the code decided itself…" | `knowledge/open-questions.md` — and in the stage report |
+| "The external API returns at most N records, so…" | a topic file in `knowledge/` (list — `knowledge/README.md`) |
 
-Различие решений и уроков не в важности, а в происхождении: решение — это выбор, урок — это дефект, который нашли, и вывод из него. Смешение убивает сканируемость журнала, поэтому разделение соблюдается буквально.
+Decisions and lessons differ not in importance but in origin: a decision is a choice, a lesson is a defect that was found plus the conclusion from it. Mixing them kills the journal's scannability, so the separation is kept literally.
 
-## Форма
+## Shape
 
-**Решение** (`knowledge/decisions.md`) — append-only, новой записью в конец. Дата, решение, причина, последствие:
-
-```markdown
-## ГГГГ-ММ-ДД · Короткая формулировка решения
-
-**Решение.** Что именно решено, одной фразой.
-
-**Причина.** Почему так, а не иначе. Отвергнутый вариант называется.
-
-**Последствие.** Что теперь верно в коде и что этим сломается, если нарушить.
-```
-
-Решение не переписывается. Передумали — новая запись со ссылкой на отменяемую.
-
-**Урок** (`knowledge/lessons.md`) — та же форма. В причине — как дефект был найден: ревью, замер, сбой, живые данные. Урок без способа обнаружения бесполезен: он не научит ловить следующий такой же.
-
-**Открытый вопрос** (`knowledge/open-questions.md`) — заголовок-вопрос, суть и обязательная строка «Нужно к: …». Вопрос без срока превращается в вечный.
-
-Срок обязан называть номер этапа — «Нужно к: этапу 4» — либо change, у которого номер этапа в имени: «Нужно к: `stage1-<имя>`». Номер этапа — из таблицы этапов `knowledge/stages.md`. Других форм нет: срок читает `knowledge/due.sh`, а прозаическое «к этапу, где понадобится» проверить нечем, поэтому оно считается отсутствующим. Условие остаётся в тексте вопроса, сроком становится этап, на котором условие ожидается. Дальше срок предъявляется на входе в этап — скилл `stage-grooming`.
-
-Закрытие вопроса — зачёркнутый заголовок со ссылкой на решение или параграф ТЗ:
+**Decision** (`knowledge/decisions.md`) — append-only, a new entry at the end. Date, decision, reason, consequence:
 
 ```markdown
-## ~~Прежний заголовок~~ — закрыт ДД.ММ.ГГГГ
+## YYYY-MM-DD · Short statement of the decision
+
+**Decision.** What exactly was decided, in one sentence.
+
+**Reason.** Why this way and not another. The rejected option is named.
+
+**Consequence.** What now holds in the code and what breaks if it is violated.
 ```
 
-Переносить закрытый раздел в архив руками не нужно: это делают скрипты `knowledge/` на pre-commit.
+A decision is not rewritten. Changed your mind — a new entry with a link to the one being revoked.
 
-## Правило честности
+**Lesson** (`knowledge/lessons.md`) — the same shape. The reason says how the defect was found: review, measurement, failure, live data. A lesson without the means of detection is useless: it won't teach anyone to catch the next one like it.
 
-Запись здесь — утверждение о реальности. Непроверенное помечается словом «предположение» и остаётся таким, пока не проверено на живых данных или в документации. Снять пометку можно только вместе со ссылкой на проверку.
+**Open question** (`knowledge/open-questions.md`) — a question as the heading, the gist, and a mandatory "Due: …" line. A question without a deadline becomes eternal.
 
-Числа приводятся с условиями замера: сколько времени, сколько событий, на каких данных, в каком режиме. Число без условий невоспроизводимо и потому бесполезно.
+The deadline must name a stage number — `Due: stage 4.` — or a change with the stage number in its name: ``Due: `stage1-<name>`.``. The stage number comes from the stage table `knowledge/stages.md`. There are no other forms: the deadline is read by `knowledge/due.sh`, and a prose "by the stage where it's needed" can't be checked, so it counts as missing. The condition stays in the question text; the deadline becomes the stage at which the condition is expected. After that, the deadline is presented at the entry to the stage — the `stage-grooming` skill.
 
-## Чего не делать
+Closing a question — a struck-through heading with a link to the decision or spec paragraph:
 
-- Не править блоки между метками `<!-- … -->` в документах: их собирают скрипты `knowledge/`.
-- Не переписывать старую запись, подгоняя её под новое понимание. Журнал ценен тем, что показывает, что думали тогда.
-- Не заводить запись «на всякий случай»: то, что видно из кода, коммита или ТЗ, здесь не нужно.
+```markdown
+## ~~Question title~~ — closed YYYY-MM-DD
+```
+
+There is no need to move a closed section to the archive by hand: the `knowledge/` scripts do it at pre-commit.
+
+## Honesty rule
+
+An entry here is a statement about reality. Anything unverified is marked with the word "assumption" and stays so until verified on live data or in documentation. The mark can be removed only together with a link to the verification.
+
+Numbers are given with the measurement conditions: how long, how many events, on what data, in what mode. A number without conditions is not reproducible and therefore useless.
+
+## What not to do
+
+- Don't edit blocks between `<!-- … -->` markers in documents: the `knowledge/` scripts build them.
+- Don't rewrite an old entry to fit a new understanding. The journal is valuable because it shows what was thought at the time.
+- Don't create an entry "just in case": what is visible from the code, a commit, or the spec is not needed here.

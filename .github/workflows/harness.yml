@@ -1,25 +1,25 @@
-# Общие проверки обвязки. Управляемый файл: обновляется шаблоном, руками
-# не правится. Зовётся из `ci.yml` проекта (`uses: ./.github/workflows/harness.yml`);
-# свои джобы проект пишет там.
+# Shared harness checks. Managed file: updated by the template, not edited
+# by hand. Called from the project's `ci.yml` (`uses: ./.github/workflows/harness.yml`);
+# the project writes its own jobs there.
 #
-# Делят ответственность с lefthook: тот стережёт коммит и пуш на машине
-# разработчика, CI — то, что локальный хук пропустить может: обход через
-# --no-verify и glob-фильтры.
+# They share responsibility with lefthook: it guards commit and push on the
+# developer's machine, CI guards what a local hook may miss: bypass via
+# --no-verify and glob filters.
 name: harness
 
 on:
   workflow_call:
     inputs:
       runs-on:
-        description: Раннер — метка строкой (`ubuntu-latest`) или массив меток в JSON (`["self-hosted", "ci"]`)
+        description: Runner, a label string (`ubuntu-latest`) or a JSON array of labels (`["self-hosted", "ci"]`)
         type: string
         default: ubuntu-latest
-      # Проекту, которому для сборки нужно своё окружение (база в services,
-      # переменные, свои шаги), общая джоба rust мешает: она идёт рядом с его
-      # собственной и падает без того окружения. Такой проект её выключает и
-      # пишет rust в своём ci.yml.
+      # A project whose build needs its own environment (a database in services,
+      # variables, custom steps) is hindered by the shared rust job: it runs next
+      # to the project's own and fails without that environment. Such a project
+      # turns it off and writes rust in its own ci.yml.
       rust:
-        description: Общая джоба rust — fmt, clippy, test. false — проект проверяет Rust своей джобой
+        description: Shared rust job (fmt, clippy, test). false means the project checks Rust with its own job
         type: boolean
         default: true
 
@@ -27,17 +27,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Какие джобы нужны этой правке. Правка README не должна стоить прогона
-  # сборки. Ошибка фильтра опасна только в одну сторону: пропущенная проверка
-  # выглядит как зелёная. Поэтому у дорогой rust условие обратное: она идёт на
-  # любой файл, если он не входит в явный список того, чего cargo не видит.
-  # Новый каталог, о котором здесь забыли, запускает её, а не тихо пропускает.
-  # js и harness дешёвые, им хватает прямого списка.
+  # Which jobs this change needs. A README edit should not cost a build run.
+  # A filter mistake is dangerous only one way: a skipped check looks green.
+  # So the expensive rust job has an inverted condition: it runs on any file
+  # unless it is in an explicit list of what cargo doesn't see. A new directory
+  # forgotten here triggers it rather than silently skipping it.
+  # js and harness are cheap, a direct list is enough for them.
   changes:
     name: changes
     runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
-    # Таймауты у всех джоб: зависшая джоба без таймаута (по умолчанию 6 часов)
-    # держит очередь раннера.
+    # Every job has a timeout: a hung job without one (6 hours by default)
+    # holds the runner queue.
     timeout-minutes: 5
     permissions:
       contents: read
@@ -90,25 +90,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Тулчейн берётся из rust-toolchain.toml: rustup доставит компоненты сам.
-      # Кеш GitHub — только на чистой машине: у своего раннера каталог сборки
-      # постоянный.
+      # The toolchain comes from rust-toolchain.toml: rustup installs the
+      # components itself. The GitHub cache is only for a clean machine: a
+      # self-hosted runner keeps its build directory.
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
 
-      - name: Форматирование
+      - name: Formatting
         run: cargo fmt --all --check
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Тесты
+      - name: Tests
         run: cargo test
 
-  # Маркеры конфликта слияния. Конфликт обновления харнесса (rootstock update)
-  # остаётся маркерами в файлах, и PR с ним обязан быть красным — иначе
-  # harness-automerge.yml его вольёт. Идёт на любую правку, без фильтра:
-  # маркер может оказаться в любом файле.
+  # Merge conflict markers. A harness update conflict (rootstock update) stays
+  # as markers in files, and its PR must be red, otherwise harness-automerge.yml
+  # would merge it. Runs on any change, without a filter: a marker can end up
+  # in any file.
   markers:
     name: markers
     runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
@@ -116,7 +116,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Нет маркеров конфликта
+      - name: No conflict markers
         run: ./.harness/update/conflict-markers.sh
 
   harness:
@@ -128,7 +128,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Тесты гоняют lefthook на временных репозиториях, зовут rustfmt; прослойку Pi — bun test.
+      # The tests run lefthook on temporary repositories, call rustfmt; the Pi layer runs under bun test.
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -136,15 +136,31 @@ jobs:
       - name: lefthook
         run: bun add --global lefthook@2.1.12
 
-      - name: Тесты хуков
+      - name: Hook tests
         run: ./.harness/hooks/tests/run.sh
 
-      # Прослойка Pi: обработчики расширения с подставным API Pi поверх тех же хуков.
-      - name: Тесты прослойки Pi
+      # Pi layer: the extension handlers with a fake Pi API on top of the same hooks.
+      - name: Pi layer tests
         run: bun test ./.harness/hooks/tests/pi.test.ts
 
-      - name: Тесты knowledge/
+      - name: knowledge/ tests
         run: for t in knowledge/tests/*.sh; do "./$t" || exit 1; done
 
-      - name: Тесты обновления харнесса
+      - name: Harness update tests
         run: for t in .harness/update/tests/*.sh; do "./$t" || exit 1; done
+
+      # The knowledge/ tables of contents are generated. A mismatch with the
+      # content must be a red run. `git status --porcelain`, not
+      # `git diff --exit-code`: diff is blind to added and deleted files.
+      # In the monolith form the TOC script belongs to the project: without it
+      # there is nothing to check. Old-form documents live anywhere, so the whole
+      # tree is checked.
+      - name: Tables of contents built
+        run: |
+          [ -e knowledge/index.sh ] || exit 0
+          ./knowledge/index.sh
+          status=$(git status --porcelain)
+          if [ -n "$status" ]; then
+            printf 'Tables of contents diverged from the content: run ./knowledge/index.sh and commit:\n%s\n' "$status" >&2
+            exit 1
+          fi

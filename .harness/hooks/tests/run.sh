@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# Тесты хуков обвязки и диспетчера. Каждый хук проверяется минимум двумя
-# случаями: срабатывание и пропуск.
+# Tests of the harness hooks and the dispatcher. Every hook is checked with at
+# least two cases: firing and passing.
 #
-# Урок: хук, который может тихо ничего не сделать, хуже отсутствующего. Первая
-# версия проверки типов молча получала пустую строку и завершалась с кодом 0,
-# то есть делала вид, что проверка прошла. Поймано только намеренно сломанным
-# типом.
+# Lesson: a hook that can quietly do nothing is worse than a missing one. The
+# first version of the type check silently got an empty string and exited 0,
+# i.e. pretended the check had passed. Caught only by a deliberately broken
+# type.
 #
-# Всё гоняется на синтетических репозиториях во временных каталогах, а не на
-# репозитории проекта: набор не зависит от его состояния. Случаи модульных
-# хуков (rust-fmt, rust-clippy — модуль rust; js-fmt, js-typecheck — модуль
-# frontend) идут, только если хук в проекте есть.
+# Everything runs on synthetic repositories in temporary directories, not on
+# the project repository: the suite doesn't depend on its state. Module hook
+# cases (rust-fmt, rust-clippy — module rust; js-fmt, js-typecheck — module
+# frontend) run only if the hook exists in the project.
 #
-# Запуск: .harness/hooks/tests/run.sh
+# Run: .harness/hooks/tests/run.sh
 set -uo pipefail
 
-# Под git-хуком (pre-push у lefthook) в окружении стоят GIT_DIR, GIT_INDEX_FILE
-# и прочие: любая команда git тогда смотрит в репозиторий хука, а не в тот
-# каталог, где её запустили. Хуки агента так не вызываются никогда, поэтому
-# наследство снимается — иначе тесты проверяют не ту обстановку и «краснеют»
-# ровно там, где всё в порядке.
+# Under a git hook (lefthook's pre-push) the environment has GIT_DIR, GIT_INDEX_FILE
+# and the like: any git command then looks into the hook's repository, not the
+# directory it was run in. Agent hooks are never called like that, so the
+# inheritance is removed — otherwise the tests check the wrong setting and "go red"
+# exactly where everything is fine.
 while IFS='=' read -r name _; do
   case "$name" in GIT_*) unset "$name" ;; esac
 done < <(env)
-# Хуки берут корень проекта отсюда; тесты задают обстановку сами.
+# Hooks take the project root from here; the tests set up the setting themselves.
 unset CLAUDE_PROJECT_DIR
 
 here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
@@ -32,8 +32,8 @@ root=$(cd "$hooks/../.." && pwd)
 
 pass=0
 fail=0
-# Все временные каталоги — внутри одного, он убирается на выходе. Каталог
-# внутри проекта (для biome) убирается отдельно.
+# All temporary directories are inside one, removed on exit. The directory
+# inside the project (for biome) is removed separately.
 base=$(mktemp -d)
 jsdir=""
 
@@ -44,21 +44,22 @@ cleanup() {
 trap cleanup EXIT
 
 ok()   { pass=$((pass + 1)); printf '  ok   %s\n' "$1"; }
-bad()  { fail=$((fail + 1)); printf '  ПРОВАЛ %s\n     ожидалось: %s\n     получено: %s\n' "$1" "$2" "${3:-<пусто>}"; }
+bad()  { fail=$((fail + 1)); printf '  FAIL %s\n     expected: %s\n     got: %s\n' "$1" "$2" "${3:-<empty>}"; }
 has()  { [ -e "$hooks/$1" ]; }
 
-# Временный каталог, убираемый на выходе: печатает путь.
+# A temporary directory removed on exit: prints the path.
 new_tmp() {
   mktemp -d "$base/tmp.XXXXXX"
 }
 
-# Временный git-репозиторий с пустым коммитом на main: печатает путь.
-# Зовётся как `repo=$(new_repo) || exit 1`.
+# A temporary git repository with an empty commit on main: prints the path.
+# Called as `repo=$(new_repo) || exit 1`.
 #
-# Проверка отделения — не перестраховка. Один раз такой набор запустился из
-# git-хука с унаследованным GIT_DIR: `git init` перевёл настоящий репозиторий
-# в bare, `worktree add` завёл в нём ветку, а `commit` лёг на текущую ветку.
-# Тест, способный писать в проверяемый репозиторий, опаснее непроверенного хука.
+# The separation check is not overcaution. Once such a suite ran from a git hook
+# with an inherited GIT_DIR: `git init` turned the real repository into a bare
+# one, `worktree add` created a branch in it, and `commit` landed on the current
+# branch. A test able to write into the repository under test is more dangerous
+# than an untested hook.
 new_repo() {
   local d top want
   d=$(mktemp -d "$base/repo.XXXXXX")
@@ -66,7 +67,7 @@ new_repo() {
   top=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)
   want=$(cd "$d" && pwd -P)
   if [ "$top" != "$want" ]; then
-    printf 'ОСТАНОВ: временный репозиторий не отделился (%s вместо %s). Набор не должен трогать рабочий репозиторий.\n' "${top:-<нет>}" "$want" >&2
+    printf 'STOP: the temporary repository did not separate (%s instead of %s). The suite must not touch the working repository.\n' "${top:-<none>}" "$want" >&2
     return 1
   fi
   git -C "$d" config user.email t@t
@@ -75,18 +76,18 @@ new_repo() {
   printf '%s\n' "$d"
 }
 
-# check <имя> <скрипт> <json> <deny|context|silent> [рабочий каталог]
+# check <name> <script> <json> <deny|context|silent> [working dir]
 check() {
   local name=$1 script=$2 json=$3 expect=$4 dir=${5:-$root} out
   out=$(cd "$dir" && printf '%s' "$json" | "$hooks/$script" 2>/dev/null)
   case "$expect" in
     deny)
-      case "$out" in *'"permissionDecision":"deny"'*) ok "$name" ;; *) bad "$name" "отказ" "$out" ;; esac ;;
+      case "$out" in *'"permissionDecision":"deny"'*) ok "$name" ;; *) bad "$name" "denial" "$out" ;; esac ;;
     context)
-      case "$out" in *'additionalContext'*) ok "$name" ;; *) bad "$name" "подсказка модели" "$out" ;; esac ;;
+      case "$out" in *'additionalContext'*) ok "$name" ;; *) bad "$name" "a hint to the model" "$out" ;; esac ;;
     silent)
-      [ -z "$out" ] && ok "$name" || bad "$name" "молчание" "$out" ;;
-    *) bad "$name" "известное ожидание" "$expect" ;;
+      [ -z "$out" ] && ok "$name" || bad "$name" "silence" "$out" ;;
+    *) bad "$name" "a known expectation" "$expect" ;;
   esac
 }
 
@@ -99,32 +100,32 @@ plain=$(new_tmp)
 echo "guard-staging.sh"
 staging_repo=$(new_repo) || exit 1
 git -C "$staging_repo" worktree add -q "$staging_repo/wt" -b wt
-check "git add -A в общем каталоге"     guard-staging.sh "$(bash_ev 'git add -A')"                     deny    "$staging_repo"
-check "git add . в общем каталоге"      guard-staging.sh "$(bash_ev 'git add .')"                      deny    "$staging_repo"
-check "git commit -am в общем каталоге" guard-staging.sh "$(bash_ev 'git commit -am "правка"')"        deny    "$staging_repo"
-check "адресный git add"                guard-staging.sh "$(bash_ev 'git add src/lib.rs')"             silent  "$staging_repo"
-check "-a внутри текста сообщения"      guard-staging.sh "$(bash_ev 'git commit -m "add -a to docs"')" silent  "$staging_repo"
-check "git add -A в своём дереве"       guard-staging.sh "$(bash_ev 'git add -A')"                     silent  "$staging_repo/wt"
-check "вне репозитория"                 guard-staging.sh "$(bash_ev 'git add -A')"                     silent  "$plain"
+check "git add -A in the shared checkout"     guard-staging.sh "$(bash_ev 'git add -A')"                     deny    "$staging_repo"
+check "git add . in the shared checkout"      guard-staging.sh "$(bash_ev 'git add .')"                      deny    "$staging_repo"
+check "git commit -am in the shared checkout" guard-staging.sh "$(bash_ev 'git commit -am "edit"')"          deny    "$staging_repo"
+check "targeted git add"                      guard-staging.sh "$(bash_ev 'git add src/lib.rs')"             silent  "$staging_repo"
+check "-a inside the message text"            guard-staging.sh "$(bash_ev 'git commit -m "add -a to docs"')" silent  "$staging_repo"
+check "git add -A in own worktree"            guard-staging.sh "$(bash_ev 'git add -A')"                     silent  "$staging_repo/wt"
+check "outside a repository"                  guard-staging.sh "$(bash_ev 'git add -A')"                     silent  "$plain"
 
-# Разбор heredoc ошибается только в сторону запрета: вырезанное хук не видит.
-check "here-string не heredoc"          guard-staging.sh "$(bash_ev 'cat <<<x; git add -A')"           deny    "$staging_repo"
-check "сдвиг в \$((…)) не heredoc"      guard-staging.sh \
+# The heredoc parse errs only on the side of denial: the hook doesn't see what is cut out.
+check "here-string is not a heredoc"          guard-staging.sh "$(bash_ev 'cat <<<x; git add -A')"           deny    "$staging_repo"
+check "shift in \$((…)) is not a heredoc"     guard-staging.sh \
   "$(bash_ev "$(printf 'echo $((1<<2)) x\ngit add -A\nx')")"                                         deny    "$staging_repo"
-check "heredoc без терминатора"         guard-staging.sh \
-  "$(bash_ev "$(printf 'cat <<EOF >note.md\nтекст\nEOFX\ngit add -A')")"                            deny    "$staging_repo"
-check "терминатор — слово без кавычек"  guard-staging.sh \
+check "heredoc without a terminator"          guard-staging.sh \
+  "$(bash_ev "$(printf 'cat <<EOF >note.md\ntext\nEOFX\ngit add -A')")"                             deny    "$staging_repo"
+check "terminator is the unquoted word"       guard-staging.sh \
   "$(bash_ev "$(printf 'cat <<E.O >note.md\nEO\ngit add -A\nE.O\ngit add note.md')")"               silent  "$staging_repo"
-check "табы снимаются только при <<-"   guard-staging.sh \
-  "$(bash_ev "$(printf 'cat <<EOF >note.md\nтекст\n\tEOF\ngit add -A')")"                           deny    "$staging_repo"
-check "git add -A в теле heredoc"       guard-staging.sh \
+check "tabs are stripped only with <<-"       guard-staging.sh \
+  "$(bash_ev "$(printf 'cat <<EOF >note.md\ntext\n\tEOF\ngit add -A')")"                            deny    "$staging_repo"
+check "git add -A in a heredoc body"          guard-staging.sh \
   "$(bash_ev "$(printf "cat <<'EOF' >note.md\ngit add -A\nEOF\ngit add note.md")")"                 silent  "$staging_repo"
-check "git add -A в теле <<- с табом"   guard-staging.sh \
+check "git add -A in a <<- body with a tab"   guard-staging.sh \
   "$(bash_ev "$(printf 'cat <<-"EOF" >note.md\n\tgit add -A\n\tEOF\ngit add note.md')")"            silent  "$staging_repo"
-check "commit -F- с текстом в heredoc"  guard-staging.sh \
-  "$(bash_ev "$(printf "git commit -F- <<'EOF'\nfix: убрал git add -A из инструкции\nEOF")")"         silent  "$staging_repo"
-# Сомнение в разборе — вся команда на проверке. В каждом случае ниже настоящий
-# bash либо прочёл бы строку как команду, либо хук не уверен, что нет.
+check "commit -F- with text in a heredoc"     guard-staging.sh \
+  "$(bash_ev "$(printf "git commit -F- <<'EOF'\nfix: removed git add -A from the instructions\nEOF")")" silent  "$staging_repo"
+# Doubt in the parse — the whole command is checked. In each case below real
+# bash would either read the line as a command, or the hook isn't sure it wouldn't.
 for c in \
   'cat <<\\EOF >note.md\ngit add -A\nEOF' \
   "cat <<\$'EOF' >note.md\ngit add -A\nEOF" \
@@ -143,211 +144,211 @@ for c in \
   'echo $[ "1" ]; cat <<EOF >note.md\ngit add -A\nEOF' \
   'let "x = 1"; cat <<EOF >note.md\ngit add -A\nEOF' \
   'cat <<EOF >note.md \\\ngit add -A\nEOF'; do
-  check "не heredoc: ${c%%\\n*}" guard-staging.sh "$(bash_ev "$(printf '%b' "$c")")" deny "$staging_repo"
+  check "not a heredoc: ${c%%\\n*}" guard-staging.sh "$(bash_ev "$(printf '%b' "$c")")" deny "$staging_repo"
 done
-check "команда после heredoc видна"     guard-staging.sh \
-  "$(bash_ev "$(printf "cat <<'EOF' >note.md\nтекст\nEOF\ngit add -A")")"                           deny    "$staging_repo"
+check "a command after a heredoc is visible"  guard-staging.sh \
+  "$(bash_ev "$(printf "cat <<'EOF' >note.md\ntext\nEOF\ngit add -A")")"                            deny    "$staging_repo"
 
 echo
 echo "bash-edit.sh"
-check "правка через sed -i"           bash-edit.sh "$(bash_ev "sed -i '' 's/a/b/' src/lib.rs")"  context
-check "перенаправление в исходник"    bash-edit.sh "$(bash_ev 'cat > src/app.tsx')"              context
-check "сборка"                        bash-edit.sh "$(bash_ev 'git status')"                     silent
-check "запись во временный каталог"   bash-edit.sh "$(bash_ev 'echo done > /tmp/out.rs')"        silent
-check "правка в теле heredoc"         bash-edit.sh \
+check "edit via sed -i"               bash-edit.sh "$(bash_ev "sed -i '' 's/a/b/' src/lib.rs")"  context
+check "redirect into a source file"   bash-edit.sh "$(bash_ev 'cat > src/app.tsx')"              context
+check "build"                         bash-edit.sh "$(bash_ev 'git status')"                     silent
+check "write into a temp directory"   bash-edit.sh "$(bash_ev 'echo done > /tmp/out.rs')"        silent
+check "edit in a heredoc body"        bash-edit.sh \
   "$(bash_ev "$(printf 'cat <<%s\nsed -i x src/lib.rs\nEOF\n' "'EOF'")")"                         silent
 
 echo
 echo "session-tree.sh"
-check "внутри репозитория"            session-tree.sh '{}'                                       context "$staging_repo"
-check "вне репозитория"               session-tree.sh '{}'                                       silent  "$plain"
+check "inside a repository"           session-tree.sh '{}'                                       context "$staging_repo"
+check "outside a repository"          session-tree.sh '{}'                                       silent  "$plain"
 
-# Сессия, начатая в чужом клоне, не исполняет его код: `knowledge/due.sh`
-# берётся из проекта хука, как у knowledge-due.sh, а не из дерева каталога.
+# A session started in a foreign clone doesn't execute its code: `knowledge/due.sh`
+# is taken from the hook's project, as in knowledge-due.sh, not from the directory's worktree.
 foreign=$(new_repo) || exit 1
 mkdir -p "$foreign/knowledge"
 printf '#!/usr/bin/env bash\n: > "%s/foreign-due-ran"\n' "$base" > "$foreign/knowledge/due.sh"
 chmod +x "$foreign/knowledge/due.sh"
 (cd "$foreign" && printf '{}' | "$hooks/session-tree.sh" >/dev/null 2>&1)
 if [ -e "$base/foreign-due-ran" ]; then
-  bad "due.sh чужого клона не исполняется" "скрипт не запущен" "запущен"
+  bad "a foreign clone's due.sh is not executed" "script not run" "run"
 else
-  ok "due.sh чужого клона не исполняется"
+  ok "a foreign clone's due.sh is not executed"
 fi
 
 out=$(cd "$staging_repo" && printf '{}' | "$hooks/session-tree.sh" 2>/dev/null)
 case "$out" in
-  *"ОБЩЕМ каталоге"*) ok "общий каталог назван" ;;
-  *) bad "общий каталог назван" "строка про общий каталог" "$out" ;;
+  *"SHARED checkout"*) ok "the shared checkout is named" ;;
+  *) bad "the shared checkout is named" "a line about the shared checkout" "$out" ;;
 esac
 out=$(cd "$staging_repo/wt" && printf '{}' | "$hooks/session-tree.sh" 2>/dev/null)
 case "$out" in
-  *"в своём дереве"*"Другие рабочие деревья"*) ok "своё дерево и соседи названы" ;;
-  *) bad "своё дерево и соседи названы" "своё дерево и список соседей" "$out" ;;
+  *"in its own worktree"*"Other worktrees"*) ok "own worktree and neighbours are named" ;;
+  *) bad "own worktree and neighbours are named" "own worktree and a list of neighbours" "$out" ;;
 esac
 
-# Общий каталог сборки на все деревья: докладываем ровно тогда, когда он настроен.
+# A build directory shared by all worktrees: reported exactly when it is configured.
 out=$(cd "$staging_repo" && printf '{}' | "$hooks/session-tree.sh" 2>/dev/null)
 case "$out" in
-  *"Общий каталог сборки настроен"*) bad "своего каталога сборки хватает" "молчание про target-dir" "$out" ;;
-  *) ok "своего каталога сборки хватает" ;;
+  *"A shared build directory is configured"*) bad "own build directory is fine" "silence about target-dir" "$out" ;;
+  *) ok "own build directory is fine" ;;
 esac
 mkdir -p "$staging_repo/.cargo"
 printf '[build]\ntarget-dir = "/tmp/shared"\n' > "$staging_repo/.cargo/config.toml"
 out=$(cd "$staging_repo" && printf '{}' | "$hooks/session-tree.sh" 2>/dev/null)
 case "$out" in
-  *"Общий каталог сборки настроен"*) ok "остаток общего каталога назван" ;;
-  *) bad "остаток общего каталога назван" "жалоба на target-dir" "$out" ;;
+  *"A shared build directory is configured"*) ok "a leftover shared directory is named" ;;
+  *) bad "a leftover shared directory is named" "a complaint about target-dir" "$out" ;;
 esac
 rm -rf "$staging_repo/.cargo"
 
-# Git-хуки, установленные из дерева, ведут в его node_modules и умирают вместе
-# с ним. Доклад — когда путь не в основном каталоге или файла нет; молчание —
-# когда путь верен или репозиторий lefthook не использует.
+# Git hooks installed from a worktree point into its node_modules and die together
+# with it. A report — when the path is not in the main checkout or the file is
+# missing; silence — when the path is right or the repository doesn't use lefthook.
 main_phys=$(cd "$staging_repo" && pwd -P)
-lefthook_hooks() {  # <путь к бинарю> — оба хука в форме, которую пишет lefthook 2
+lefthook_hooks() {  # <binary path> — both hooks in the form lefthook 2 writes
   local h
   for h in pre-commit pre-push; do
     printf '#!/bin/sh\ncall_lefthook()\n{\n  if test -n "$LEFTHOOK_BIN"\n  then\n    "$LEFTHOOK_BIN" "$@"\n  elif lefthook -h >/dev/null 2>&1\n  then\n    lefthook "$@"\n  elif %s -h >/dev/null 2>&1\n  then\n    %s "$@"\n  fi\n}\n' "$1" "$1" > "$staging_repo/.git/hooks/$h"
   done
 }
-hooks_report() {  # <имя> <broken|fine> [каталог]
+hooks_report() {  # <name> <broken|fine> [dir]
   out=$(cd "${3:-$staging_repo}" && printf '{}' | "$hooks/session-tree.sh" 2>/dev/null)
   case "$2:$out" in
-    broken:*"Git-хуки сломаны"*"lefthook install"*) ok "$1" ;;
-    broken:*) bad "$1" "доклад о сломанных хуках" "$out" ;;
-    fine:*"Git-хуки сломаны"*) bad "$1" "молчание про git-хуки" "$out" ;;
+    broken:*"Git hooks are broken"*"lefthook install"*) ok "$1" ;;
+    broken:*) bad "$1" "a report about broken hooks" "$out" ;;
+    fine:*"Git hooks are broken"*) bad "$1" "silence about git hooks" "$out" ;;
     fine:*) ok "$1" ;;
   esac
 }
 lefthook_hooks "$main_phys/wt/node_modules/lefthook/bin/lefthook"
-hooks_report "без lefthook.yml про хуки молчит" fine
+hooks_report "without lefthook.yml silent about hooks" fine
 printf 'pre-commit: {}\n' > "$staging_repo/lefthook.yml"
-# Бинарь есть и в дереве: путь туда неверен, даже пока дерево живо.
+# The binary exists in the worktree too: the path there is wrong even while the worktree is alive.
 for d in "$staging_repo" "$staging_repo/wt"; do
   mkdir -p "$d/node_modules/lefthook/bin"
   printf '#!/bin/sh\n' > "$d/node_modules/lefthook/bin/lefthook"
   chmod +x "$d/node_modules/lefthook/bin/lefthook"
 done
 lefthook_hooks "$main_phys/node_modules/lefthook/bin/lefthook"
-hooks_report "хуки ведут в основной каталог — молчит" fine
-hooks_report "из дерева хуки в основном каталоге — молчит" fine "$staging_repo/wt"
+hooks_report "hooks point into the main checkout — silent" fine
+hooks_report "from a worktree, hooks in the main checkout — silent" fine "$staging_repo/wt"
 lefthook_hooks "$main_phys/wt/node_modules/lefthook/bin/lefthook"
-hooks_report "хуки ведут в дерево — доклад" broken "$staging_repo/wt"
+hooks_report "hooks point into a worktree — report" broken "$staging_repo/wt"
 lefthook_hooks "$main_phys/node_modules/gone/bin/lefthook"
-hooks_report "путь в основной каталог, файла нет — доклад" broken
-# lefthook, поставленный глобально: путь вне node_modules обязан существовать.
+hooks_report "path into the main checkout, file missing — report" broken
+# lefthook installed globally: a path outside node_modules must exist.
 mkdir -p "$plain/global/bin"
 printf '#!/bin/sh\n' > "$plain/global/bin/lefthook"
 chmod +x "$plain/global/bin/lefthook"
 lefthook_hooks "$plain/global/bin/lefthook"
-hooks_report "глобальный lefthook на месте — молчит" fine
+hooks_report "global lefthook in place — silent" fine
 lefthook_hooks "$plain/gone/bin/lefthook"
-hooks_report "глобальный lefthook пропал — доклад" broken
+hooks_report "global lefthook gone — report" broken
 rm -f "$staging_repo/.git/hooks/pre-commit" "$staging_repo/.git/hooks/pre-push"
-hooks_report "хуков нет — доклад" broken
+hooks_report "no hooks — report" broken
 rm -rf "$staging_repo/lefthook.yml" "$staging_repo/node_modules" "$staging_repo/wt/node_modules"
 
 echo
 echo "knowledge-due.sh"
-# Хук ходит за отчётом в `knowledge/due.sh` своего проекта (два уровня вверх от
-# каталога хуков). Проект синтетический: свои ответы, своя таблица этапов,
-# вопрос к этапу в работе.
+# The hook fetches the report from its project's `knowledge/due.sh` (two levels up
+# from the hooks directory). The project is synthetic: its own answers, its own
+# stage table, a question for the stage in progress.
 dueproj=$(new_tmp)
 mkdir -p "$dueproj/.harness" "$dueproj/knowledge" "$dueproj/docs"
 cp -R "$hooks" "$dueproj/.harness/hooks"
 if [ -f "$root/knowledge/due.sh" ]; then
   cp "$root/knowledge/due.sh" "$dueproj/knowledge/"
   printf '[answers]\nopen_questions_path = "knowledge/open-questions.md"\nstages_path = "docs/stages.md"\n' > "$dueproj/.rootstock.toml"
-  printf '| Этап | Состояние |\n|---|---|\n| 1. Каркас | в работе |\n' > "$dueproj/docs/stages.md"
-  printf '# Открытые вопросы\n\n## Вопрос\n\nСуть.\n\nНужно к: этапу 1.\n' > "$dueproj/knowledge/open-questions.md"
-  due_check() {  # <имя> <prompt> <context|silent>
+  printf '| Stage | State |\n|---|---|\n| 1. Skeleton | in progress |\n' > "$dueproj/docs/stages.md"
+  printf '# Open questions\n\n## Question\n\nGist.\n\nDue: stage 1.\n' > "$dueproj/knowledge/open-questions.md"
+  due_check() {  # <name> <prompt> <context|silent>
     local out
     out=$(printf '%s' "$(prompt_ev "$2")" | "$dueproj/.harness/hooks/knowledge-due.sh" 2>/dev/null)
     case "$3:$out" in
-      context:*additionalContext*"Открытые вопросы к этапу 1"*) ok "$1" ;;
-      context:*) bad "$1" "справка о вопросах этапа 1" "$out" ;;
+      context:*additionalContext*"Open questions for stage 1"*) ok "$1" ;;
+      context:*) bad "$1" "a reference on stage 1 questions" "$out" ;;
       silent:) ok "$1" ;;
-      silent:*) bad "$1" "молчание" "$out" ;;
+      silent:*) bad "$1" "silence" "$out" ;;
     esac
   }
-  due_check "перед созданием change"  '/opsx:propose новый экран' context
-  due_check "обычное сообщение"       'почини тест'               silent
-  due_check "apply того же change"    '/opsx:apply stage1-screen' silent
+  due_check "before creating a change"  '/opsx:propose new screen'  context
+  due_check "an ordinary message"       'fix the test'              silent
+  due_check "apply of the same change"  '/opsx:apply stage1-screen' silent
 else
-  bad "knowledge/due.sh на месте" "$root/knowledge/due.sh" "нет"
+  bad "knowledge/due.sh in place" "$root/knowledge/due.sh" "missing"
 fi
-# Справка, уронившая отправку сообщения, дороже отсутствующей справки:
-# без knowledge/due.sh хук молчит с кодом 0.
+# A reference that broke sending a message costs more than a missing reference:
+# without knowledge/due.sh the hook is silent with exit 0.
 rm -f "$dueproj/knowledge/due.sh"
-out=$(printf '%s' "$(prompt_ev '/opsx:propose что-нибудь')" | "$dueproj/.harness/hooks/knowledge-due.sh" 2>&1); code=$?
-{ [ $code -eq 0 ] && [ -z "$out" ]; } && ok "без knowledge/due.sh молчит" || bad "без knowledge/due.sh молчит" "молчание, код 0" "код $code: $out"
+out=$(printf '%s' "$(prompt_ev '/opsx:propose something')" | "$dueproj/.harness/hooks/knowledge-due.sh" 2>&1); code=$?
+{ [ $code -eq 0 ] && [ -z "$out" ]; } && ok "without knowledge/due.sh silent" || bad "without knowledge/due.sh silent" "silence, exit 0" "exit $code: $out"
 
 echo
 echo "session-leftovers.sh"
 tails=$(new_repo) || exit 1
 out=$(cd "$tails" && "$hooks/session-leftovers.sh" 2>/dev/null)
-[ -z "$out" ] && ok "чистое дерево — молчит" || bad "чистое дерево — молчит" "молчание" "$out"
+[ -z "$out" ] && ok "clean worktree — silent" || bad "clean worktree — silent" "silence" "$out"
 
-printf 'черновик\n' > "$tails/draft.txt"
+printf 'draft\n' > "$tails/draft.txt"
 out=$(cd "$tails" && "$hooks/session-leftovers.sh" 2>/dev/null)
 case "$out" in
-  *"незакоммиченных путей: 1"*) ok "называет незакоммиченное" ;;
-  *) bad "называет незакоммиченное" "строка про незакоммиченные пути" "$out" ;;
+  *"uncommitted paths: 1"*) ok "names uncommitted work" ;;
+  *) bad "names uncommitted work" "a line about uncommitted paths" "$out" ;;
 esac
 
-# `node_modules` симлинкуется в каждое дерево настройкой worktree и работой
-# сессии не является: хук обязан его не считать.
+# `node_modules` is symlinked into every worktree by the worktree setting and is
+# not the session's work: the hook must not count it.
 rm "$tails/draft.txt"
 mkdir "$tails/node_modules"
 printf '{}\n' > "$tails/node_modules/package.json"
 out=$(cd "$tails" && "$hooks/session-leftovers.sh" 2>/dev/null)
-[ -z "$out" ] && ok "node_modules не считается хвостом" || bad "node_modules не считается хвостом" "молчание" "$out"
+[ -z "$out" ] && ok "node_modules is not a leftover" || bad "node_modules is not a leftover" "silence" "$out"
 
-# Своя ветка со своим коммитом и без upstream — её ещё никто не видел.
+# Own branch with its own commit and no upstream — nobody has seen it yet.
 git -C "$tails" checkout -q -b feature
-git -C "$tails" commit -q --allow-empty -m "своя работа"
+git -C "$tails" commit -q --allow-empty -m "own work"
 out=$(cd "$tails" && "$hooks/session-leftovers.sh" 2>/dev/null)
 case "$out" in
-  *"не отправлена ни разу"*) ok "называет неотправленную ветку" ;;
-  *) bad "называет неотправленную ветку" "строка про неотправленную ветку" "$out" ;;
+  *"has never been pushed"*) ok "names an unpushed branch" ;;
+  *) bad "names an unpushed branch" "a line about an unpushed branch" "$out" ;;
 esac
 
 out=$(cd "$plain" && "$hooks/session-leftovers.sh" 2>/dev/null)
-[ -z "$out" ] && ok "вне репозитория — молчит" || bad "вне репозитория — молчит" "молчание" "$out"
+[ -z "$out" ] && ok "outside a repository — silent" || bad "outside a repository — silent" "silence" "$out"
 
-# Расхождение с соседней веткой: два дерева правят один файл по-разному —
-# два PR по append-only журналам.
+# Divergence with a neighbouring branch: two worktrees edit one file differently —
+# two PRs on append-only journals.
 git -C "$tails" checkout -q main
-printf 'общая строка\n' > "$tails/journal.md"
+printf 'shared line\n' > "$tails/journal.md"
 git -C "$tails" add journal.md
-git -C "$tails" commit -q -m "журнал"
+git -C "$tails" commit -q -m "journal"
 git -C "$tails" worktree add -q "$tails/wt" -b neighbour
-printf 'общая строка\nзапись соседа\n' > "$tails/wt/journal.md"
+printf 'shared line\nneighbour entry\n' > "$tails/wt/journal.md"
 git -C "$tails/wt" add journal.md
-git -C "$tails/wt" commit -q -m "запись соседа"
+git -C "$tails/wt" commit -q -m "neighbour entry"
 
 git -C "$tails" checkout -q -b mine
-printf 'общая строка\nмоя запись\n' > "$tails/journal.md"
+printf 'shared line\nmy entry\n' > "$tails/journal.md"
 git -C "$tails" add journal.md
-git -C "$tails" commit -q -m "моя запись"
+git -C "$tails" commit -q -m "my entry"
 
 out=$(cd "$tails" && "$hooks/session-leftovers.sh" 2>/dev/null)
 case "$out" in
-  *"разойдётся с веткой neighbour"*journal.md*) ok "называет расхождение с соседней веткой" ;;
-  *) bad "называет расхождение с соседней веткой" "строка про neighbour и journal.md" "$out" ;;
+  *"will diverge from branch neighbour"*journal.md*) ok "names divergence from a neighbouring branch" ;;
+  *) bad "names divergence from a neighbouring branch" "a line about neighbour and journal.md" "$out" ;;
 esac
 
-# Тот же сосед, но правки в разных файлах — расхождения нет и выдумывать его
-# нельзя: доклад, который жалуется всегда, читать перестанут.
+# The same neighbour, but edits in different files — there is no divergence and
+# it must not be invented: a report that always complains stops being read.
 git -C "$tails" checkout -q -B mine2 main
-printf 'моё\n' > "$tails/only-mine.md"
+printf 'mine\n' > "$tails/only-mine.md"
 git -C "$tails" add only-mine.md
-git -C "$tails" commit -q -m "только свой файл"
+git -C "$tails" commit -q -m "only own file"
 out=$(cd "$tails" && "$hooks/session-leftovers.sh" 2>/dev/null)
 case "$out" in
-  *"разойдётся с веткой"*) bad "непересекающиеся правки расхождением не считаются" "молчание про neighbour" "$out" ;;
-  *) ok "непересекающиеся правки расхождением не считаются" ;;
+  *"will diverge from branch"*) bad "non-overlapping edits are not divergence" "silence about neighbour" "$out" ;;
+  *) ok "non-overlapping edits are not divergence" ;;
 esac
 
 fmtdir=$(new_tmp)
@@ -358,35 +359,35 @@ if has rust-fmt.sh; then
   echo
   echo "rust-fmt.sh"
   printf '%s' "$(file_ev "$fmtdir/a.rs")" | "$hooks/rust-fmt.sh" >/dev/null 2>&1
-  grep -q '^fn main() {$' "$fmtdir/a.rs" && ok "форматирует .rs" || bad "форматирует .rs" "rustfmt применён" "$(cat "$fmtdir/a.rs")"
+  grep -q '^fn main() {$' "$fmtdir/a.rs" && ok "formats .rs" || bad "formats .rs" "rustfmt applied" "$(cat "$fmtdir/a.rs")"
   before=$(cat "$fmtdir/b.ts")
   printf '%s' "$(file_ev "$fmtdir/b.ts")" | "$hooks/rust-fmt.sh" >/dev/null 2>&1
-  [ "$before" = "$(cat "$fmtdir/b.ts")" ] && ok "не трогает .ts" || bad "не трогает .ts" "файл без изменений" "$(cat "$fmtdir/b.ts")"
+  [ "$before" = "$(cat "$fmtdir/b.ts")" ] && ok "leaves .ts alone" || bad "leaves .ts alone" "file unchanged" "$(cat "$fmtdir/b.ts")"
   printf 'fn  main ( )  {\nlet x=1;\n}\n' > "$fmtdir/a.rs"
 fi
 
 if has js-fmt.sh; then
   echo
   echo "js-fmt.sh"
-  # Внутри проекта: biome берётся из его node_modules, правила — из его biome.json.
+  # Inside the project: biome comes from its node_modules, rules from its biome.json.
   jsdir="$root/.tmp-hook-test"
   mkdir -p "$jsdir"
   printf 'const  x  =   1;\nexport  {x}\n' > "$jsdir/a.ts"
   printf '%s' "$(file_ev "$jsdir/a.ts")" | "$hooks/js-fmt.sh" >/dev/null 2>&1
-  grep -q '^const x = 1;$' "$jsdir/a.ts" && ok "форматирует .ts" || bad "форматирует .ts" "biome применён" "$(cat "$jsdir/a.ts")"
+  grep -q '^const x = 1;$' "$jsdir/a.ts" && ok "formats .ts" || bad "formats .ts" "biome applied" "$(cat "$jsdir/a.ts")"
   before=$(cat "$fmtdir/a.rs")
   printf '%s' "$(file_ev "$fmtdir/a.rs")" | "$hooks/js-fmt.sh" >/dev/null 2>&1
-  [ "$before" = "$(cat "$fmtdir/a.rs")" ] && ok "не трогает .rs" || bad "не трогает .rs" "файл без изменений" "$(cat "$fmtdir/a.rs")"
-  # Фикстура — внешний ответ байт в байт: число в ней biome переписал бы.
+  [ "$before" = "$(cat "$fmtdir/a.rs")" ] && ok "leaves .rs alone" || bad "leaves .rs alone" "file unchanged" "$(cat "$fmtdir/a.rs")"
+  # A fixture is an external response byte for byte: biome would rewrite the number in it.
   mkdir -p "$jsdir/crates/client/tests/fixtures"
   printf '{"amount":  114187000000.000000000000000000}\n' > "$jsdir/crates/client/tests/fixtures/oi.json"
   fix_before=$(cat "$jsdir/crates/client/tests/fixtures/oi.json")
   printf '%s' "$(file_ev "$jsdir/crates/client/tests/fixtures/oi.json")" | "$hooks/js-fmt.sh" >/dev/null 2>&1
   [ "$fix_before" = "$(cat "$jsdir/crates/client/tests/fixtures/oi.json")" ] \
-    && ok "не трогает фикстуры" || bad "не трогает фикстуры" "файл без изменений" "$(cat "$jsdir/crates/client/tests/fixtures/oi.json")"
-  # Файл соседнего дерева: исключения biome.json — от корня его дерева, а не
-  # того, откуда запущен хук. Бинарь — только проектный: правленый файл может
-  # лежать в чужом клоне, и его node_modules исполнять нельзя.
+    && ok "leaves fixtures alone" || bad "leaves fixtures alone" "file unchanged" "$(cat "$jsdir/crates/client/tests/fixtures/oi.json")"
+  # A file of a neighbouring worktree: biome.json exclusions come from its worktree's
+  # root, not from where the hook was run. The binary is the project's only: the
+  # edited file may live in a foreign clone, and its node_modules must not be executed.
   if nb=$(new_repo); then
     mkdir -p "$nb/gen" "$nb/node_modules/.bin"
     printf '{"files":{"includes":["**","!gen/**"]}}\n' > "$nb/biome.json"
@@ -396,30 +397,30 @@ if has js-fmt.sh; then
     printf 'const  x  =   1;\n' > "$nb/b.ts"
     (cd "$root" && printf '%s' "$(file_ev "$nb/gen/a.ts")" | "$hooks/js-fmt.sh" >/dev/null 2>&1)
     grep -q '^const  x  =   1;$' "$nb/gen/a.ts" \
-      && ok "соседнее дерево: исключение его biome.json" || bad "соседнее дерево: исключение его biome.json" "файл без изменений" "$(cat "$nb/gen/a.ts")"
+      && ok "neighbouring worktree: its biome.json exclusion" || bad "neighbouring worktree: its biome.json exclusion" "file unchanged" "$(cat "$nb/gen/a.ts")"
     (cd "$root" && printf '%s' "$(file_ev "$nb/b.ts")" | "$hooks/js-fmt.sh" >/dev/null 2>&1)
     grep -q '^const x = 1;$' "$nb/b.ts" \
-      && ok "соседнее дерево: форматирует" || bad "соседнее дерево: форматирует" "biome применён" "$(cat "$nb/b.ts")"
+      && ok "neighbouring worktree: formats" || bad "neighbouring worktree: formats" "biome applied" "$(cat "$nb/b.ts")"
     [ ! -e "$nb/ran" ] \
-      && ok "соседнее дерево: его biome не исполняется" || bad "соседнее дерево: его biome не исполняется" "проектный бинарь" "запущен $nb/node_modules/.bin/biome"
+      && ok "neighbouring worktree: its biome is not executed" || bad "neighbouring worktree: its biome is not executed" "the project binary" "ran $nb/node_modules/.bin/biome"
   else
-    bad "соседнее дерево" "временный репозиторий" "не отделился"
+    bad "neighbouring worktree" "a temporary repository" "did not separate"
   fi
 fi
 
 if has rust-clippy.sh; then
   echo
-  echo "rust-clippy.sh — разбор пути и подпись ошибки против шквала"
+  echo "rust-clippy.sh — path parsing and the error signature against a flood"
   out=$(printf '%s' "$(file_ev "$fmtdir/b.ts")" | "$hooks/rust-clippy.sh" 2>&1); code=$?
-  { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "clippy пропускает не-.rs" || bad "clippy пропускает не-.rs" "молчание, код 0" "код $code: $out"
+  { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "clippy skips non-.rs" || bad "clippy skips non-.rs" "silence, exit 0" "exit $code: $out"
   out=$(printf '%s' "$(file_ev "$fmtdir/a.rs")" | "$hooks/rust-clippy.sh" 2>&1); code=$?
-  { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "clippy пропускает файл вне крейта" || bad "clippy пропускает файл вне крейта" "молчание, код 0" "код $code: $out"
+  { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "clippy skips a file outside a crate" || bad "clippy skips a file outside a crate" "silence, exit 0" "exit $code: $out"
 
-  # Правка-миграция трогает десятки файлов, и до последнего из них крейт красный
-  # по одной причине. Хук обязан разбудить один раз, а не девяносто, — и обязан
-  # разбудить снова, когда причина сменилась. Настоящий cargo здесь не нужен
-  # и не годится: проверяется решение будить, а не сам линт. Проект годится
-  # обеим раскладкам: крейт в crates/, и он же — корень с Cargo.toml.
+  # A migration edit touches dozens of files, and until the last of them the crate
+  # is red for one reason. The hook must wake once, not ninety times — and must
+  # wake again when the cause changes. Real cargo isn't needed here and won't do:
+  # what is checked is the decision to wake, not the lint itself. The project fits
+  # both layouts: a crate in crates/, and also a root with Cargo.toml.
   clippydir=$(new_repo) || exit 1
   clippystate=$(new_tmp)
   mkdir -p "$clippydir/crates/core/src" "$clippydir/bin"
@@ -430,8 +431,8 @@ if has rust-clippy.sh; then
   chmod +x "$fake"
   printf 'error[E0061]: this method takes 3 arguments but 2 arguments were supplied\nerror: could not compile `demo-core` (test "a") due to 14 previous errors\n' \
     > "$clippystate/first.txt"
-  # Тот же код ошибки, но другая формулировка, другой файл и другой счётчик —
-  # ровно то, что даёт миграция по одному вызову. Подпись обязана совпасть.
+  # The same error code, but a different wording, a different file and a different
+  # counter — exactly what a migration one call at a time gives. The signature must match.
   printf 'error[E0061]: this method takes 2 arguments but 1 argument was supplied\nerror: could not compile `demo-core` (test "b") due to 9 previous errors\n' \
     > "$clippystate/same.txt"
   printf 'error[E0599]: no method named `since_ms` found\nerror: could not compile `demo-core` (lib) due to 1 previous error\n' \
@@ -448,46 +449,46 @@ if has rust-clippy.sh; then
 
   out=$(clippy_run first); code=$?
   { [ $code -eq 2 ] && [ -n "$out" ]; } \
-    && ok "первая ошибка будит" || bad "первая ошибка будит" "код 2 с текстом" "код $code: $out"
+    && ok "the first error wakes" || bad "the first error wakes" "exit 2 with text" "exit $code: $out"
   out=$(clippy_run same); code=$?
   { [ $code -eq 0 ] && [ -z "$out" ]; } \
-    && ok "та же ошибка второй раз молчит" || bad "та же ошибка второй раз молчит" "молчание, код 0" "код $code: $out"
+    && ok "the same error a second time is silent" || bad "the same error a second time is silent" "silence, exit 0" "exit $code: $out"
   out=$(clippy_run other); code=$?
   { [ $code -eq 2 ] && [ -n "$out" ]; } \
-    && ok "новая ошибка будит" || bad "новая ошибка будит" "код 2 с текстом" "код $code: $out"
-  # Зелёный прогон забывает подпись: вернувшаяся ошибка обязана разбудить снова.
+    && ok "a new error wakes" || bad "a new error wakes" "exit 2 with text" "exit $code: $out"
+  # A green run forgets the signature: a returning error must wake again.
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$fake"
   clippy_run other >/dev/null 2>&1
   printf '%s\n' '#!/usr/bin/env bash' 'cat "$FAKE_CLIPPY_OUT"; exit 1' > "$fake"
   out=$(clippy_run other); code=$?
   { [ $code -eq 2 ] && [ -n "$out" ]; } \
-    && ok "после зелёного та же ошибка будит" || bad "после зелёного та же ошибка будит" "код 2 с текстом" "код $code: $out"
+    && ok "after green the same error wakes" || bad "after green the same error wakes" "exit 2 with text" "exit $code: $out"
 
-  # Исполнитель идёт по TDD: красное между его правками — рабочий ход, а не
-  # сигнал. Признак субагента — поле `agent_id` события.
+  # The executor follows TDD: red between its edits is a working move, not a
+  # signal. The subagent marker is the event's `agent_id` field.
   agent_ev() { jq -nc --arg f "$1" '{tool_name:"Edit",tool_input:{file_path:$f},agent_id:"a1",agent_type:"developer"}'; }
   rm -rf "$clippystate/state"
   out=$(CLAUDE_PROJECT_DIR="$clippydir" FAKE_CLIPPY_OUT="$clippystate/first.txt" HARNESS_CLIPPY="$fake" HARNESS_CLIPPY_STATE="$clippystate/state" \
     bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$(agent_ev "$clippydir/crates/core/src/lib.rs")" "$hooks/rust-clippy.sh"); code=$?
-  { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "clippy молчит на правке субагента" || bad "clippy молчит на правке субагента" "молчание, код 0" "код $code: $out"
+  { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "clippy is silent on a subagent edit" || bad "clippy is silent on a subagent edit" "silence, exit 0" "exit $code: $out"
   out=$(clippy_run first); code=$?
-  { [ $code -eq 2 ] && [ -n "$out" ]; } && ok "clippy будит на той же правке главной сессии" || bad "clippy будит на той же правке главной сессии" "код 2 с текстом" "код $code: $out"
+  { [ $code -eq 2 ] && [ -n "$out" ]; } && ok "clippy wakes on the same edit by the main session" || bad "clippy wakes on the same edit by the main session" "exit 2 with text" "exit $code: $out"
 
-  # Состояние не лежит в общем временном каталоге: там его заранее подложит
-  # другой пользователь машины, и файл подписи окажется ссылкой на чужой файл.
-  # Место состояния — каталог git дерева проекта.
+  # The state doesn't live in a shared temp directory: another user of the machine
+  # would plant it there in advance, and the signature file would be a link to a
+  # foreign file. The state's place is the project worktree's git dir.
   shared_tmp=$(new_tmp)
   rm -rf "$clippydir/.git/harness"
   out=$(CLAUDE_PROJECT_DIR="$clippydir" FAKE_CLIPPY_OUT="$clippystate/first.txt" HARNESS_CLIPPY="$fake" TMPDIR="$shared_tmp" \
     bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$(file_ev "$clippydir/crates/core/src/lib.rs")" "$hooks/rust-clippy.sh"); code=$?
   { [ $code -eq 2 ] && [ ! -e "$shared_tmp/harness-clippy-hook" ] && [ -d "$clippydir/.git/harness/clippy" ]; } \
-    && ok "состояние clippy — в каталоге git проекта" \
-    || bad "состояние clippy — в каталоге git проекта" "код 2, состояние в .git/harness/clippy" "код $code, во временном: $(ls "$shared_tmp")"
+    && ok "clippy state is in the project's git dir" \
+    || bad "clippy state is in the project's git dir" "exit 2, state in .git/harness/clippy" "exit $code, in temp: $(ls "$shared_tmp")"
 
-  # Правка идёт пачкой: пока проверка считает, исполнитель трогает ещё файлы.
-  # Вердикт о состоянии, которого на диске уже нет, будить не должен. Поддельный
-  # линтер сам трогает соседний файл, пока «считает», — так окно гонки
-  # воспроизводится точно, а не таймингом.
+  # Edits come in a batch: while the check runs, the executor touches more files.
+  # A verdict about a state no longer on disk must not wake. The fake linter
+  # touches a neighbouring file itself while "checking" — so the race window is
+  # reproduced exactly, not by timing.
   staledir=$(new_repo) || exit 1
   stalestate=$(new_tmp)
   mkdir -p "$staledir/crates/core/src" "$staledir/bin"
@@ -498,7 +499,7 @@ if has rust-clippy.sh; then
   printf '%s\n' '#!/usr/bin/env bash' \
     'sleep 0.05' \
     '[ -n "${FAKE_TOUCH:-}" ] && touch "$FAKE_TOUCH"' \
-    'printf "error[E0061]: сломано\n"' \
+    'printf "error[E0061]: broken\n"' \
     'exit 1' > "$stalefake"
   chmod +x "$stalefake"
   sleep 1
@@ -514,29 +515,29 @@ if has rust-clippy.sh; then
 
   out=$(stale_run "$staledir/crates/core/src/other.rs" a); code=$?
   { [ $code -eq 0 ] && [ -z "$out" ]; } \
-    && ok "clippy молчит, когда дерево ушло вперёд" \
-    || bad "clippy молчит, когда дерево ушло вперёд" "молчание, код 0" "код $code: $out"
+    && ok "clippy is silent when the worktree moved on" \
+    || bad "clippy is silent when the worktree moved on" "silence, exit 0" "exit $code: $out"
   out=$(stale_run "" b); code=$?
   { [ $code -eq 2 ] && [ -n "$out" ]; } \
-    && ok "clippy будит, когда вердикт свежий" \
-    || bad "clippy будит, когда вердикт свежий" "код 2 с текстом" "код $code: $out"
-  # Правка своего же файла устареванием не считается: `rust-fmt.sh` переписывает
-  # ровно его и успел бы сделать это после метки.
+    && ok "clippy wakes when the verdict is fresh" \
+    || bad "clippy wakes when the verdict is fresh" "exit 2 with text" "exit $code: $out"
+  # An edit of the very file isn't staleness: `rust-fmt.sh` rewrites exactly it
+  # and could do so after the marker.
   out=$(stale_run "$staledir/crates/core/src/lib.rs" c); code=$?
   { [ $code -eq 2 ] && [ -n "$out" ]; } \
-    && ok "clippy будит, если тронут только сам правленый файл" \
-    || bad "clippy будит, если тронут только сам правленый файл" "код 2 с текстом" "код $code: $out"
+    && ok "clippy wakes if only the edited file itself was touched" \
+    || bad "clippy wakes if only the edited file itself was touched" "exit 2 with text" "exit $code: $out"
 
-  # Файл чужого клона: cargo там исполнил бы его build.rs и макросы.
+  # A file of a foreign clone: cargo would execute its build.rs and macros there.
   rm -f "$staledir/ran"
   printf '%s\n' '#!/usr/bin/env bash' "touch '$staledir/ran'" 'exit 1' > "$stalefake"
   out=$(CLAUDE_PROJECT_DIR="$clippydir" HARNESS_CLIPPY="$stalefake" HARNESS_CLIPPY_STATE="$stalestate/state-d" \
     bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$(file_ev "$staledir/crates/core/src/lib.rs")" "$hooks/rust-clippy.sh"); code=$?
   { [ $code -eq 0 ] && [ -z "$out" ] && [ ! -e "$staledir/ran" ]; } \
-    && ok "clippy не запускается на файле чужого репозитория" \
-    || bad "clippy не запускается на файле чужого репозитория" "молчание, код 0, без запуска" "код $code: $out$([ -e "$staledir/ran" ] && echo ' (запущен)')"
-  # Подложный `.git`, указывающий на gitdir проекта, своим не делает: общий
-  # каталог git у него проектный, а в списке деревьев проекта его нет.
+    && ok "clippy doesn't run on a file of a foreign repository" \
+    || bad "clippy doesn't run on a file of a foreign repository" "silence, exit 0, no run" "exit $code: $out$([ -e "$staledir/ran" ] && echo ' (ran)')"
+  # A planted `.git` pointing at the project's gitdir doesn't make it ours: its
+  # common git dir is the project's, but it isn't in the project's worktree list.
   forged=$(new_tmp)
   mkdir -p "$forged/crates/core/src"
   printf '[workspace]\n' > "$forged/Cargo.toml"
@@ -546,21 +547,21 @@ if has rust-clippy.sh; then
   out=$(CLAUDE_PROJECT_DIR="$clippydir" HARNESS_CLIPPY="$stalefake" HARNESS_CLIPPY_STATE="$stalestate/state-e" \
     bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$(file_ev "$forged/crates/core/src/lib.rs")" "$hooks/rust-clippy.sh"); code=$?
   { [ $code -eq 0 ] && [ -z "$out" ] && [ ! -e "$staledir/ran" ]; } \
-    && ok "clippy не запускается за подложным .git" \
-    || bad "clippy не запускается за подложным .git" "молчание, код 0, без запуска" "код $code: $out$([ -e "$staledir/ran" ] && echo ' (запущен)')"
-  # Соседнее дерево того же репозитория — своё.
+    && ok "clippy doesn't run behind a planted .git" \
+    || bad "clippy doesn't run behind a planted .git" "silence, exit 0, no run" "exit $code: $out$([ -e "$staledir/ran" ] && echo ' (ran)')"
+  # A neighbouring worktree of the same repository is ours.
   git -C "$clippydir" add -A && git -C "$clippydir" commit -qm crate
   git -C "$clippydir" worktree add -q "$clippydir.wt" 2>/dev/null
   out=$(CLAUDE_PROJECT_DIR="$clippydir" FAKE_CLIPPY_OUT="$clippystate/first.txt" HARNESS_CLIPPY="$fake" HARNESS_CLIPPY_STATE="$clippystate/state-wt" \
     bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$(file_ev "$clippydir.wt/crates/core/src/lib.rs")" "$hooks/rust-clippy.sh"); code=$?
   { [ $code -eq 2 ] && [ -n "$out" ]; } \
-    && ok "clippy идёт по соседнему дереву того же репозитория" \
-    || bad "clippy идёт по соседнему дереву того же репозитория" "код 2 с текстом" "код $code: $out"
+    && ok "clippy runs on a neighbouring worktree of the same repository" \
+    || bad "clippy runs on a neighbouring worktree of the same repository" "exit 2 with text" "exit $code: $out"
 
-  # Ответу git из чужого каталога верить нельзя: `core.worktree` в его конфиге
-  # называет корнем дерево проекта, а запуск — в чужом каталоге.
-  # shellcheck disable=SC2329 # зовётся через подстановку
-  clippy_foreign() {  # <файл> <имя состояния>
+  # git's answer from a foreign directory can't be trusted: `core.worktree` in its
+  # config names the project worktree as the root, while the run is in a foreign directory.
+  # shellcheck disable=SC2329 # called via substitution
+  clippy_foreign() {  # <file> <state name>
     rm -f "$staledir/ran"
     CLAUDE_PROJECT_DIR="$clippydir" HARNESS_CLIPPY="$stalefake" HARNESS_CLIPPY_STATE="$stalestate/state-$2" \
       bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$(file_ev "$1")" "$hooks/rust-clippy.sh"
@@ -572,10 +573,10 @@ if has rust-clippy.sh; then
     git -C "$redirected" config core.worktree "$clippydir"
     out=$(clippy_foreign "$redirected/crates/core/src/lib.rs" f); code=$?
     { [ $code -eq 0 ] && [ -z "$out" ] && [ ! -e "$staledir/ran" ]; } \
-      && ok "clippy не верит core.worktree чужого клона" \
-      || bad "clippy не верит core.worktree чужого клона" "молчание, код 0, без запуска" "код $code: $out$([ -e "$staledir/ran" ] && echo ' (запущен)')"
+      && ok "clippy doesn't trust a foreign clone's core.worktree" \
+      || bad "clippy doesn't trust a foreign clone's core.worktree" "silence, exit 0, no run" "exit $code: $out$([ -e "$staledir/ran" ] && echo ' (ran)')"
   fi
-  # Клон внутри дерева проекта — тоже чужой: его корень по git — он сам.
+  # A clone inside the project worktree is foreign too: by git its root is itself.
   nested="$clippydir/vendor/other"
   mkdir -p "$nested/crates/core/src"
   git -C "$nested" init -q
@@ -583,25 +584,25 @@ if has rust-clippy.sh; then
   printf 'fn main() {}\n' > "$nested/crates/core/src/lib.rs"
   out=$(clippy_foreign "$nested/crates/core/src/lib.rs" g); code=$?
   { [ $code -eq 0 ] && [ -z "$out" ] && [ ! -e "$staledir/ran" ]; } \
-    && ok "clippy не запускается во вложенном клоне" \
-    || bad "clippy не запускается во вложенном клоне" "молчание, код 0, без запуска" "код $code: $out$([ -e "$staledir/ran" ] && echo ' (запущен)')"
-  # Вложенный клон, чей core.worktree называет корнем дерево проекта.
+    && ok "clippy doesn't run in a nested clone" \
+    || bad "clippy doesn't run in a nested clone" "silence, exit 0, no run" "exit $code: $out$([ -e "$staledir/ran" ] && echo ' (ran)')"
+  # A nested clone whose core.worktree names the project worktree as the root.
   git -C "$nested" config core.worktree "$clippydir"
   out=$(clippy_foreign "$nested/crates/core/src/lib.rs" h); code=$?
   { [ $code -eq 0 ] && [ -z "$out" ] && [ ! -e "$staledir/ran" ]; } \
-    && ok "clippy не верит core.worktree вложенного клона" \
-    || bad "clippy не верит core.worktree вложенного клона" "молчание, код 0, без запуска" "код $code: $out$([ -e "$staledir/ran" ] && echo ' (запущен)')"
+    && ok "clippy doesn't trust a nested clone's core.worktree" \
+    || bad "clippy doesn't trust a nested clone's core.worktree" "silence, exit 0, no run" "exit $code: $out$([ -e "$staledir/ran" ] && echo ' (ran)')"
 fi
 
 if has js-typecheck.sh; then
   echo
-  echo "js-typecheck.sh — разбор пути, субагент, устаревший вердикт"
+  echo "js-typecheck.sh — path parsing, subagent, stale verdict"
   out=$(printf '%s' "$(file_ev "$fmtdir/a.rs")" | "$hooks/js-typecheck.sh" 2>&1); code=$?
-  { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "tsc пропускает не-.ts" || bad "tsc пропускает не-.ts" "молчание, код 0" "код $code: $out"
+  { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "tsc skips non-.ts" || bad "tsc skips non-.ts" "silence, exit 0" "exit $code: $out"
 
-  # Пакет годится обеим раскладкам: каталог packages/<имя> и он же — корень
-  # своего git-репозитория с tsconfig.json. Компилятор — проекта, если он
-  # поставлен: временный каталог без node_modules иначе тянул бы его из сети.
+  # The package fits both layouts: the packages/<name> directory, and also the root
+  # of its own git repository with tsconfig.json. The compiler is the project's if
+  # installed: otherwise a temp directory without node_modules would pull it from the network.
   tsc_bin=${HARNESS_TSC:-}
   [ -z "$tsc_bin" ] && [ -x "$root/node_modules/.bin/tsc" ] && tsc_bin="$root/node_modules/.bin/tsc"
   tsdir=$(new_tmp)
@@ -610,32 +611,32 @@ if has js-typecheck.sh; then
     git -C "$tsdir/packages/$p" init -q
     printf '{"compilerOptions":{"strict":true,"noEmit":true,"skipLibCheck":true,"types":[]},"include":["src"]}\n' > "$tsdir/packages/$p/tsconfig.json"
   done
-  printf 'export const n: number = "строка";\n' > "$tsdir/packages/broken/src/index.ts"
+  printf 'export const n: number = "string";\n' > "$tsdir/packages/broken/src/index.ts"
   printf 'export const n: number = 1;\n' > "$tsdir/packages/clean/src/index.ts"
-  # Каждый пакет — свой репозиторий, и проект для хука — пакет файла.
-  ts_run() {  # <файл> [событие]
+  # Each package is its own repository, and the project for the hook is the file's package.
+  ts_run() {  # <file> [event]
     CLAUDE_PROJECT_DIR="${1%/src/*}" HARNESS_TSC="$tsc_bin" bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "${2:-$(file_ev "$1")}" "$hooks/js-typecheck.sh"
   }
   if [ -n "$tsc_bin" ]; then
     out=$(ts_run "$tsdir/packages/broken/src/index.ts"); code=$?
-    { [ $code -eq 2 ] && [ -n "$out" ]; } && ok "tsc ловит сломанный тип" || bad "tsc ловит сломанный тип" "код 2 с текстом ошибки" "код $code: $out"
+    { [ $code -eq 2 ] && [ -n "$out" ]; } && ok "tsc catches a broken type" || bad "tsc catches a broken type" "exit 2 with the error text" "exit $code: $out"
     out=$(ts_run "$tsdir/packages/clean/src/index.ts"); code=$?
-    { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "tsc молчит на здоровом пакете" || bad "tsc молчит на здоровом пакете" "молчание, код 0" "код $code: $out"
+    { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "tsc is silent on a healthy package" || bad "tsc is silent on a healthy package" "silence, exit 0" "exit $code: $out"
   else
-    bad "компилятор TypeScript на месте" "$root/node_modules/.bin/tsc" "нет — нужен bun install"
+    bad "the TypeScript compiler in place" "$root/node_modules/.bin/tsc" "missing — bun install needed"
   fi
   out=$(ts_run "$tsdir/packages/broken/src/index.ts" \
     "$(jq -nc --arg f "$tsdir/packages/broken/src/index.ts" '{tool_name:"Edit",tool_input:{file_path:$f},agent_id:"a1"}')"); code=$?
-  { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "tsc молчит на правке субагента" || bad "tsc молчит на правке субагента" "молчание, код 0" "код $code: $out"
+  { [ $code -eq 0 ] && [ -z "$out" ]; } && ok "tsc is silent on a subagent edit" || bad "tsc is silent on a subagent edit" "silence, exit 0" "exit $code: $out"
 
-  # Подставная команда трогает соседний файл сама, и гонки в тесте не остаётся.
+  # The stand-in command touches a neighbouring file itself, and no race remains in the test.
   stalets="$tsdir/packages/broken"
   printf 'export const m = 1;\n' > "$stalets/src/other.ts"
   stalefakets="$tsdir/tsc-fake"
   printf '%s\n' '#!/usr/bin/env bash' \
     'sleep 0.05' \
     '[ -n "${FAKE_TOUCH:-}" ] && touch "$FAKE_TOUCH"' \
-    'printf "src/index.ts(1,14): error TS2322: сломано\n"' \
+    'printf "src/index.ts(1,14): error TS2322: broken\n"' \
     'exit 1' > "$stalefakets"
   chmod +x "$stalefakets"
   sleep 1
@@ -646,28 +647,28 @@ if has js-typecheck.sh; then
   }
   out=$(stale_ts_run "$stalets/src/other.ts"); code=$?
   { [ $code -eq 0 ] && [ -z "$out" ]; } \
-    && ok "tsc молчит, когда дерево ушло вперёд" \
-    || bad "tsc молчит, когда дерево ушло вперёд" "молчание, код 0" "код $code: $out"
+    && ok "tsc is silent when the worktree moved on" \
+    || bad "tsc is silent when the worktree moved on" "silence, exit 0" "exit $code: $out"
   out=$(stale_ts_run ""); code=$?
   { [ $code -eq 2 ] && [ -n "$out" ]; } \
-    && ok "tsc будит, когда вердикт свежий" \
-    || bad "tsc будит, когда вердикт свежий" "код 2 с текстом" "код $code: $out"
+    && ok "tsc wakes when the verdict is fresh" \
+    || bad "tsc wakes when the verdict is fresh" "exit 2 with text" "exit $code: $out"
   out=$(stale_ts_run "$stalets/src/index.ts"); code=$?
   { [ $code -eq 2 ] && [ -n "$out" ]; } \
-    && ok "tsc будит, если тронут только сам правленый файл" \
-    || bad "tsc будит, если тронут только сам правленый файл" "код 2 с текстом" "код $code: $out"
+    && ok "tsc wakes if only the edited file itself was touched" \
+    || bad "tsc wakes if only the edited file itself was touched" "exit 2 with text" "exit $code: $out"
 
-  # Файл чужого клона: tsc из его node_modules не исполняется.
+  # A file of a foreign clone: tsc from its node_modules is not executed.
   rm -f "$tsdir/ran"
   printf '%s\n' '#!/usr/bin/env bash' "touch '$tsdir/ran'" 'exit 1' > "$stalefakets"
   out=$(CLAUDE_PROJECT_DIR="$tsdir/packages/clean" HARNESS_TSC="$stalefakets" \
     bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$(file_ev "$stalets/src/index.ts")" "$hooks/js-typecheck.sh"); code=$?
   { [ $code -eq 0 ] && [ -z "$out" ] && [ ! -e "$tsdir/ran" ]; } \
-    && ok "tsc не запускается на файле чужого репозитория" \
-    || bad "tsc не запускается на файле чужого репозитория" "молчание, код 0, без запуска" "код $code: $out$([ -e "$tsdir/ran" ] && echo ' (запущен)')"
+    && ok "tsc doesn't run on a file of a foreign repository" \
+    || bad "tsc doesn't run on a file of a foreign repository" "silence, exit 0, no run" "exit $code: $out$([ -e "$tsdir/ran" ] && echo ' (ran)')"
 
-  # Игнорируемое в дереве проекта — не проект: распакованный в tmp/ пакет
-  # принёс бы свой tsc. Пакет и в корне — годится обеим раскладкам.
+  # Something ignored in the project worktree is not the project: a package unpacked
+  # into tmp/ would bring its own tsc. The package is at the root too — fits both layouts.
   if ign=$(new_repo); then
     printf 'tmp/\n' > "$ign/.gitignore"
     pkgdir="$ign/tmp/pkg/packages/x"
@@ -680,25 +681,167 @@ if has js-typecheck.sh; then
     out=$(CLAUDE_PROJECT_DIR="$ign" HARNESS_TSC="$stalefakets" \
       bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$(file_ev "$pkgdir/src/index.ts")" "$hooks/js-typecheck.sh"); code=$?
     { [ $code -eq 0 ] && [ -z "$out" ] && [ ! -e "$tsdir/ran" ]; } \
-      && ok "tsc не запускается в игнорируемом каталоге" \
-      || bad "tsc не запускается в игнорируемом каталоге" "молчание, код 0, без запуска" "код $code: $out$([ -e "$tsdir/ran" ] && echo ' (запущен)')"
+      && ok "tsc doesn't run in an ignored directory" \
+      || bad "tsc doesn't run in an ignored directory" "silence, exit 0, no run" "exit $code: $out$([ -e "$tsdir/ran" ] && echo ' (ran)')"
   fi
 fi
 
 echo
+echo "agent-checks.sh — the executor doesn't finish with red checks"
+# The project fits all layouts: Cargo.toml and tsconfig.json at the root (a single
+# crate, a single app), a crate in crates/ and a package in packages/ (monorepo).
+# Real clippy and tsc aren't needed: what is checked is what the hook runs, when,
+# and what it answers. rustfmt is real: it is fast and present wherever module rust is.
+ac=$(new_repo) || exit 1
+acbin=$(new_tmp)
+mkdir -p "$ac/crates/core/src" "$ac/packages/web/src"
+printf '[workspace]\n' > "$ac/Cargo.toml"
+printf 'pub fn a() {}\n' > "$ac/crates/core/src/lib.rs"
+printf '{}\n' > "$ac/tsconfig.json"
+printf '{}\n' > "$ac/packages/web/tsconfig.json"
+printf 'export const n = 1;\n' > "$ac/packages/web/src/index.ts"
+git -C "$ac" add -A && git -C "$ac" commit -qm base
+# The stand-in checks log the call; they are red by an environment variable.
+# `many` — long output: the denial reason must be compressed.
+printf '%s\n' '#!/usr/bin/env bash' 'printf "clippy %s\n" "$*" >> "$FAKE_LOG"' \
+  'case "${FAKE_CLIPPY_RED:-}" in' \
+  '  "") exit 0 ;;' \
+  '  many) for i in $(seq 1 500); do printf "error[E0308]: mismatched types %s\n" "$i"; done; exit 1 ;;' \
+  '  *) printf "error[E0308]: mismatched types\n"; exit 1 ;;' \
+  'esac' > "$acbin/clippy"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "tsc %s\n" "$PWD" >> "$FAKE_LOG"' \
+  '[ -n "${FAKE_TSC_RED:-}" ] || exit 0' \
+  'printf "src/index.ts(1,14): error TS2322: broken\n"; exit 1' > "$acbin/tsc"
+chmod +x "$acbin/clippy" "$acbin/tsc"
+
+ac_run() {  # <event> — the hook's stdout; the FAKE_* environment comes from the caller
+  (cd "$ac" && printf '%s' "$1" | CLAUDE_PROJECT_DIR="$ac" HARNESS_CLIPPY="$acbin/clippy" \
+    HARNESS_TSC="$acbin/tsc" FAKE_LOG="$acbin/log" "$hooks/agent-checks.sh" 2>/dev/null)
+}
+stop_ev() {  # <agent type> [stop_hook_active] [agent_id]
+  jq -nc --arg t "$1" --argjson a "${2:-false}" --arg id "${3:-ag1}" --arg c "$ac" \
+    '{hook_event_name:"SubagentStop",agent_id:$id,agent_type:$t,stop_hook_active:$a,cwd:$c}'
+}
+handback_ev() {  # <agent_id>
+  jq -nc --arg id "$1" --arg c "$ac" \
+    '{hook_event_name:"PreToolUse",tool_name:"SubagentHandback",tool_input:{message:"report"},agent_id:$id,agent_type:"rust-developer",cwd:$c}'
+}
+ac_ran() { [ -s "$acbin/log" ]; }
+
+rm -f "$acbin/log"
+out=$(FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 ac_run "$(stop_ev rust-developer)")
+{ [ -z "$out" ] && ! ac_ran; } \
+  && ok "executor without changes — silent and doesn't check" \
+  || bad "executor without changes — silent and doesn't check" "silence, no run" "$out $(cat "$acbin/log" 2>/dev/null)"
+
+# Worktree changes: an edit of a tracked file and a new file.
+printf 'pub fn a() {}\npub fn b() {}\n' > "$ac/crates/core/src/lib.rs"
+printf 'export const n = 2;\n' > "$ac/packages/web/src/index.ts"
+printf 'export const m = 1;\n' > "$ac/packages/web/src/new.ts"
+
+rm -f "$acbin/log"
+out=$(FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 ac_run "$(stop_ev rust-reviewer)")
+{ [ -z "$out" ] && ! ac_ran; } \
+  && ok "not an executor — silent" || bad "not an executor — silent" "silence, no run" "$out"
+out=$(FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 ac_run "$(jq -nc --arg c "$ac" '{hook_event_name:"SubagentStop",agent_id:"x",agent_type:"",stop_hook_active:false,cwd:$c}')")
+{ [ -z "$out" ] && ! ac_ran; } \
+  && ok "built-in agent without a type — silent" || bad "built-in agent without a type — silent" "silence, no run" "$out"
+out=$(FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 ac_run "$(stop_ev rust-developer true)")
+{ [ -z "$out" ] && ! ac_ran; } \
+  && ok "stop_hook_active — not held a second time" || bad "stop_hook_active — not held a second time" "silence, no run" "$out"
+out=$(ac_run "$(stop_ev frontend-developer)")
+{ [ -z "$out" ] && ac_ran; } \
+  && ok "executor, checks green — silent" || bad "executor, checks green — silent" "silence after a run" "$out / log: $(cat "$acbin/log" 2>/dev/null)"
+
+if has lib/rust-crate.sh; then
+  rm -f "$acbin/log"
+  out=$(FAKE_CLIPPY_RED=1 ac_run "$(stop_ev rust-developer)")
+  { [ "$(printf '%s' "$out" | jq -r '.decision' 2>/dev/null)" = block ] \
+    && printf '%s' "$out" | jq -r '.reason' | grep -q 'E0308'; } \
+    && ok "red clippy — block with output" || bad "red clippy — block with output" "decision block, E0308 in the reason" "$out"
+  [ "$(grep -c '^clippy -p ' "$acbin/log")" -eq 1 ] \
+    && ok "clippy once for the touched crate" \
+    || bad "clippy once for the touched crate" "one clippy -p …" "$(cat "$acbin/log" 2>/dev/null)"
+  out=$(FAKE_CLIPPY_RED=many ac_run "$(stop_ev rust-developer)")
+  lines=$(printf '%s' "$out" | jq -r '.reason' 2>/dev/null | wc -l | tr -d ' ')
+  { [ "$(printf '%s' "$out" | jq -r '.decision' 2>/dev/null)" = block ] && [ "$lines" -le 100 ]; } \
+    && ok "long output compressed in the reason" || bad "long output compressed in the reason" "no more than 100 lines" "$lines lines"
+  # A badly formatted new file: rustfmt --check goes red without clippy.
+  printf 'fn  x ( )  {}\n' > "$ac/crates/core/src/bad.rs"
+  out=$(ac_run "$(stop_ev rust-developer)")
+  { [ "$(printf '%s' "$out" | jq -r '.decision' 2>/dev/null)" = block ] \
+    && printf '%s' "$out" | jq -r '.reason' | grep -q 'rustfmt'; } \
+    && ok "red rustfmt — block" || bad "red rustfmt — block" "decision block, rustfmt in the reason" "$out"
+  rm -f "$ac/crates/core/src/bad.rs"
+fi
+
+if has lib/js-package.sh; then
+  rm -f "$acbin/log"
+  out=$(FAKE_TSC_RED=1 ac_run "$(stop_ev frontend-developer)")
+  { [ "$(printf '%s' "$out" | jq -r '.decision' 2>/dev/null)" = block ] \
+    && printf '%s' "$out" | jq -r '.reason' | grep -q 'TS2322'; } \
+    && ok "red tsc — block with output" || bad "red tsc — block with output" "decision block, TS2322 in the reason" "$out"
+  [ "$(grep -c '^tsc' "$acbin/log")" -eq 1 ] \
+    && ok "tsc once per package, even with two files" || bad "tsc once per package, even with two files" "one run" "$(cat "$acbin/log")"
+fi
+
+# An executor in auto mode hands in its report with the SubagentHandback tool BEFORE
+# the stop: that is what must be held, otherwise the red report is already gone. The
+# denial is once, then the report passes, and the same agent's stop doesn't repeat the checks.
+out=$(FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 ac_run "$(handback_ev h1)")
+[ "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null)" = deny ] \
+  && ok "SubagentHandback with red — denied" || bad "SubagentHandback with red — denied" "permissionDecision deny" "$out"
+rm -f "$acbin/log"
+out=$(FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 ac_run "$(handback_ev h1)")
+{ [ -z "$out" ] && ! ac_ran; } \
+  && ok "the second SubagentHandback passes" || bad "the second SubagentHandback passes" "silence, no run" "$out"
+out=$(FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 ac_run "$(stop_ev rust-developer false h1)")
+{ [ -z "$out" ] && ! ac_ran; } \
+  && ok "stop after a denied report — no repeat" || bad "stop after a denied report — no repeat" "silence, no run" "$out"
+out=$(ac_run "$(handback_ev h2)")
+rm -f "$acbin/log"
+out=$(FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 ac_run "$(stop_ev rust-developer false h2)")
+{ [ -z "$out" ] && ! ac_ran; } \
+  && ok "stop after a green report — no repeat" || bad "stop after a green report — no repeat" "silence, no run" "$out"
+
+# An executor as a separate session `claude --agent`: Stop without agent_id, the agent type in agent_type.
+out=$(FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 ac_run "$(jq -nc --arg c "$ac" '{hook_event_name:"Stop",agent_type:"rust-developer",stop_hook_active:false,cwd:$c}')")
+[ "$(printf '%s' "$out" | jq -r '.decision' 2>/dev/null)" = block ] \
+  && ok "Stop of an executor session — block" || bad "Stop of an executor session — block" "decision block" "$out"
+out=$(FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 ac_run "$(jq -nc --arg c "$ac" '{hook_event_name:"Stop",stop_hook_active:false,cwd:$c}')")
+[ -z "$out" ] && ok "Stop of the main session — silent" || bad "Stop of the main session — silent" "silence" "$out"
+
+# Real wiring: the dispatcher passes the slot's denial out as is.
+out=$(cd "$ac" && printf '%s' "$(stop_ev rust-developer false ag9)" | CLAUDE_PROJECT_DIR="$ac" \
+  HARNESS_CLIPPY="$acbin/clippy" HARNESS_TSC="$acbin/tsc" FAKE_LOG="$acbin/log" FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 \
+  "$hooks/dispatch.sh" subagent-stop 2>/dev/null)
+[ "$(printf '%s' "$out" | jq -r '.decision' 2>/dev/null)" = block ] \
+  && ok "dispatcher subagent-stop gives block" || bad "dispatcher subagent-stop gives block" "decision block" "$out"
+out=$(cd "$ac" && printf '%s' "$(handback_ev h9)" | CLAUDE_PROJECT_DIR="$ac" \
+  HARNESS_CLIPPY="$acbin/clippy" HARNESS_TSC="$acbin/tsc" FAKE_LOG="$acbin/log" FAKE_CLIPPY_RED=1 FAKE_TSC_RED=1 \
+  "$hooks/dispatch.sh" pre-handback 2>/dev/null)
+[ "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null)" = deny ] \
+  && ok "dispatcher pre-handback gives a denial" || bad "dispatcher pre-handback gives a denial" "permissionDecision deny" "$out"
+
+# Outside a repository — silence.
+out=$(cd "$plain" && jq -nc --arg c "$plain" '{hook_event_name:"SubagentStop",agent_id:"a",agent_type:"rust-developer",stop_hook_active:false,cwd:$c}' \
+  | "$hooks/agent-checks.sh" 2>/dev/null)
+[ -z "$out" ] && ok "outside a repository — silent" || bad "outside a repository — silent" "silence" "$out"
+
+echo
 echo "dispatch.sh"
-# Синтетическая обвязка: настоящий диспетчер, поддельные общие хуки слота,
-# свои хуки проекта. Каждый хук пишет своё имя в журнал — так виден порядок.
+# A synthetic harness: the real dispatcher, fake common hooks of the slot,
+# the project's own hooks. Each hook writes its name to the log — so the order is visible.
 dproj=$(new_tmp)
 mkdir -p "$dproj/.harness/hooks" "$dproj/.harness/local/hooks"
 cp "$hooks/dispatch.sh" "$dproj/.harness/hooks/"
 dlog="$dproj/log"
-fake_hook() {  # <путь> <имя для журнала> <тело> — тело получает событие на stdin
+fake_hook() {  # <path> <name for the log> <body> — the body gets the event on stdin
   mkdir -p "$(dirname "$1")"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" %s >> %s\n%s\n' "$2" "$dlog" "$3" > "$1"
   chmod +x "$1"
 }
-dispatch() {  # <слот> [событие] — печатает «код<TAB>stdout<TAB>stderr» одной строкой на поле
+dispatch() {  # <slot> [event] — sets d_code, d_out, d_err and d_log
   local out err code
   : > "$dlog"
   out=$(printf '%s' "${2:-{\}}" | "$dproj/.harness/hooks/dispatch.sh" "$1" 2>"$dproj/err")
@@ -709,121 +852,121 @@ dispatch() {  # <слот> [событие] — печатает «код<TAB>st
 }
 local_dir="$dproj/.harness/local/hooks"
 
-# Порядок: общие слота в своём порядке, затем свои по алфавиту.
+# Order: the slot's common hooks in their order, then own ones alphabetically.
 fake_hook "$dproj/.harness/hooks/rust-fmt.sh" rust-fmt ':'
 fake_hook "$dproj/.harness/hooks/js-fmt.sh" js-fmt ':'
 fake_hook "$local_dir/post-edit/20-b.sh" b ':'
 fake_hook "$local_dir/post-edit/10-a.sh" a ':'
 dispatch post-edit
 [ "$d_log" = "rust-fmt js-fmt a b " ] && [ "$d_code" -eq 0 ] \
-  && ok "порядок: общие, потом свои по алфавиту" || bad "порядок: общие, потом свои по алфавиту" "rust-fmt js-fmt a b" "код $d_code: $d_log"
+  && ok "order: common, then own alphabetically" || bad "order: common, then own alphabetically" "rust-fmt js-fmt a b" "exit $d_code: $d_log"
 
-# Хук получает событие целиком.
+# A hook gets the whole event.
 fake_hook "$local_dir/post-edit/10-a.sh" a 'jq -r .tool_input.file_path >> '"$dproj/seen"
 dispatch post-edit "$(file_ev /x/y.rs)"
 [ "$(cat "$dproj/seen" 2>/dev/null)" = "/x/y.rs" ] \
-  && ok "хук получает событие на stdin" || bad "хук получает событие на stdin" "/x/y.rs" "$(cat "$dproj/seen" 2>/dev/null)"
+  && ok "a hook gets the event on stdin" || bad "a hook gets the event on stdin" "/x/y.rs" "$(cat "$dproj/seen" 2>/dev/null)"
 fake_hook "$local_dir/post-edit/10-a.sh" a ':'
 
-# Отсутствующий модульный хук пропускается.
+# A missing module hook is skipped.
 rm "$dproj/.harness/hooks/js-fmt.sh"
 dispatch post-edit
 [ "$d_log" = "rust-fmt a b " ] \
-  && ok "нет модульного хука — пропуск" || bad "нет модульного хука — пропуск" "rust-fmt a b" "$d_log"
+  && ok "no module hook — skipped" || bad "no module hook — skipped" "rust-fmt a b" "$d_log"
 
-# Код 2 останавливает слот и пробрасывает stderr.
-fake_hook "$local_dir/post-edit/10-a.sh" a 'echo "крейт красный" >&2; exit 2'
+# Exit 2 stops the slot and passes stderr through.
+fake_hook "$local_dir/post-edit/10-a.sh" a 'echo "crate red" >&2; exit 2'
 dispatch post-edit
-{ [ "$d_code" -eq 2 ] && [ "$d_err" = "крейт красный" ] && [ "$d_log" = "rust-fmt a " ]; } \
-  && ok "код 2 останавливает и пробрасывает stderr" \
-  || bad "код 2 останавливает и пробрасывает stderr" "код 2, «крейт красный», b не запущен" "код $d_code, stderr «$d_err», журнал $d_log"
-fake_hook "$dproj/.harness/hooks/rust-fmt.sh" rust-fmt 'echo "общий красный" >&2; exit 2'
+{ [ "$d_code" -eq 2 ] && [ "$d_err" = "crate red" ] && [ "$d_log" = "rust-fmt a " ]; } \
+  && ok "exit 2 stops and passes stderr through" \
+  || bad "exit 2 stops and passes stderr through" "exit 2, \"crate red\", b not run" "exit $d_code, stderr \"$d_err\", log $d_log"
+fake_hook "$dproj/.harness/hooks/rust-fmt.sh" rust-fmt 'echo "common red" >&2; exit 2'
 dispatch post-edit
 { [ "$d_code" -eq 2 ] && [ "$d_log" = "rust-fmt " ]; } \
-  && ok "код 2 общего хука не пускает свои" || bad "код 2 общего хука не пускает свои" "код 2, только rust-fmt" "код $d_code: $d_log"
+  && ok "exit 2 of a common hook keeps own ones from running" || bad "exit 2 of a common hook keeps own ones from running" "exit 2, only rust-fmt" "exit $d_code: $d_log"
 fake_hook "$dproj/.harness/hooks/rust-fmt.sh" rust-fmt ':'
 fake_hook "$local_dir/post-edit/10-a.sh" a ':'
 
-# Пустой local: только общие.
-fake_hook "$dproj/.harness/hooks/bash-edit.sh" bash-edit 'echo "текст"'
+# Empty local: only common ones.
+fake_hook "$dproj/.harness/hooks/bash-edit.sh" bash-edit 'echo "text"'
 dispatch post-bash
-{ [ "$d_code" -eq 0 ] && [ "$d_log" = "bash-edit " ] && [ "$d_out" = "текст" ]; } \
-  && ok "без своих хуков — только общие" || bad "без своих хуков — только общие" "код 0, bash-edit, «текст»" "код $d_code: $d_log / $d_out"
+{ [ "$d_code" -eq 0 ] && [ "$d_log" = "bash-edit " ] && [ "$d_out" = "text" ]; } \
+  && ok "without own hooks — only common ones" || bad "without own hooks — only common ones" "exit 0, bash-edit, \"text\"" "exit $d_code: $d_log / $d_out"
 mkdir -p "$local_dir/post-bash"
 dispatch post-bash
 { [ "$d_code" -eq 0 ] && [ "$d_log" = "bash-edit " ]; } \
-  && ok "пустой каталог своих хуков — только общие" || bad "пустой каталог своих хуков — только общие" "bash-edit" "$d_log"
+  && ok "empty own hooks directory — only common ones" || bad "empty own hooks directory — only common ones" "bash-edit" "$d_log"
 
-# Свой хук без права на исполнение пропускается с предупреждением.
+# An own hook without the execute bit is skipped with a warning.
 fake_hook "$local_dir/post-bash/off.sh" off ':'
 chmod -x "$local_dir/post-bash/off.sh"
 dispatch post-bash
-{ [ "$d_code" -eq 0 ] && [ "$d_log" = "bash-edit " ] && [[ "$d_err" == *"off.sh не исполняемый"* ]]; } \
-  && ok "неисполняемый свой хук пропущен с предупреждением" \
-  || bad "неисполняемый свой хук пропущен с предупреждением" "только bash-edit, предупреждение" "код $d_code, журнал $d_log, stderr $d_err"
+{ [ "$d_code" -eq 0 ] && [ "$d_log" = "bash-edit " ] && [[ "$d_err" == *"off.sh is not executable"* ]]; } \
+  && ok "a non-executable own hook is skipped with a warning" \
+  || bad "a non-executable own hook is skipped with a warning" "only bash-edit, a warning" "exit $d_code, log $d_log, stderr $d_err"
 rm -f "$local_dir/post-bash/off.sh"
 
-# Отказ общего и отказ своего: наружу один корректный JSON — первый отказ.
+# A common denial and an own denial: one valid JSON goes out — the first denial.
 deny_body() { printf 'jq -nc --arg r %s '\''{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'\''' "$1"; }
-fake_hook "$dproj/.harness/hooks/guard-staging.sh" guard-staging "$(deny_body 'общий-отказ')"
-fake_hook "$local_dir/pre-bash/guard-data.sh" guard-data "$(deny_body 'свой-отказ')"
+fake_hook "$dproj/.harness/hooks/guard-staging.sh" guard-staging "$(deny_body 'common-denial')"
+fake_hook "$local_dir/pre-bash/guard-data.sh" guard-data "$(deny_body 'own-denial')"
 dispatch pre-bash "$(bash_ev 'git add -A')"
 reason=$(printf '%s' "$d_out" | jq -r '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null)
-{ [ "$d_code" -eq 0 ] && [ "$reason" = "общий-отказ" ] && [ "$d_log" = "guard-staging " ]; } \
-  && ok "два отказа — один JSON, первый отказ, слот остановлен" \
-  || bad "два отказа — один JSON, первый отказ, слот остановлен" "JSON с «общий-отказ», guard-data не запущен" "код $d_code, журнал $d_log, вывод $d_out"
+{ [ "$d_code" -eq 0 ] && [ "$reason" = "common-denial" ] && [ "$d_log" = "guard-staging " ]; } \
+  && ok "two denials — one JSON, the first denial, slot stopped" \
+  || bad "two denials — one JSON, the first denial, slot stopped" "JSON with \"common-denial\", guard-data not run" "exit $d_code, log $d_log, output $d_out"
 fake_hook "$dproj/.harness/hooks/guard-staging.sh" guard-staging ':'
 dispatch pre-bash "$(bash_ev 'git add -A')"
 reason=$(printf '%s' "$d_out" | jq -r '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null)
-{ [ "$reason" = "свой-отказ" ] && [ "$d_log" = "guard-staging guard-data " ]; } \
-  && ok "отказ своего хука доходит" || bad "отказ своего хука доходит" "JSON с «свой-отказ»" "$d_out"
+{ [ "$reason" = "own-denial" ] && [ "$d_log" = "guard-staging guard-data " ]; } \
+  && ok "an own hook's denial gets through" || bad "an own hook's denial gets through" "JSON with \"own-denial\"" "$d_out"
 
-# Два additionalContext — один JSON с текстами через пустую строку.
+# Two additionalContext — one JSON with the texts joined by a blank line.
 ctx_body() { printf 'jq -nc --arg n %s '\''{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$n}}'\''' "$1"; }
-fake_hook "$dproj/.harness/hooks/session-tree.sh" session-tree "$(ctx_body 'первый')"
-fake_hook "$local_dir/session-start/note.sh" note "$(ctx_body 'второй')"
+fake_hook "$dproj/.harness/hooks/session-tree.sh" session-tree "$(ctx_body 'first')"
+fake_hook "$local_dir/session-start/note.sh" note "$(ctx_body 'second')"
 dispatch session-start
 ctx=$(printf '%s' "$d_out" | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null)
 event=$(printf '%s' "$d_out" | jq -r '.hookSpecificOutput.hookEventName' 2>/dev/null)
-{ [ "$ctx" = "$(printf 'первый\n\nвторой')" ] && [ "$event" = "SessionStart" ] && [ "$(printf '%s\n' "$d_out" | wc -l | tr -d ' ')" = 1 ]; } \
-  && ok "два контекста склеены в один JSON" || bad "два контекста склеены в один JSON" "первый, пустая строка, второй" "$d_out"
+{ [ "$ctx" = "$(printf 'first\n\nsecond')" ] && [ "$event" = "SessionStart" ] && [ "$(printf '%s\n' "$d_out" | wc -l | tr -d ' ')" = 1 ]; } \
+  && ok "two contexts joined into one JSON" || bad "two contexts joined into one JSON" "first, a blank line, second" "$d_out"
 
-# Простой текст рядом с JSON уходит в тот же контекст.
-fake_hook "$local_dir/session-start/note.sh" note 'echo "простой текст"'
+# Plain text next to JSON goes into the same context.
+fake_hook "$local_dir/session-start/note.sh" note 'echo "plain text"'
 dispatch session-start
 ctx=$(printf '%s' "$d_out" | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null)
-[ "$ctx" = "$(printf 'первый\n\nпростой текст')" ] \
-  && ok "простой текст рядом с JSON — в контекст" || bad "простой текст рядом с JSON — в контекст" "первый + простой текст" "$d_out"
+[ "$ctx" = "$(printf 'first\n\nplain text')" ] \
+  && ok "plain text next to JSON — into the context" || bad "plain text next to JSON — into the context" "first + plain text" "$d_out"
 
-# Без JSON простой текст печатается как есть.
-fake_hook "$dproj/.harness/hooks/session-tree.sh" session-tree 'echo "строка один"'
+# Without JSON plain text is printed as is.
+fake_hook "$dproj/.harness/hooks/session-tree.sh" session-tree 'echo "line one"'
 dispatch session-start
-[ "$d_out" = "$(printf 'строка один\nпростой текст')" ] \
-  && ok "только простой текст — как есть" || bad "только простой текст — как есть" "две строки" "$d_out"
+[ "$d_out" = "$(printf 'line one\nplain text')" ] \
+  && ok "only plain text — as is" || bad "only plain text — as is" "two lines" "$d_out"
 
-# Ошибка хука — не отказ: остальные работают, код 1 без JSON.
-fake_hook "$dproj/.harness/hooks/session-tree.sh" session-tree 'echo "сбой" >&2; exit 1'
+# A hook error is not a denial: the others run, exit 1 without JSON.
+fake_hook "$dproj/.harness/hooks/session-tree.sh" session-tree 'echo "failure" >&2; exit 1'
 dispatch session-start
-{ [ "$d_code" -eq 1 ] && [ "$d_log" = "session-tree note " ] && [ "$d_out" = "простой текст" ] && [ "$d_err" = "сбой" ]; } \
-  && ok "ошибка хука не останавливает слот" || bad "ошибка хука не останавливает слот" "код 1, оба хука, stderr «сбой»" "код $d_code, журнал $d_log, вывод $d_out, stderr $d_err"
+{ [ "$d_code" -eq 1 ] && [ "$d_log" = "session-tree note " ] && [ "$d_out" = "plain text" ] && [ "$d_err" = "failure" ]; } \
+  && ok "a hook error doesn't stop the slot" || bad "a hook error doesn't stop the slot" "exit 1, both hooks, stderr \"failure\"" "exit $d_code, log $d_log, output $d_out, stderr $d_err"
 
 dispatch no-such-slot
-[ "$d_code" -eq 1 ] && [[ "$d_err" == *"неизвестный слот"* ]] \
-  && ok "неизвестный слот — ошибка" || bad "неизвестный слот — ошибка" "код 1" "код $d_code: $d_err"
+[ "$d_code" -eq 1 ] && [[ "$d_err" == *"unknown slot"* ]] \
+  && ok "unknown slot — error" || bad "unknown slot — error" "exit 1" "exit $d_code: $d_err"
 
-# Настоящая проводка: отказ валовой постановки через диспетчер проекта.
+# Real wiring: wholesale staging denied through the project dispatcher.
 out=$(cd "$staging_repo" && printf '%s' "$(bash_ev 'git add -A')" | "$hooks/dispatch.sh" pre-bash 2>/dev/null)
 case "$out" in
-  *'"permissionDecision":"deny"'*) ok "dispatch pre-bash проекта отклоняет git add -A" ;;
-  *) bad "dispatch pre-bash проекта отклоняет git add -A" "отказ" "$out" ;;
+  *'"permissionDecision":"deny"'*) ok "the project's dispatch pre-bash denies git add -A" ;;
+  *) bad "the project's dispatch pre-bash denies git add -A" "denial" "$out" ;;
 esac
 out=$(cd "$staging_repo/wt" && printf '%s' "$(bash_ev 'git add -A')" | "$hooks/dispatch.sh" pre-bash 2>/dev/null)
-[ -z "$out" ] && ok "dispatch pre-bash проекта пропускает git add -A в своём дереве" \
-  || bad "dispatch pre-bash проекта пропускает git add -A в своём дереве" "молчание" "$out"
+[ -z "$out" ] && ok "the project's dispatch pre-bash lets git add -A through in own worktree" \
+  || bad "the project's dispatch pre-bash lets git add -A through in own worktree" "silence" "$out"
 
 # --- lefthook ---------------------------------------------------------------
-# Настоящие `lefthook.yml` и `.harness/lefthook.yml` проекта на временном
-# репозитории. Бинарь — проекта (node_modules) либо из PATH.
+# The project's real `lefthook.yml` and `.harness/lefthook.yml` on a temporary
+# repository. The binary is the project's (node_modules) or from PATH.
 lefthook_bin=""
 if [ -x "$root/node_modules/.bin/lefthook" ]; then
   lefthook_bin="$root/node_modules/.bin/lefthook"
@@ -831,8 +974,8 @@ elif command -v lefthook >/dev/null 2>&1; then
   lefthook_bin=$(command -v lefthook)
 fi
 
-# Копия обвязки git-хуков и скриптов knowledge/ проекта во временный репозиторий.
-lefthook_copy() {  # <каталог>
+# A copy of the project's git hook wiring and knowledge/ scripts into a temporary repository.
+lefthook_copy() {  # <dir>
   mkdir -p "$1/.harness" "$1/knowledge"
   cp "$root/lefthook.yml" "$1/"
   cp "$root/.harness/lefthook.yml" "$1/.harness/"
@@ -841,7 +984,7 @@ lefthook_copy() {  # <каталог>
   cp "$root"/knowledge/*.sh "$1/knowledge/"
 }
 
-answer() {  # <ключ> — значение из таблицы `[answers]` записи шаблона проекта
+answer() {  # <key> — a value from the `[answers]` table of the project's template record
   awk -v key="$1" '
     /^[ \t]*\[/ { inside = ($0 ~ /^[ \t]*\[answers\][ \t]*$/); next }
     inside && $0 ~ ("^" key "[ \t]*=") { v = substr($0, index($0, "=") + 1); gsub(/^[ \t\047"]+|[ \t\047"]+$/, "", v); print v; exit }
@@ -849,49 +992,66 @@ answer() {  # <ключ> — значение из таблицы `[answers]` з
 }
 
 echo
-echo "pre-commit: архив закрытых вопросов"
-# stage_fixed возвращает в индекс только staged-файлы, а архив закрытых вопросов
-# скрипт пишет сам. Закрытие обязано уехать одним коммитом с архивом; коммит без
-# закрытия архив не трогает.
+echo "pre-commit: closed questions archive"
+# stage_fixed puts only staged files back into the index, and the closed questions
+# archive is written by the script itself. A closure must go in one commit with the
+# archive; a commit without a closure doesn't touch the archive.
 if [ -z "$lefthook_bin" ]; then
-  bad "lefthook на месте" "node_modules/.bin/lefthook или lefthook в PATH" "нет"
+  bad "lefthook in place" "node_modules/.bin/lefthook or lefthook in PATH" "missing"
 else
   kidir=$(new_repo) || exit 1
   lefthook_copy "$kidir"
   questions=$(answer open_questions_path)
   closed="${questions%.md}-closed.md"
   mkdir -p "$kidir/$(dirname "$questions")"
-  printf '# Открытые вопросы\n\n---\n\n## Первый вопрос\n\nСуть.\n\n---\n\n## Второй вопрос\n\nСуть.\n' > "$kidir/$questions"
+  printf '# Open questions\n\n---\n\n## First question\n\nGist.\n\n---\n\n## Second question\n\nGist.\n' > "$kidir/$questions"
   git -C "$kidir" add -A
   git -C "$kidir" commit -q --no-verify -m base
   (cd "$kidir" && "$lefthook_bin" install >/dev/null 2>&1)
 
-  # Коммит без закрытия: архив не появляется и в коммит не попадает.
-  printf '\n---\n\n## Третий вопрос\n\nСуть.\n' >> "$kidir/$questions"
+  # A commit without a closure: the archive doesn't appear and doesn't get into the commit.
+  printf '\n---\n\n## Third question\n\nGist.\n' >> "$kidir/$questions"
   git -C "$kidir" add "$questions"
   git -C "$kidir" commit -q -m question >/dev/null 2>&1
   out=$(git -C "$kidir" show --name-only --format= HEAD | sort | tr '\n' ' ')
   { [ "$out" = "$questions " ] && [ ! -e "$kidir/$closed" ]; } \
-    && ok "коммит без закрытия архив не трогает" \
-    || bad "коммит без закрытия архив не трогает" "$questions" "$out"
+    && ok "a commit without a closure doesn't touch the archive" \
+    || bad "a commit without a closure doesn't touch the archive" "$questions" "$out"
 
-  # Закрытие: оба файла в одном коммите, хвоста в рабочем дереве нет.
-  perl -i -pe 's/^## Первый вопрос$/## ~~Первый вопрос~~ — закрыт 08.10.2026/' "$kidir/$questions"
+  # A closure: both files in one commit, no leftovers in the worktree.
+  perl -i -pe 's/^## First question$/## ~~First question~~ — closed 2026-10-08/' "$kidir/$questions"
   git -C "$kidir" add "$questions"
   git -C "$kidir" commit -q -m close >/dev/null 2>&1
   out=$(git -C "$kidir" show --name-only --format= HEAD | sort | tr '\n' ' ')
   rest=$(git -C "$kidir" status --porcelain)
   want=$(printf '%s\n%s\n' "$closed" "$questions" | sort | tr '\n' ' ')
   { [ "$out" = "$want" ] && [ -z "$rest" ]; } \
-    && ok "закрытие и архив — один коммит" \
-    || bad "закрытие и архив — один коммит" "$want, чистое дерево" "$out / $rest"
+    && ok "closure and archive — one commit" \
+    || bad "closure and archive — one commit" "$want, a clean worktree" "$out / $rest"
+
+  # Tables of contents: the job calls `knowledge/index.sh --stage` — shared in the
+  # catalog form, the project's in the monolith form. The stand-in script writes its
+  # argument to a file and stages it itself, as the real one must.
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > knowledge/toc.md\n[ "${1:-}" != --stage ] || git add knowledge/toc.md\n' > "$kidir/knowledge/index.sh"
+  chmod +x "$kidir/knowledge/index.sh"
+  git -C "$kidir" add knowledge/index.sh
+  git -C "$kidir" commit -q --no-verify -m index
+  printf '\n---\n\n## Fourth question\n\nGist.\n' >> "$kidir/$questions"
+  git -C "$kidir" add "$questions"
+  git -C "$kidir" commit -q -m toc >/dev/null 2>&1
+  out=$(git -C "$kidir" show --name-only --format= HEAD | sort | tr '\n' ' ')
+  want=$(printf '%s\n%s\n' knowledge/toc.md "$questions" | sort | tr '\n' ' ')
+  toc=$(git -C "$kidir" show HEAD:knowledge/toc.md 2>/dev/null)
+  { [ "$out" = "$want" ] && [ "$toc" = --stage ]; } \
+    && ok "pre-commit calls knowledge/index.sh --stage, the toc in the same commit" \
+    || bad "pre-commit calls knowledge/index.sh --stage, the toc in the same commit" "$want, --stage" "$out / $toc"
 fi
 
 echo
-echo "pre-push: файлы пуша"
-# Ветка заведена с --no-track и отстала от main, в которую после ответвления
-# влит файл knowledge/. Пуш одного документа не должен будить knowledge-tests,
-# а пуш своего файла knowledge/ обязан. Здесь важно лишь, пропущен джоб или нет.
+echo "pre-push: push files"
+# The branch is created with --no-track and is behind main, into which a knowledge/
+# file was merged after branching. Pushing one document must not wake knowledge-tests,
+# and pushing an own knowledge/ file must. All that matters here is whether the job is skipped.
 if [ -n "$lefthook_bin" ]; then
   ppdir=$(new_tmp)
   git init -q --bare "$ppdir/origin.git"
@@ -916,21 +1076,21 @@ if [ -n "$lefthook_bin" ]; then
   git -C "$pp" push -q --no-verify origin main
   git -C "$pp" switch -q docs
 
-  # Состояние на момент `git push` новой ветки: HEAD — docs, upstream нет.
+  # The state at the moment of `git push` of a new branch: HEAD is docs, no upstream.
   push_job() { (cd "$pp" && "$lefthook_bin" run pre-push --job knowledge-tests --no-tty --colors off </dev/null 2>&1); }
 
   out=$(push_job)
   [[ $out == *"knowledge-tests (skip)"* ]] \
-    && ok "docs отставшей ветки knowledge-tests не будят" \
-    || bad "docs отставшей ветки knowledge-tests не будят" "knowledge-tests (skip)" "$out"
+    && ok "docs of a lagging branch don't wake knowledge-tests" \
+    || bad "docs of a lagging branch don't wake knowledge-tests" "knowledge-tests (skip)" "$out"
 
-  # Контроль: без своего списка lefthook будит knowledge-tests чужим knowledge/b.md
-  # из main. Если перестанет, тест выше ничего не доказывает.
-  grep -v '^  files: \./\.harness/lefthook/push-files\.sh$' "$root/.harness/lefthook.yml" > "$pp/.harness/lefthook.yml"
+  # Control: without our own list lefthook wakes knowledge-tests with someone else's
+  # knowledge/b.md from main. If it stops doing so, the test above proves nothing.
+  grep -v '^  files: .*push-files\.sh$' "$root/.harness/lefthook.yml" > "$pp/.harness/lefthook.yml"
   out=$(push_job)
   [[ $out != *"knowledge-tests (skip)"* ]] \
-    && ok "контроль: встроенный список будит knowledge-tests чужим knowledge/" \
-    || bad "контроль: встроенный список будит knowledge-tests чужим knowledge/" "без пропуска" "$out"
+    && ok "control: the built-in list wakes knowledge-tests with someone else's knowledge/" \
+    || bad "control: the built-in list wakes knowledge-tests with someone else's knowledge/" "no skip" "$out"
   cp "$root/.harness/lefthook.yml" "$pp/.harness/"
 
   echo c > "$pp/knowledge/c.md"
@@ -938,10 +1098,10 @@ if [ -n "$lefthook_bin" ]; then
   git -C "$pp" commit -q --no-verify -m own
   out=$(push_job)
   [[ $out != *"knowledge-tests (skip)"* ]] \
-    && ok "свой файл knowledge/ будит knowledge-tests" \
-    || bad "свой файл knowledge/ будит knowledge-tests" "без пропуска" "$out"
+    && ok "an own knowledge/ file wakes knowledge-tests" \
+    || bad "an own knowledge/ file wakes knowledge-tests" "no skip" "$out"
 fi
 
 echo
-printf 'итого: %d прошло, %d провалено\n' "$pass" "$fail"
+printf 'total: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

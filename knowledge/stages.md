@@ -4,6 +4,6 @@
 
 | Этап | Состояние |
 |---|---|
-| 1. Core | закрыт |
-| 2. Copier import | закрыт |
-| 3. harness migration | закрыт |
+| 1. Core | closed |
+| 2. Copier import | closed |
+| 3. harness migration | closed |

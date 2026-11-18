@@ -1,26 +1,26 @@
-# Автовливание PR обновления харнесса. Управляемый файл: обновляется шаблоном,
-# руками не правится.
+# Automerge of harness update PRs. Managed file: updated by the template, not
+# edited by hand.
 #
-# Срабатывает по завершении CI проекта (workflow `CI`, стартовый ci.yml), а не
-# ожиданием внутри джобы: при одном раннере на репозиторий ждущая джоба заняла
-# бы раннер и заблокировала бы сам CI. Штатный auto-merge GitHub не подходит:
-# без обязательных проверок он влил бы PR сразу.
+# Fires when the project CI finishes (workflow `CI`, starter ci.yml) rather than
+# waiting inside a job: with one runner per repository a waiting job would hold
+# the runner and block CI itself. GitHub's built-in auto-merge doesn't fit:
+# without required checks it would merge the PR immediately.
 #
-# Вливает squash'ем и удаляет ветку, только если всё сразу:
-#   - ветка harness/update-*, PR открыт и из этого же репозитория;
-#   - CI зелёный (красный — ничего не делает, PR остаётся открытым);
-#   - автор PR — владелец токена HARNESS_UPDATE_TOKEN, тот, кто его открыл;
-#   - нет меток harness:major и harness:conflict;
-#   - голова PR — тот коммит, на котором прошёл CI;
-#   - голову запушил владелец токена — по журналу пушей репозитория
-#     (`/activity`). Это сведение GitHub, подделать его нельзя; запушил
-#     другой — комментарий в PR, вливание руками;
-#   - все коммиты PR — от обновления (автор и коммиттер с подписью
-#     harness-update.yml); есть посторонний — комментарий в PR, вливание руками.
-#     Подпись пишет сам коммитящий, поэтому это не защита, а подсказка:
-#     дописанный в ветку разбор конфликта вливается руками.
+# Squash-merges and deletes the branch only if all of these hold:
+#   - branch harness/update-*, the PR is open and from this same repository;
+#   - CI is green (red: does nothing, the PR stays open);
+#   - the PR author is the owner of the HARNESS_UPDATE_TOKEN token, who opened it;
+#   - no harness:major or harness:conflict labels;
+#   - the PR head is the commit CI passed on;
+#   - the head was pushed by the token owner, per the repository push log
+#     (`/activity`). This is GitHub's record and cannot be forged; pushed by
+#     someone else: a comment on the PR, merge by hand;
+#   - all PR commits come from the update (author and committer with the
+#     harness-update.yml identity); a foreign one: a comment on the PR, merge by hand.
+#     The identity is written by whoever commits, so this is not protection but
+#     a hint: a conflict resolution added to the branch is merged by hand.
 #
-# Подключение — .harness/local/README.md.
+# Setup: .harness/local/README.md.
 name: harness-automerge
 
 on:
@@ -33,12 +33,12 @@ concurrency:
   group: harness-automerge-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
-# GITHUB_TOKEN не нужен: вливает HARNESS_UPDATE_TOKEN, чтобы пуш в основную
-# ветку запустил её CI.
+# GITHUB_TOKEN is not needed: HARNESS_UPDATE_TOKEN merges, so that the push to
+# the main branch triggers its CI.
 permissions: {}
 
 env:
-  # gh — на случай раннера, где его нет (шаг «Инструменты»).
+  # gh, for a runner that lacks it (the "Tools" step).
   GH_VERSION: 2.102.0
 
 jobs:
@@ -49,7 +49,7 @@ jobs:
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       startsWith(github.event.workflow_run.head_branch, 'harness/update-')
-    # Раннер — переменная репозитория HARNESS_RUNNER, как в harness-update.yml.
+    # Runner: the HARNESS_RUNNER repository variable, as in harness-update.yml.
     runs-on: ${{ vars.HARNESS_RUNNER && (startsWith(vars.HARNESS_RUNNER, '[') && fromJSON(vars.HARNESS_RUNNER) || vars.HARNESS_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 5
     env:
@@ -58,8 +58,8 @@ jobs:
       BRANCH: ${{ github.event.workflow_run.head_branch }}
       SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
-      # Как в harness-update.yml: на своём раннере gh может не быть.
-      - name: Инструменты
+      # As in harness-update.yml: a self-hosted runner may lack gh.
+      - name: Tools
         run: |
           set -euo pipefail
           command -v gh >/dev/null 2>&1 && exit 0
@@ -67,7 +67,7 @@ jobs:
             Linux/x86_64) gh_arch=amd64 ;;
             Linux/aarch64|Linux/arm64) gh_arch=arm64 ;;
             *)
-              echo "::error title=Нет gh::На раннере $(uname -s)/$(uname -m) нужен gh: сам шаг ставит его только на Linux x86_64 и arm64."
+              echo "::error title=No gh::The $(uname -s)/$(uname -m) runner needs gh: this step installs it only on Linux x86_64 and arm64."
               exit 1 ;;
           esac
           bin="$RUNNER_TEMP/harness-bin"
@@ -77,11 +77,11 @@ jobs:
             | tar -xz -C "$bin" --strip-components=2 "${name}/bin/gh"
           echo "$bin" >>"$GITHUB_PATH"
 
-      - name: Вливание
+      - name: Merge
         run: |
           set -euo pipefail
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error title=Нет секрета HARNESS_UPDATE_TOKEN::Заведи в Settings → Secrets and variables → Actions секрет HARNESS_UPDATE_TOKEN: fine-grained PAT на этот репозиторий с правами Contents RW, Pull requests RW, Issues RW (метки PR), Workflows RW, Metadata R. Подробнее — .harness/local/README.md."
+            echo "::error title=No HARNESS_UPDATE_TOKEN secret::Create the HARNESS_UPDATE_TOKEN secret in Settings → Secrets and variables → Actions: a fine-grained PAT for this repository with Contents RW, Pull requests RW, Issues RW (PR labels), Workflows RW, Metadata R. Details: .harness/local/README.md."
             exit 1
           fi
           say() { printf '%s\n' "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
@@ -89,7 +89,7 @@ jobs:
           pr=$(gh pr list -R "$REPO" --state open --head "$BRANCH" \
             --json number,author,labels,headRefOid,isCrossRepository --jq '.[0] // empty')
           if [ -z "$pr" ]; then
-            say "Открытого PR из $BRANCH нет — вливать нечего."
+            say "No open PR from $BRANCH: nothing to merge."
             exit 0
           fi
           number=$(jq -r .number <<<"$pr")
@@ -98,59 +98,59 @@ jobs:
           email="$id+$me@users.noreply.github.com"
           author=$(jq -r .author.login <<<"$pr")
           if [ "$author" != "$me" ]; then
-            say "PR #$number открыл $author, а не владелец токена ($me) — не вливаю."
+            say "PR #$number was opened by $author, not the token owner ($me): not merging."
             exit 0
           fi
           if [ "$(jq -r .isCrossRepository <<<"$pr")" = true ]; then
-            say "PR #$number из другого репозитория — не вливаю."
+            say "PR #$number is from another repository: not merging."
             exit 0
           fi
           held=$(jq -r '[.labels[].name | select(. == "harness:major" or . == "harness:conflict")] | join(", ")' <<<"$pr")
           if [ -n "$held" ]; then
-            say "PR #$number помечен $held — вливается вручную."
+            say "PR #$number is labeled $held: merged by hand."
             exit 0
           fi
           head=$(jq -r .headRefOid <<<"$pr")
           if [ "$head" != "$SHA" ]; then
-            say "Голова PR #$number ($head) — не тот коммит, на котором прошёл CI ($SHA): жду CI нового."
+            say "PR #$number head ($head) is not the commit CI passed on ($SHA): waiting for CI on the new one."
             exit 0
           fi
 
-          # Подлинность головы — по журналу пушей GitHub, а не по подписи
-          # коммитов: подпись обновления поставит в коммит любой, у кого есть
-          # пуш в ветку. И не по тому, кто запустил CI: между пушем ветки и
-          # открытием PR в неё успеют запушить чужое, а прогон на открытие
-          # запустит владелец токена. Голову обязан был запушить он сам.
-          # Обновление пушит ветку заново от основной (--force), поэтому
-          # голова его пуша чужих коммитов под собой не несёт.
-          # shellcheck disable=SC2016 # $sha — переменная jq
+          # The head's authenticity comes from the GitHub push log, not from the
+          # commit identity: anyone with push access to the branch can put the
+          # update identity on a commit. Nor from who triggered CI: between the
+          # branch push and opening the PR someone else may push to it, and the
+          # run on open is triggered by the token owner. The head must have been
+          # pushed by the owner. The update pushes the branch afresh from main
+          # (--force), so the head of its push carries no foreign commits beneath.
+          # shellcheck disable=SC2016 # $sha is a jq variable
           pusher=$(gh api "repos/$REPO/activity?ref=refs/heads/$BRANCH&per_page=100" |
             jq -r --arg sha "$SHA" '[.[] | select(.after == $sha)][0].actor.login // empty')
           if [ -z "$pusher" ]; then
-            say "В журнале пушей ветки $BRANCH нет пуша $SHA — не вливаю."
+            say "The push log of branch $BRANCH has no push of $SHA: not merging."
             exit 0
           fi
           if [ "$pusher" != "$me" ]; then
-            say "Голову PR #$number ($SHA) запушил $pusher, а не владелец токена ($me) — не вливаю."
-            gh pr comment "$number" -R "$REPO" --body "Автовливание пропущено: голову ветки ($SHA) запушил $pusher, а не обновление харнесса. Проверь ветку и влей PR вручную."
+            say "PR #$number head ($SHA) was pushed by $pusher, not the token owner ($me): not merging."
+            gh pr comment "$number" -R "$REPO" --body "Automerge skipped: the branch head ($SHA) was pushed by $pusher, not by the harness update. Check the branch and merge the PR by hand."
             exit 0
           fi
 
-          # Каждый коммит PR — от обновления: автор и коммиттер с подписью
-          # harness-update.yml (логин владельца токена и его noreply-почта).
-          # Дописанный в ветку коммит — разбор конфликта или чужая правка —
-          # вливается только руками.
-          # shellcheck disable=SC2016 # $name и $email — переменные jq
+          # Every PR commit comes from the update: author and committer with the
+          # harness-update.yml identity (the token owner's login and noreply email).
+          # A commit added to the branch (a conflict resolution or someone else's
+          # edit) is merged only by hand.
+          # shellcheck disable=SC2016 # $name and $email are jq variables
           foreign=$(gh api --paginate "repos/$REPO/pulls/$number/commits" |
             jq -rs --arg name "$me" --arg email "$email" '[.[][]
               | select(.commit.author.name != $name or .commit.author.email != $email
                   or .commit.committer.name != $name or .commit.committer.email != $email)
               | .sha[0:7]] | join(", ")')
           if [ -n "$foreign" ]; then
-            say "В PR #$number есть коммиты не от обновления: $foreign — не вливаю."
-            gh pr comment "$number" -R "$REPO" --body "Автовливание пропущено: в ветке есть коммиты не от обновления харнесса ($foreign). Проверь их и влей PR вручную."
+            say "PR #$number has commits not from the update: $foreign: not merging."
+            gh pr comment "$number" -R "$REPO" --body "Automerge skipped: the branch has commits not from the harness update ($foreign). Check them and merge the PR by hand."
             exit 0
           fi
 
           gh pr merge "$number" -R "$REPO" --squash --delete-branch --match-head-commit "$SHA"
-          say "Влит PR #$number ($BRANCH, $SHA)."
+          say "Merged PR #$number ($BRANCH, $SHA)."

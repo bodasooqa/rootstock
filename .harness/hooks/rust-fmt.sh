@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Слот post-edit (PostToolUse/Write|Edit), модуль rust: форматирует только что
-# записанный .rs файл.
+# Slot post-edit (PostToolUse/Write|Edit), module rust: formats the .rs file that
+# was just written.
 set -uo pipefail
 
 f=$(jq -r '.tool_response.filePath // .tool_input.file_path // empty' 2>/dev/null) || exit 0

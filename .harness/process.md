@@ -1,60 +1,64 @@
-# Правила процесса
+# Process rules
 
-Общие правила работы из шаблона [harness](https://github.com/bodasooqa/harness). Файл управляемый: обновляется `rootstock update`, руками не правится. Своё проект пишет в корневой `CLAUDE.md` (домен, стек, границы пакетов, источники правды, определения) и в `.harness/local/`.
+Shared working rules from the [harness](https://github.com/bodasooqa/harness) template. This file is managed: it is updated by `rootstock update` and is not edited by hand. The project writes its own rules in the root `AGENTS.md` (domain, stack, package boundaries, sources of truth, definitions) and in `.harness/local/`. `AGENTS.md` is read by all agents; `CLAUDE.md` next to it only includes it and this file for Claude Code.
 
-## Три места документации
+## Language
 
-ТЗ (`docs/design.md`, журнал ревизий — `docs/design-revisions.md`) — требования и домен. `openspec/specs/` — реализованное поведение по капабилити, производное от ТЗ. `knowledge/` — решения с причинами, уроки, особенности внешних API, открытые вопросы. Не смешивать; правило «куда класть» — `knowledge/README.md` и скилл `knowledge-note`.
+All artifacts, code comments, doc comments, error messages, commit messages, PR texts, and the knowledge journal are written in English. Agents talk to the owner in Russian.
 
-ТЗ — файл `docs/design.md`, журнал ревизий — `docs/design-revisions.md`: что поменялось и почему, по разделу на версию. Сводная часть ТЗ несёт актуальные требования с метками версий «(1.N)». Ревизии, ещё не сведённые в сводную часть, перечислены в шапке ТЗ: для них нормативен раздел журнала. Целиком файлы не читают: нужный параграф находится по заголовкам (`grep -n '^## \|^### ' docs/design.md docs/design-revisions.md`) и читается диапазоном строк.
+## Three places for documentation
 
-При вопросе о поведении — читать раздел, а не вспоминать.
+The spec (`docs/design.md`, revisions journal — `docs/design-revisions.md`) — requirements and the domain. `openspec/specs/` — implemented behavior by capability, derived from the spec. `knowledge/` — decisions with reasons, lessons, quirks of external APIs, open questions. Don't mix them; the "where to put it" rule — `knowledge/README.md` and the `knowledge-note` skill.
 
-Корневой `README.md` — не четвёртое место, а витрина: что система делает, на каком этапе, как запустить, где что лежит. Он обязан быть актуальным и правится в том же коммите, что и описываемое: добавился или исчез пакет — карта репозитория; изменилась команда запуска или ключ конфигурации — быстрый старт.
+The spec is the file `docs/design.md`, the revision journal is `docs/design-revisions.md`: what changed and why, one section per version. The folded part of the spec carries the current requirements with version marks "(1.N)". Revisions not yet folded into it are listed in the spec header: for them the journal section is normative. Nobody reads whole files: the needed paragraph is found by headings (`grep -n '^## \|^### ' docs/design.md docs/design-revisions.md`) and read as a line range.
 
-## Рабочий процесс
+When in doubt about behavior — read the section, don't recall it.
 
-Работа идёт через OpenSpec: propose → apply → archive (в Claude Code — `/opsx:propose`, `/opsx:apply`, `/opsx:archive`; в Pi — `/opsx-propose`, `/opsx-apply`, `/opsx-archive`). Артефакты — по-русски, имена капабилити и changes — kebab-case по-английски. Правила артефактов и контекст проекта — в `openspec/config.yaml`.
+The root `README.md` is not a fourth place but a showcase: what the system does, which stage it is at, how to run it, where things live. It must stay current and is edited in the same commit as what it describes: a package added or removed — the repository map; a run command or config key changed — the quick start.
 
-Один этап — несколько changes. Имя change начинается с номера этапа: `stage3-<имя>`. Этап закрыт, когда все его changes заархивированы, выполнен критерий приёмки из раздела этапов ТЗ (скилл `stage-acceptance`) и в таблице этапов `knowledge/stages.md` у него стоит «закрыт». Change следующего этапа не начинается раньше — и не начинается до груминга открытых вопросов (скилл `stage-grooming`, список печатает `knowledge/due.sh`).
+## Workflow
 
-Требования, которого нет в ТЗ, в proposal быть не может. Не хватает — останови работу и спроси.
+Work goes through OpenSpec: propose → apply → archive. Use `/opsx:propose`, `/opsx:apply`, and `/opsx:archive` in Claude Code, `/opsx-propose`, `/opsx-apply`, and `/opsx-archive` in Pi, or `$openspec-propose`, `$openspec-apply-change`, and `$openspec-archive-change` in Codex. Capability and change names are kebab-case in English. Artifact rules and project context are in `openspec/config.yaml`.
 
-Разделение с superpowers: **OpenSpec владеет тем, что записано, superpowers — тем, как работаем.**
+One stage — several changes. A change name starts with the stage number: `stage3-<name>`. A stage is closed when all its changes are archived, the acceptance criterion from the spec's stages section is met (the `stage-acceptance` skill), and the stage table `knowledge/stages.md` shows it as `closed`. A change of the next stage does not start before that — and does not start before grooming of open questions (the `stage-grooming` skill, the list is printed by `knowledge/due.sh`).
 
-- До propose — `brainstorming`, чтобы proposal не был выдуман. Его терминальный шаг («вызови `writing-plans`») здесь читается как «перейди к propose»; для обвязки — как «изложи план в чате и запиши решение в `knowledge/decisions.md`».
-- На багах — `systematic-debugging`. TDD — правило исполнителей, записанное в их промптах.
-- От готового кода до PR и уборка после слияния — скилл `change-finish`: полный прогон проверок, ревьюеры, архивация, PR. Он и есть проверка перед завершением; `verification-before-completion`, `requesting-code-review`, `finishing-a-development-branch` отдельно не зовутся.
-- `writing-plans` и `executing-plans` не используются: план живёт в `openspec/changes/<name>/tasks.md`, второго плана не заводим.
-- Запись в `knowledge/` — скилл `knowledge-note`.
+A requirement that is not in the spec cannot be in a proposal. If something is missing — stop and ask.
 
-**Обвязка живёт вне OpenSpec.** Скиллы, субагенты, хуки, lefthook, CI, `knowledge/` и `CLAUDE.md` не проходят через OpenSpec: ТЗ про обвязку молчит, и proposal на неё невозможен по правилам самого процесса. Обвязка правится напрямую, в своём рабочем дереве; решения записываются в `knowledge/decisions.md`.
+The split with superpowers: **OpenSpec owns what is written down, superpowers owns how we work.**
 
-### Своё дерево на сессию
+- Before propose — `brainstorming`, so the proposal is not made up. Its terminal step ("invoke `writing-plans`") reads here as "move on to propose"; for the harness — as "lay out the plan in chat and record the decision in `knowledge/decisions.md`".
+- On bugs — `systematic-debugging`. TDD is an executor rule, written in their prompts.
+- From finished code to PR and cleanup after merge — the `change-finish` skill: full check run, reviewers, archiving, PR. It is the pre-completion check; `verification-before-completion`, `requesting-code-review`, `finishing-a-development-branch` are not invoked separately.
+- `writing-plans` and `executing-plans` are not used: the plan lives in `openspec/changes/<name>/tasks.md`, we don't keep a second plan.
+- Writing to `knowledge/` — the `knowledge-note` skill.
 
-Сессия, которая правит файлы, работает в отдельном git worktree, а не в общем каталоге: индекс и рабочее дерево общие на каталог, и коммит одной сессии уносит файлы другой. Одно дерево на change или на PR обвязки.
+**The harness lives outside OpenSpec.** Skills, subagents, hooks, lefthook, CI, `knowledge/`, `AGENTS.md` and `CLAUDE.md` do not go through OpenSpec: the spec says nothing about the harness, and a proposal for it is impossible under the process's own rules. The harness is edited directly, in its own worktree; decisions are recorded in `knowledge/decisions.md`.
 
-Деревья заводит Orca. Главная сессия — куратор в основном каталоге и файлов там не правит; батч правок уходит в дочернее дерево с исполнителем под надзором: `orca worktree create` → `orca orchestration worker-start` → `check` → приёмка → `orca worktree rm`. Команды и ловушки — скиллы `orca-cli` и `orchestration` (их ставит сама Orca). Дерево без запущенного исполнителя не оставляется. Каталог, из которого стартовала сессия, не сносится: от него резолвятся хуки.
+### A worktree per session
 
-Работа в один поток без других сессий допускает общий каталог, но перед коммитом всё равно `git status` и файлы поимённо. Хук начала сессии докладывает, где сессия работает и какие деревья заняты; в общем каталоге валовая постановка в индекс (`git add -A`, `git add .`, `git commit -a`) отклоняется хуком.
+A session that edits files works in a separate git worktree, not in the shared directory: the index and the working tree are shared per directory, and one session's commit carries away another's files. One worktree per change or per harness PR.
 
-### Generated не править руками
+Worktrees are created by Orca. The main session is a curator in the main directory and edits no files there; a batch of edits goes to a child worktree with a supervised executor: `orca worktree create` → `orca orchestration worker-start` → `check` → acceptance → `orca worktree rm`. One task or batch of edits — one worktree, a child of the main directory: `orca worktree create --parent-worktree path:<main directory>`, without `--no-parent`. That way Orca shows whose work it is and which task it belongs to. Commands and pitfalls — the `orca-cli` and `orchestration` skills (Orca installs them itself). A worktree is not left without a running executor, and the empty terminal that `orca worktree create` opens by itself is closed after the executor starts. The directory the session started from is not removed: hooks resolve from it.
 
-Только соответствующей командой:
+Single-threaded work without other sessions may use the shared directory, but before a commit still run `git status` and stage files by name. The session start hook reports where the session works and which worktrees are taken; in the shared directory bulk staging (`git add -A`, `git add .`, `git commit -a`) is rejected by a hook.
+
+### Don't edit generated files by hand
+
+Only with the corresponding command:
 
 - `target/**`, `Cargo.lock` — cargo;
-- `.claude/commands/opsx/**`, `.claude/skills/openspec-*/**`, `.pi/prompts/opsx-*`, `.pi/skills/openspec-*/**` — `openspec update`;
-- блоки между метками `<!-- … -->` в документах `knowledge/` — скрипты `knowledge/`;
-- `.rootstock.toml` и управляемые файлы шаблона — `rootstock update`;
-- проектные generated — по таблице «Источники правды» корневого `CLAUDE.md`.
+- `.claude/commands/opsx/**`, `.claude/skills/openspec-*/**`, `.pi/prompts/opsx-*`, `.pi/skills/openspec-*/**`, `.agents/skills/openspec-*/**` — `openspec update`;
+- blocks between `<!-- … -->` markers in `knowledge/` documents — the `knowledge/` scripts;
+- `.rootstock.toml` and managed template files — `rootstock update`;
+- project generated files — per the "Sources of truth" table in the root `AGENTS.md`.
 
-### Правка файлов
+### Editing files
 
-Правь файлы инструментами правки агента (в Claude Code — Write и Edit, в Pi — `write` и `edit`), не оболочкой. На правку висит обвязка: форматирование, проверки по затронутому пакету, напоминание процедуры при касании контракта. Правка через `sed -i`, heredoc или перенаправление не запускает ничего из этого. Оболочка остаётся для команд.
+Edit files with the client's edit tools: Write and Edit in Claude Code, `write` and `edit` in Pi, or `apply_patch` in Codex. These edits trigger formatting, checks for the touched package, and a procedure reminder when a contract is touched. Use the shell for running commands.
 
-## Команды
+## Commands
 
-Пакетные менеджеры — `cargo` для Rust. Без обёрток и Makefile.
+Package managers — `cargo` for Rust. No wrappers or Makefile.
 
 ```
 # Rust
@@ -65,49 +69,50 @@ cargo fmt --check
 cargo run
 ```
 
-Проектные команды (база, запуск сервисов, генерация) — в корневом `CLAUDE.md`.
+Project commands (database, running services, generation) — in the root `AGENTS.md`.
 
-## Порядок работы
+## Order of work
 
-Реализуй строго по этапам из раздела этапов ТЗ. Не начинай следующий этап, пока текущий не проходит критерий приёмки. После каждого этапа — краткий отчёт: что сделано, что отклонилось от ТЗ и почему, что не удалось проверить без живых данных.
+Implement strictly stage by stage from the spec's stages section. Don't start the next stage until the current one passes its acceptance criterion. After each stage — a short report: what was done, what deviated from the spec and why, what could not be checked without live data.
 
-## Коммиты
+## Commits
 
-- Коммит на завершённый шаг, а не на каждый файл. Префикс — пакет или область (`<пакет>:`, `chore:`, `docs:`); список префиксов — проектный.
-- Заголовок PR называет change или задачу обвязки.
-- Коммит завершённого этапа несёт краткий отчёт в теле.
-- Проверки: на каждую правку — хуки агента; перед PR — полный прогон в главной сессии (`change-finish`); после — зелёный CI. Pre-push тяжёлого не гоняет.
-- `.env`, секреты и локальные конфиги не коммитятся никогда. Строки подключения и токены живут в окружении или локальном конфиге, но не в дефолтах.
+- A commit per completed step, not per file. The prefix is a package or area (`<package>:`, `chore:`, `docs:`); the list of prefixes is project-specific.
+- A PR title names the change or the harness task.
+- The commit of a completed stage carries a short report in its body.
+- Checks: on every edit — agent hooks; before a PR — a full run in the main session (`change-finish`); after — green CI. Pre-push runs nothing heavy.
+- `.env`, secrets and local configs are never committed. Connection strings and tokens live in the environment or a local config, but not in defaults.
 
-## Правила кода
+## Code rules
 
-- **Идентификаторы — английские слова.** Имена функций, переменных, полей, типов, тестов и констант пишутся по-английски, без транслита. Комментарии, doc-комментарии, сообщения ошибок и текст журнала остаются русскими.
-- Все пороги, зоны, окна и таймауты — только через конфиг с дефолтами из ТЗ. Никаких магических чисел в коде.
-- Все таймстемпы — UTC.
+- **Identifiers are English words.** Names of functions, variables, fields, types, tests and constants are written in English, without transliteration.
+- All thresholds, zones, windows and timeouts — only via config with defaults from the spec. No magic numbers in code.
+- All timestamps are UTC.
 - Rust stable, edition 2024.
-- В Rust: `tracing` для логов, `println!` запрещён везде; `unwrap()`, `expect()`, `unsafe` вне тестов запрещены; блокирующие вызовы в async-контексте запрещены.
+- In Rust: `tracing` for logs, `println!` is forbidden everywhere; `unwrap()`, `expect()`, `unsafe` outside tests are forbidden; blocking calls in an async context are forbidden.
 
-## Чего не делать
+## What not to do
 
-- Не придумывай требований, метрик и полей таблиц — если чего-то не хватает, опиши в отчёте и спроси.
-- Не вводи ORM.
-- Не используй `unsafe`, `unwrap()` вне тестов, блокирующие вызовы в async-контексте.
-- Не правь управляемые файлы шаблона в проекте: своё — в точки расширения (ниже), общее — PR в harness (скилл `harness-upstream`).
-- Не пиши длинных пояснений в чате — код, тесты и краткий отчёт.
+- Don't invent requirements, metrics or table fields — if something is missing, describe it in the report and ask.
+- Don't introduce an ORM.
+- Don't use `unsafe`, `unwrap()` outside tests, or blocking calls in an async context.
+- Don't edit managed template files in the project: your own — into extension points (below), shared — a PR to harness (the `harness-upstream` skill).
+- Don't write long explanations in chat — code, tests and a short report.
 
-## Обвязка репозитория
+## Repository harness
 
-- **Скиллы:** `change-finish`, `contract-change`, `harness-upstream`, `knowledge-note`, `stage-acceptance`, `stage-grooming`. Когда какой — в их описаниях. Свои скиллы проекта лежат рядом под своими именами.
-- **Субагенты:** исполнитель `rust-developer` — Sonnet; ревьюеры `rust-reviewer`, `spec-auditor` — Opus. Исполнители скиллы не вызывают, а читают файлом: путь назван в их промпте. В Claude Code агенты лежат в `.claude/agents/`, в Pi — в `.pi/agents/` и запускаются расширением `pi-subagents`; промпт у них общий.
-- **Дополнения агентов:** `.harness/local/agents/<имя>.md` — домен, инварианты, проектные скиллы для агента `<имя>`; агент читает его до начала работы, и при расхождении дополнение сильнее общего промпта. Каталог `.harness/local/` — проектный; что в нём лежит — его README.
-- **Хуки** живут в `.harness/hooks/` и вызываются одним диспетчером на событие из настроек агента (в Claude Code — `.claude/settings.json`, в Pi — расширение `.pi/extensions/harness.ts`): на правку — форматирование и проверки по пакету, на команду — охрана общего каталога, на старте и выходе — доклад о дереве и хвостах. Проектные хуки — `.harness/local/hooks/<слот>/`, контракт в `.harness/hooks/README.md`.
-- **Git-хуки (lefthook):** pre-commit — форматирование staged-файлов, секреты, перенос закрытых вопросов в архив; pre-push — только редкие проверки инвариантов. Полные проверки — в CI.
-- **OpenSpec:** propose/apply/archive, конфигурация в `openspec/config.yaml`, состояние — `openspec list`, `openspec status`.
+- **Skills:** `change-finish`, `contract-change`, `harness-upstream`, `knowledge-note`, `stage-acceptance`, `stage-grooming`. Which one when — in their descriptions. The project's own skills sit next to them under their own names.
+- **Subagents:** executor `rust-developer`; reviewers `rust-reviewer`, `spec-auditor`. Executors read the skills named in their prompts. The prompts are shared across Claude Code (`.claude/agents/`), Pi (`.pi/agents/`, through the `pi-subagents` extension), and Codex (`.codex/agents/`). Codex inherits the parent session's model.
+- **Agent addenda:** `.harness/local/agents/<name>.md` — domain, invariants, project skills for the agent `<name>`; the agent reads it before starting work, and on conflict the addendum wins over the shared prompt. The `.harness/local/` directory belongs to the project; what lives there — its README.
+- **Skill addenda:** `.harness/local/skills/<skill>.md` — the project's own additions to a template skill: who merges PRs, who is who in the tracker, how to check a rollout, and other rules the skill calls a "project rule". The skill reads it as its first step, and on conflict the addendum wins over the shared text.
+- **Hooks** live in `.harness/hooks/` and are called by one dispatcher per event from `.claude/settings.json`, the `.pi/extensions/harness.ts` extension, and `.codex/hooks.json`. They run formatting and package checks on edit, guard the shared directory on shell commands, and report worktree status at startup and exit. An executor (`*-developer`) with failing rustfmt or clippy checks gets the error output and one chance to retry before handing in its report. Put project hooks in `.harness/local/hooks/<slot>/`. The contract is in `.harness/hooks/README.md`.
+- **Git hooks (lefthook):** pre-commit — formatting staged files, secrets, moving closed questions to the archive and document tables of contents via the project's `knowledge/index.sh`, if it exists; pre-push — only rare invariant checks. Full checks — in CI.
+- **OpenSpec:** propose/apply/archive, configuration in `openspec/config.yaml`, state — `openspec list`, `openspec status`.
 
-### Разделение головы и рук
+### Head and hands split
 
-Решения принимаются в главной сессии, руками работают исполнители. Задача исполнителю самодостаточна: пункт `tasks.md`, файлы, которые он трогает, принятое решение и критерий готовности. «Разберись и сделай» исполнителю не отдаётся — это решение, и оно твоё.
+Decisions are made in the main session, executors do the handwork. A task for an executor is self-contained: the `tasks.md` item, the files it touches, the decision made, and the done criterion. "Figure it out and do it" is not handed to an executor — that is a decision, and it is yours.
 
-В главной сессии остаются: чтение и трактовка ТЗ, выбор между вариантами реализации, любое изменение контракта (`contract-change`), правка `openspec/changes/<name>/`, коммиты и приёмка этапа.
+The main session keeps: reading and interpreting the spec, choosing between implementation options, any contract change (`contract-change`), editing `openspec/changes/<name>/`, commits and stage acceptance.
 
-Исполнитель, который вернул вопрос вместо кода, отработал правильно. Ответь на вопрос и перезапусти его — не переформулируй задачу так, чтобы он «просто выбрал сам».
+An executor that returned a question instead of code did the right thing. Answer the question and rerun it — don't rephrase the task so that it "just picks itself".

@@ -1,39 +1,38 @@
 #!/usr/bin/env bash
-# Третий предохранитель асинхронных проверок: вердикт, устаревший к моменту
-# готовности, не будит.
+# The third fuse of the asynchronous checks: a verdict that is stale by the time
+# it is ready doesn't wake anyone.
 #
-# Замок и подпись ошибки (`rust-clippy.sh`) гасят повтор одной причины, но
-# против правки-рефакторинга бессильны: там причина на каждом шаге НОВАЯ —
-# переименовал тип, и сломано по очереди то одно место вызова, то другое.
-# Подпись честно меняется и честно будит, и за одну правку экрана сессия
-# получала два десятка пробуждений подряд, из которых ни одно не было
-# о состоянии, лежащем на диске.
+# The lock and the error signature (`rust-clippy.sh`) suppress a repeat of the
+# same cause, but are powerless against a refactoring edit: there the cause is NEW
+# at every step — rename a type, and one call site breaks after another.
+# The signature honestly changes and honestly wakes, and for one screen of edits
+# the session got two dozen wake-ups in a row, none of which was about the state
+# on disk.
 #
-# Суть не в частоте, а в адресе: асинхронная проверка считает секунды (`tsc`)
-# или минуты (`clippy`), а пачка правок за это время уходит вперёд. Разбудить
-# текстом о состоянии, которого уже нет, — не доклад, а шум: исправлять в нём
-# нечего. Промежуточное красное состояние TDD-рефакторинга красно по построению,
-# и чинит его тот, кто его создал.
+# The point is not frequency but address: an asynchronous check takes seconds
+# (`tsc`) or minutes (`clippy`), and a batch of edits moves ahead meanwhile. Waking
+# with text about a state that no longer exists is not a report but noise: there
+# is nothing in it to fix. An intermediate red state of a TDD refactoring is red
+# by construction, and whoever created it fixes it.
 #
-# Умолчать насовсем предохранитель не может: пока правки идут, каждая запускает
-# проверку заново, а у последней правки пачки следующей уже нет — её вердикт
-# свежий, и она докладывает. То есть молчание длится ровно столько, сколько
-# длится пачка.
+# The fuse can't stay silent forever: while edits continue, each one restarts
+# the check, and the last edit of the batch has no next one — its verdict is
+# fresh, and it reports. So the silence lasts exactly as long as the batch.
 
-# stale_marker — печатает путь к свежесозданной метке времени начала проверки.
-# Пустая строка означает, что метку завести не удалось; вызывающий тогда
-# работает по-старому, без предохранителя, а не молчит.
+# stale_marker — prints the path to a freshly created check-start timestamp.
+# An empty string means the marker couldn't be created; the caller then works
+# the old way, without the fuse, rather than staying silent.
 stale_marker() {
   mktemp "${TMPDIR:-/tmp}/harness-hook-mark.XXXXXX" 2>/dev/null || printf ''
 }
 
-# stale_since <метка> <каталог> [файл-исключение] — код 0, если в каталоге
-# появился файл новее метки, то есть дерево ушло вперёд, пока проверка считала.
+# stale_since <marker> <dir> [excluded-file] — exit 0 if a file newer than the
+# marker appeared in the directory, i.e. the worktree moved on while the check ran.
 #
-# Файл-исключение — тот, чья правка и вызвала хук: синхронные `rust-fmt.sh`
-# и `js-fmt.sh` переписывают ровно его и могут успеть сделать это после метки.
-# Без исключения такая гонка читалась бы как чужая правка, и хук молчал бы
-# там, где обязан говорить.
+# The excluded file is the one whose edit triggered the hook: the synchronous
+# `rust-fmt.sh` and `js-fmt.sh` rewrite exactly it and may do so after the marker.
+# Without the exclusion such a race would read as someone else's edit, and the
+# hook would stay silent where it must speak.
 stale_since() {
   local mark=$1 dir=$2 skip=${3:-} found
   [ -n "$mark" ] && [ -f "$mark" ] || return 1
@@ -48,7 +47,7 @@ stale_since() {
   [ -n "$found" ]
 }
 
-# stale_drop <метка> — убирает метку. Зовётся из trap, молча.
+# stale_drop <marker> — removes the marker. Called from trap, silently.
 stale_drop() {
   [ -n "${1:-}" ] && rm -f "$1" 2>/dev/null
   return 0

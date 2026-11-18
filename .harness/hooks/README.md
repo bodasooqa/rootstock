@@ -1,88 +1,111 @@
-# Хуки обвязки
+# Harness hooks
 
-Управляемый каталог: обновляется шаблоном у всех проектов, руками не правится. Свои хуки проект кладёт в `.harness/local/hooks/<слот>/`.
+A managed directory: updated by the template in all projects, not edited by hand. The project puts its own hooks in `.harness/local/hooks/<slot>/`.
 
-Агент зовёт не хуки по одному, а диспетчер: `dispatch.sh <слот>` с событием JSON на stdin. В Claude Code проводка — в `.claude/settings.json`; прослойка другого агента зовёт тот же диспетчер с тем же входом.
+The agent doesn't call hooks one by one but a dispatcher: `dispatch.sh <slot>` with the event JSON on stdin. In Claude Code the wiring is in `.claude/settings.json`; another agent's shim calls the same dispatcher with the same input.
 
-## Слоты
+## Codex adapter
 
-| Слот | Событие Claude Code | Общие хуки по порядку |
+Codex loads `.codex/hooks.json` after the project and its hooks are trusted. Bash events and executor `SubagentStop` events use the dispatcher contract directly. The adapter reads the file directives in an `apply_patch` event, runs the edit slots for each affected path, and returns one response. It runs the `post-edit-async` slot synchronously and translates its stderr notification into tool-response context. The `pre-handback` slot is specific to Claude Code.
+
+## Slots
+
+| Slot | Claude Code event | Shared hooks in order |
 |---|---|---|
-| `session-start` | `SessionStart` | `session-tree` — где работает сессия, чужие деревья, сломанные git-хуки, просроченные вопросы, хвосты |
-| `session-end` | `SessionEnd` | `session-leftovers` — хвосты сессии человеку на выходе |
-| `prompt` | `UserPromptSubmit` | `knowledge-due` — открытые вопросы с наступившим сроком перед `/opsx:propose` |
-| `pre-bash` | `PreToolUse`, `Bash` | `guard-staging` — отказ валовой постановки в индекс в общем каталоге |
-| `post-bash` | `PostToolUse`, `Bash` | `bash-edit` — напоминание, что файл правился командой оболочки |
-| `post-edit` | `PostToolUse`, `Write\|Edit`, синхронный | `rust-fmt` (модуль rust), `js-fmt` (модуль frontend) |
-| `post-edit-async` | `PostToolUse`, `Write\|Edit`, `async` + `asyncRewake` | `rust-clippy` (модуль rust), `js-typecheck` (модуль frontend) |
+| `session-start` | `SessionStart` | `session-tree` — where the session works, other sessions' worktrees, broken git hooks, overdue questions, leftovers |
+| `session-end` | `SessionEnd` | `session-leftovers` — session leftovers to the human on exit |
+| `prompt` | `UserPromptSubmit` | `knowledge-due` — open questions that are due, before `/opsx:propose` |
+| `pre-bash` | `PreToolUse`, `Bash` | `guard-staging` — rejects bulk staging in the shared directory |
+| `post-bash` | `PostToolUse`, `Bash` | `bash-edit` — a reminder that a file was edited by a shell command |
+| `post-edit` | `PostToolUse`, `Write\|Edit`, synchronous | `rust-fmt` (rust module), `js-fmt` (frontend module) |
+| `post-edit-async` | `PostToolUse`, `Write\|Edit`, `async` + `asyncRewake` | `rust-clippy` (rust module), `js-typecheck` (frontend module) |
+| `subagent-stop` | `SubagentStop`, `*-developer` agents | `agent-checks` — an executor does not finish while rustfmt, clippy (rust module) and tsc (frontend module) are red for the touched packages |
+| `pre-handback` | `PreToolUse`, `SubagentHandback` | `agent-checks` — the same for an executor's report in auto mode |
 
-Модульный хук, которого в проекте нет, пропускается. После общих хуков слота идут `.harness/local/hooks/<слот>/*.sh` по алфавиту (сортировка байтовая, `LC_ALL=C`).
+A module hook that the project doesn't have is skipped. After a slot's shared hooks come `.harness/local/hooks/<slot>/*.sh` in alphabetical order (byte sort, `LC_ALL=C`).
 
-## Контракт хука
+### Executor checks
 
-**Вход.** Событие JSON на stdin, в форме Claude Code. Хуки читают из него:
+Asynchronous checks don't wake a subagent on its edits: the executor follows TDD, and red between its edits is a normal step. The check sits at the exit — `agent-checks.sh`:
 
-- `tool_input.command` — команда (`pre-bash`, `post-bash`);
-- `tool_input.file_path`, `tool_response.filePath` — записанный файл (`post-edit`, `post-edit-async`);
-- `prompt` — текст сообщения (`prompt`);
-- `agent_id` — есть только в событиях субагента.
+- **Who.** An executor is an agent named `*-developer` (`rust-developer`, `frontend-developer` and project executors of the same kind). Reviewers, built-in agents and the main session are not checked. In Claude Code the `subagent-stop` slot's `matcher` also filters: Claude Code's internal agents (input suggestions, `/btw`) also send `SubagentStop`, and without filtering the dispatcher would run on every turn.
+- **What.** Files changed in the worktree relative to HEAD, plus untracked ones, mapped to crates and packages: `rustfmt --check` on changed `.rs`, clippy per crate, `tsc --noEmit` per package — the same commands and the same path resolution as `rust-clippy` and `js-typecheck` (`lib/rust-crate.sh`, `lib/js-package.sh`). Nothing changed — the hook is silent.
+- **Response.** Red — a refusal with a reason: what to do and condensed check output (up to 30 lines per check, up to 90 per reason). On `SubagentStop` — `decision: "block"`: the agent continues working with the reason as its next instruction. On `SubagentHandback` — `permissionDecision: "deny"`: the report doesn't go out, the agent gets the reason.
+- **Once.** `stop_hook_active` in the `SubagentStop` input — the agent is already continuing after a refusal, and the hook is silent. A `SubagentHandback` report is refused once per agent: a marker in the worktree's git directory, `harness/agent-checks/<agent_id>`. Claude Code asks the agent to retry a refused report up to three times, then finishes it without a report — so the second report goes through. Stopping an agent whose report was already checked doesn't repeat the checks.
+- **Why `pre-handback`.** In auto mode a subagent hands in its report with the `SubagentHandback` tool before stopping (Claude Code 2.1.271+), and `SubagentStop` happens when the report is already with the main session. The report is what must be held. Without auto mode the report is the agent's last message, and `subagent-stop` holds it.
 
-Рабочий каталог — каталог сессии. Корень проекта — `$CLAUDE_PROJECT_DIR`, если задан, иначе `git rev-parse --show-toplevel`.
+The template doesn't wire `Stop` (end of a main session turn): the main session's edits are checked by `post-edit-async` with rewake, before a PR — a full run, and a check on every turn would cost time. An executor running as a separate session rather than a subagent gets `Stop`, not `SubagentStop`. A reliable sign of such a session in Claude Code is `agent_type` in the input, if the session was started with `claude --agent <executor>`; an orchestrator that runs an executor as a regular session gives no such sign. A project that runs executors via `--agent` needs one line in `.claude/settings.json` or `.claude/settings.local.json`: event `Stop` → `dispatch.sh subagent-stop` — the hook picks out the executor by `agent_type` itself.
 
-**Выход.**
+## Hook contract
 
-- Код 0 и пустой stdout — хуку нечего сказать.
-- Код 0 и JSON в stdout — ответ агенту в форме Claude Code: `hookSpecificOutput.additionalContext` (контекст модели) или отказ — `hookSpecificOutput.permissionDecision: "deny"` с причиной в `permissionDecisionReason`, `decision: "block"`, `continue: false`.
-- Код 0 и простой текст в stdout — контекст модели на `session-start` и `prompt`; на остальных слотах агент показывает его только в подробном журнале.
-- Код 2 — блок (`pre-bash`) или пробуждение модели (`post-edit-async`); текст для модели — в stderr.
-- Прочий код — ошибка хука, а не отказ: stderr уходит человеку, работа продолжается.
+**Input.** The event JSON on stdin, in Claude Code form. Hooks read from it:
 
-**Охрана.** Охранные хуки (`pre-bash`) защищают от ошибки, а не от злонамеренного агента: полного разбора bash в них нет, и при сомнении в разборе (heredoc, кавычки, арифметика — `lib/bash-scan.sh`) команда проверяется целиком.
+- `tool_input.command` — the command (`pre-bash`, `post-bash`);
+- `tool_input.file_path`, `tool_response.filePath` — the written file (`post-edit`, `post-edit-async`);
+- `prompt` — the message text (`prompt`);
+- `agent_id` — present only in subagent events;
+- `agent_type` — the agent name: of a subagent or of a session started with `--agent`;
+- `hook_event_name`, `stop_hook_active`, `tool_name`, `cwd` — which event, whether the agent is already continuing after a stop refusal, which tool, the agent's directory (`subagent-stop`, `pre-handback`).
 
-## Сведение вывода
+The working directory is the session's directory. The project root is `$CLAUDE_PROJECT_DIR` if set, otherwise `git rev-parse --show-toplevel`.
 
-Агент разбирает один JSON на вызов, а у слота хуков несколько. Диспетчер сводит их выводы:
+**Output.**
 
-1. Код 2 останавливает слот: следующие хуки не запускаются, stderr хука уходит наверх, диспетчер выходит с кодом 2.
-2. Отказ (`deny`, `block`, `continue: false`) останавливает слот: наружу уходит ровно этот JSON, контекст предыдущих хуков отбрасывается.
-3. `additionalContext` всех хуков склеивается через пустую строку в один JSON; простой текст хуков идёт в тот же контекст. `hookEventName` берётся у хука, а если его нет — по слоту. Прочие поля JSON сливаются (у одинаковых ключей побеждает позднейший хук).
-4. Если JSON не было ни у одного хука, простой текст печатается как есть, строка за строкой.
-5. stderr хука с кодом 0 или с ошибкой уходит наверх. Код выхода диспетчера при ошибке хука — 1, если сводного JSON нет, и 0, если есть: агент не разбирает JSON при ненулевом коде.
+- Exit 0 and empty stdout — the hook has nothing to say.
+- Exit 0 and JSON on stdout — a response to the agent in Claude Code form: `hookSpecificOutput.additionalContext` (model context) or a refusal — `hookSpecificOutput.permissionDecision: "deny"` with the reason in `permissionDecisionReason`, `decision: "block"` with the reason in `reason` (on `subagent-stop` — the agent doesn't finish and gets the reason as its next instruction), `continue: false`.
+- Exit 0 and plain text on stdout — model context on `session-start` and `prompt`; on other slots the agent shows it only in the verbose log.
+- Exit 2 — a block (`pre-bash`) or a model rewake (`post-edit-async`); text for the model goes to stderr.
+- Any other code — a hook error, not a refusal: stderr goes to the human, work continues.
 
-## Хуки проекта
+**Guarding.** Guard hooks (`pre-bash`) protect against mistakes, not against a malicious agent: they have no full bash parser, and when the parse is in doubt (heredoc, quotes, arithmetic — `lib/bash-scan.sh`) the whole command is checked.
 
-`.harness/local/hooks/<слот>/<имя>.sh` — исполняемый скрипт с тем же контрактом. Порядок между своими хуками задаётся именем (`10-first.sh`, `20-second.sh`). Хук без права на исполнение пропускается с предупреждением в stderr, как у git-хуков: снятие `chmod +x` выключает хук, не удаляя его.
+## Merging output
 
-## Прослойка Pi
+The agent parses one JSON per call, but a slot has several hooks. The dispatcher merges their output:
 
-В Pi проводку держит расширение `.pi/extensions/harness.ts` (управляемое). Pi подключает его сам: расширения из `.pi/extensions/` проекта грузятся при старте, если проекту выдано доверие (`pi` спросит один раз; в режиме `pi -p` — флаг `--approve`). Pi запускается из корня проекта: каталог `.pi/` ищется только в рабочем каталоге.
+1. Exit 2 stops the slot: the following hooks don't run, the hook's stderr goes up, the dispatcher exits with code 2.
+2. A refusal (`deny`, `block`, `continue: false`) stops the slot: exactly that JSON goes out, the context of earlier hooks is dropped.
+3. `additionalContext` of all hooks is joined with a blank line into one JSON; plain text of hooks goes into the same context. `hookEventName` is taken from the hook, or if absent — from the slot. Other JSON fields are merged (for identical keys the later hook wins).
+4. If no hook produced JSON, plain text is printed as is, line by line.
+5. A hook's stderr with exit 0 or with an error goes up. The dispatcher's exit code on a hook error is 1 if there is no merged JSON, and 0 if there is: the agent doesn't parse JSON on a non-zero code.
 
-Прослойка переводит события Pi в слоты, вход — в форме Claude Code, с `CLAUDE_PROJECT_DIR` на корень проекта; имена инструментов — как у Claude Code (`bash` → `Bash`, `edit` → `Edit`, `write` → `Write`):
+## Project hooks
 
-| Событие Pi | Слот | Что с ответом |
+`.harness/local/hooks/<slot>/<name>.sh` — an executable script with the same contract. Order among your own hooks is set by name (`10-first.sh`, `20-second.sh`). A hook without the execute bit is skipped with a warning on stderr, like git hooks: removing `chmod +x` disables a hook without deleting it.
+
+## Pi shim
+
+In Pi the wiring is held by the `.pi/extensions/harness.ts` extension (managed). Pi loads it by itself: extensions from the project's `.pi/extensions/` are loaded at start if the project is trusted (`pi` asks once; in `pi -p` mode — the `--approve` flag). Pi is started from the project root: the `.pi/` directory is looked up only in the working directory.
+
+The shim translates Pi events into slots, the input in Claude Code form, with `CLAUDE_PROJECT_DIR` set to the project root; tool names as in Claude Code (`bash` → `Bash`, `edit` → `Edit`, `write` → `Write`):
+
+| Pi event | Slot | What happens to the response |
 |---|---|---|
-| `session_start` | `session-start` | контекст приходит модели сообщением перед первым ходом |
-| `session_shutdown` | `session-end` | вывод — человеку |
-| `input` | `prompt` | отказ — сообщение не уходит модели, причина — человеку; контекст — сообщением перед ходом |
-| `tool_call`, `bash` | `pre-bash` | отказ блокирует вызов, причина уходит модели |
-| `tool_result`, `bash` | `post-bash` | контекст дописывается к результату команды |
-| `tool_result`, `edit`/`write` | `post-edit`, затем `post-edit-async` | `post-edit` — до того, как модель увидит результат; `post-edit-async` — в фоне |
+| `session_start` | `session-start` | context reaches the model as a message before the first turn |
+| `session_shutdown` | `session-end` | output — to the human |
+| `input` | `prompt` | refusal — the message doesn't reach the model, the reason goes to the human; context — as a message before the turn |
+| `tool_call`, `bash` | `pre-bash` | refusal blocks the call, the reason goes to the model |
+| `tool_result`, `bash` | `post-bash` | context is appended to the command result |
+| `tool_result`, `edit`/`write` | `post-edit`, then `post-edit-async` | `post-edit` — before the model sees the result; `post-edit-async` — in the background |
+| `agent_before_settle` of an executor child | `subagent-stop` | refusal or context — a message to the child's model and one continuation of the run (`continue: true`) |
 
-Расхождения с Claude Code:
+Differences from Claude Code:
 
-- **`post-edit-async`.** Прогон идёт в фоне, результат правки модель получает сразу. Код 2 будит модель сообщением (`sendMessage` с `triggerTurn`): в простое начинается новый ход, посреди работы текст приходит перед следующим запросом к модели. Контекст без кода 2 ждёт следующего хода. В режиме `pi -p` Pi выходит после последнего ответа и фоновый прогон не дожидается; на выходе сессии фоновые прогоны убиваются.
-- **Субагенты.** Ребёнок `pi-subagents` — сессия того же процесса с тем же расширением. Прослойка узнаёт его по метке `<active_agent name="…"/>` в системном промпте и кладёт в событие `agent_id` и `agent_type` — хуки молчат по нему так же, как в Claude Code. `session-start`, `session-end` и `prompt` у ребёнка не зовутся: у субагента Claude Code этих событий нет.
-- **Правила процесса.** Pi берёт `CLAUDE.md` как есть и импорт `@.harness/process.md` не раскрывает, а из каталога грузит один файл (`AGENTS.md` раньше `CLAUDE.md`). Прослойка добавляет в context files сессии `CLAUDE.md` корня, если его затенил `AGENTS.md`, и `.harness/process.md` — следом за ним.
-- **Разрешения.** `permissions` из `.claude/settings.json` в Pi не действуют; охрана — только хуки `pre-bash`.
+- **`subagent-stop`.** The counterpart of `SubagentStop` is `agent_before_settle` in a `pi-subagents` child session (Pi 0.87+): the last point where an extension can continue the run before the answer goes to the parent. It is called only for an executor (`*-developer`, like the `matcher` in Claude Code) and only for a completed, not aborted, run. The shim tracks `stop_hook_active` itself: true after continuing on a refusal, reset by a new child run.
+- **`pre-handback`.** Pi has no such slot: `pi-subagents` has no `SubagentHandback` tool, the child's answer is its last message, and `subagent-stop` holds it.
+- **`post-edit-async`.** The run happens in the background, the model gets the edit result right away. Exit 2 wakes the model with a message (`sendMessage` with `triggerTurn`): when idle a new turn starts, mid-work the text arrives before the next model request. Context without exit 2 waits for the next turn. In `pi -p` mode Pi exits after the last answer and doesn't wait for the background run; on session exit background runs are killed.
+- **Subagents.** A `pi-subagents` child is a session of the same process with the same extension. The shim recognizes it by the `<active_agent name="…"/>` marker in the system prompt and puts `agent_id` and `agent_type` into the event — hooks stay silent on it just as in Claude Code. `session-start`, `session-end` and `prompt` are not called for a child: a Claude Code subagent has no such events.
+- **Process rules.** The project's main rules file is `AGENTS.md`; `CLAUDE.md` next to it holds the imports `@AGENTS.md` and `@.harness/process.md` for Claude Code. Pi doesn't expand imports and loads one file from a directory (`AGENTS.md` before `CLAUDE.md`). The shim adds `.harness/process.md` to the session's context files right after the main file, and the main file too if Pi didn't take it. `CLAUDE.md` is not added when `AGENTS.md` exists, as long as it holds only imports; with its own rules (the project hasn't migrated yet, and `AGENTS.md` is a stub from a template update) it goes right after `AGENTS.md`. Without `AGENTS.md` the main file is `CLAUDE.md`, as before the migration.
+- **Permissions.** `permissions` from `.claude/settings.json` don't apply in Pi; guarding is only the `pre-bash` hooks.
 
-## Переменные
+## Variables
 
-- `HARNESS_CLIPPY` — команда вместо `cargo clippy` (тесты).
-- `HARNESS_CLIPPY_STATE` — каталог состояния `rust-clippy` (замок и подпись ошибки) вместо временного.
-- `HARNESS_TSC` — команда вместо `bunx tsc` (тесты).
+- `HARNESS_CLIPPY` — a command instead of `cargo clippy` (tests); shared by `rust-clippy` and `agent-checks`.
+- `HARNESS_CLIPPY_STATE` — the `rust-clippy` state directory (lock and error signature) instead of a temporary one.
+- `HARNESS_TSC` — a command instead of `bunx tsc` (tests); shared by `js-typecheck` and `agent-checks`.
 
-## Тесты
+## Tests
 
-`tests/run.sh` — каждый хук проверяется случаем на срабатывание и случаем на пропуск, диспетчер — порядком, остановкой, сведением вывода. Всё гоняется на синтетических репозиториях во временных каталогах. Гоняют pre-push (`.harness/lefthook.yml`) и CI (`.github/workflows/harness.yml`).
+`tests/run.sh` — each hook is checked with a firing case and a skip case, the dispatcher — by order, stopping, output merging. Everything runs on synthetic repositories in temporary directories. Run by pre-push (`.harness/lefthook.yml`) and CI (`.github/workflows/harness.yml`).
 
-`tests/pi.test.ts` — прослойка Pi: обработчики расширения зовутся с подставным API Pi, за ними работают настоящие диспетчер и хуки. Запуск — `bun test ./.harness/hooks/tests/pi.test.ts`; гоняют те же pre-push и CI.
+`tests/pi.test.ts` — the Pi shim: the extension's handlers are called with a fake Pi API, with the real dispatcher and hooks behind them. Run with `bun test ./.harness/hooks/tests/pi.test.ts`; run by the same pre-push and CI.

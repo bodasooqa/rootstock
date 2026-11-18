@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# Чей файл правится: проверки, которые исполняют код дерева (`tsc` из его
-# node_modules, `cargo` с его build.rs, макросами и rust-toolchain.toml), идут
-# только по своему репозиторию — этому дереву или соседнему дереву того же
-# репозитория. Правка файла в чужом клоне — не повод исполнять его код.
+# Whose file is being edited: checks that execute a worktree's code (`tsc` from its
+# node_modules, `cargo` with its build.rs, macros and rust-toolchain.toml) run
+# only for our own repository — this worktree or a neighbouring worktree of the
+# same repository. Editing a file in a foreign clone is no reason to run its code.
 #
-# Своё — три условия, и ни одно не спрашивает git в проверяемом каталоге:
-# его ответ задаёт сам каталог (`core.worktree` в конфиге, подложный `.git`),
-# и он назовёт корнем дерево проекта, а запуск пойдёт в чужом каталоге.
-#   - физический путь лежит в дереве из `git worktree list` проекта;
-#   - между каталогом и корнем дерева нет ни одного `.git` — иначе это
-#     вложенный клон или подложный файл git;
-#   - каталог не игнорируется в дереве (`tmp/`, `node_modules/`,
-#     распакованный чужой пакет): лежит в дереве, но проекту не принадлежит.
-# Неотслеживаемый, но не игнорируемый каталог считается своим: новый пакет
-# до первого коммита — такой же.
+# Ours means three conditions, and none of them asks git in the checked directory:
+# its answer is set by the directory itself (`core.worktree` in the config, a
+# planted `.git`), and it would name the project worktree as the root while the
+# run happens in a foreign directory.
+#   - the physical path lies in a worktree from the project's `git worktree list`;
+#   - there is no `.git` between the directory and the worktree root — otherwise
+#     it is a nested clone or a planted git file;
+#   - the directory is not ignored in the worktree (`tmp/`, `node_modules/`,
+#     an unpacked foreign package): it lies in the worktree but doesn't belong
+#     to the project.
+# An untracked but not ignored directory counts as ours: a new package before
+# its first commit looks the same.
 
-# same_repo <каталог> — успех, если каталог в зарегистрированном дереве проекта.
+# same_repo <dir> — succeeds if the directory is in a registered project worktree.
 same_repo() {
   local project=${CLAUDE_PROJECT_DIR:-$PWD} dir tree d
   dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
@@ -25,8 +27,8 @@ same_repo() {
       "$tree"/*) ;;
       *) continue ;;
     esac
-    # Деревья бывают вложены одно в другое: `.git` по пути к внешнему — это
-    # корень внутреннего, и его очередь проверки ещё придёт.
+    # Worktrees can be nested in one another: a `.git` on the way to the outer
+    # one is the root of the inner one, and its turn to be checked will come.
     d=$dir
     while [ "$d" != "$tree" ] && [ ! -e "$d/.git" ]; do
       d=${d%/*}
