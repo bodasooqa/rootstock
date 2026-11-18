@@ -3,17 +3,19 @@ name: change-finish
 description: Use when the code of an OpenSpec change is written and the change has to be brought to a finished state — verification, reviewers, archive, commit, push, PR; and, after the PR is merged, the second pass that cleans the session's worktree and branches up.
 ---
 
-# Доведение change до конца
+# Finishing a change
 
-Между «код написан» и «в `main`, и за сессией прибрано» лежит хвост, который рвётся тише всего остального: проверки прогоняет исполнитель, а не тот, кто отвечает; галочки и синхронизация спеки забываются; ветки и деревья копятся, а основной каталог отстаёт от `main` — и ни одна проверка об этом не говорит.
+First check `.harness/local/skills/change-finish.md`: if the file exists, read it before starting work. It is the project addendum — the project's own checks, its own steps before the PR, who merges the PR; where it disagrees with the text below, the addendum wins.
 
-Скилл — про один change: от готового кода до чистого дерева. Приёмка этапа — это `stage-acceptance`, она про другое и остаётся на месте.
+Between "the code is written" and "it's in `main`, and the session is cleaned up" lies a tail that breaks more quietly than anything else: checks are run by the executor rather than by whoever is accountable; checkboxes and spec sync get forgotten; branches and worktrees pile up, and the main checkout falls behind `main` — and no check says so.
 
-Два прогона: первый доводит до PR, второй — после слияния.
+This skill is about one change: from finished code to a clean worktree. Stage acceptance is `stage-acceptance`; it is about something else and stays where it is.
 
-## Прогон 1 — до PR
+Two passes: the first gets to the PR, the second runs after the merge.
 
-**1. Чистая проверка. Её гоняет главная сессия.** Это единственный локальный полный прогон: исполнитель проверяет только затронутое, а pre-push тяжёлого не запускает. После PR то же самое прогонит CI. Отчёт исполнителя доказательством не считается: разные слоты сборки дают разный результат на одном и том же дереве, и зелёный отчёт исполнителя не раз оборачивался красными тестами в главной сессии.
+## Pass 1 — before the PR
+
+**1. Clean check. The main session runs it.** This is the only full local run: the executor checks only what was affected, and pre-push doesn't run the heavy stuff. After the PR, CI will run the same. The executor's report doesn't count as proof: different build slots give different results on the same tree, and a green executor report has more than once turned into red tests in the main session.
 
 ```
 cargo clean -p rootstock
@@ -22,50 +24,50 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-Очистка — не формальность: без неё прогон может показать результат сборки, сделанной до правки.
+The clean is not a formality: without it the run may show the result of a build made before the edit.
 
-Ошибка вида «нет такого поля» или «трейт не реализован» там, где всё на месте, означает не дефект, а чужую сборку: каталог сборки делит с этим деревом кто-то ещё. Проверяется одной командой — тот же прогон с `CARGO_TARGET_DIR` в свой каталог; если он зелёный, чинить надо настройку, а не код.
+An error like "no such field" or "trait not implemented" where everything is in place means not a defect but someone else's build: someone else shares the build directory with this worktree. One command checks it — the same run with `CARGO_TARGET_DIR` pointing to its own directory; if that is green, fix the setup, not the code.
 
-**2. Ревьюеры.** Запусти субагентов-ревьюеров: `rust-reviewer` — на Rust-часть; `spec-auditor` — если менялось поведение продукта. Замечание либо исправлено, либо названо отклонением с причиной; молча не отбрасывается ни одно.
+**2. Reviewers.** Run the reviewer subagents: `rust-reviewer` — on the Rust part; `spec-auditor` — if product behavior changed. Each finding is either fixed or named as a deviation with a reason; none is silently dropped.
 
-Ревьюер, нашедший регрессию, тем самым отменяет пункт 1: после правок проверки гоняются заново, целиком.
+A reviewer that finds a regression thereby cancels step 1: after the fixes, the checks are rerun in full.
 
-**3. Хвосты самого change'а.**
+**3. The change's own loose ends.**
 
-- галочки в `openspec/changes/<name>/tasks.md` проставлены по факту, а не по намерению;
-- дельта-спека синхронизирована с `openspec/specs/` (команда OpenSpec sync), `openspec validate --specs` и `openspec validate <name> --strict` зелёные;
-- открытые вопросы, которые change закрыл, закрыты, решения и найденные дефекты записаны — скилл `knowledge-note` (решения — в `knowledge/decisions.md`, уроки — в `knowledge/lessons.md`);
-- `knowledge/due.sh --overdue` зелёный.
+- checkboxes in `openspec/changes/<name>/tasks.md` are ticked by fact, not by intention;
+- the delta spec is synced with `openspec/specs/` (the OpenSpec sync command), `openspec validate --specs` and `openspec validate <name> --strict` are green;
+- open questions the change resolved are closed, decisions and defects found are recorded — the `knowledge-note` skill (decisions — in `knowledge/decisions.md`, lessons — in `knowledge/lessons.md`);
+- `knowledge/due.sh --overdue` is green.
 
-**4. Архивация** — команда OpenSpec archive.
+**4. Archive** — the OpenSpec archive command.
 
-**5. Расхождение с `main` разрешается до PR.** `git fetch origin --prune`, затем `git merge-tree --write-tree origin/main HEAD` — проигрывает слияние вхолостую и называет файлы, которые разойдутся. Пусто — идём дальше. Не пусто — подтягиваем `main` **слиянием, а не ребейзом**: ребейз заставляет резолвить один и тот же конфликт по разу на каждый свой коммит, а в `main` ветка всё равно уедет squash'ем.
+**5. Divergence from `main` is resolved before the PR.** `git fetch origin --prune`, then `git merge-tree --write-tree origin/main HEAD` — it plays the merge dry and names the files that will conflict. Empty — move on. Not empty — bring in `main` **by merge, not rebase**: a rebase makes you resolve the same conflict once per each of your commits, and the branch will land in `main` as a squash anyway.
 
-После разбора — обязательно поиск оставленных меток по всему дереву:
+After resolving — always search the whole tree for leftover markers:
 
 ```
 git grep -n '^[[:space:]]*\(<<<<<<<\|=======$\|>>>>>>>\)' -- . ':!node_modules'
 ```
 
-Разрешить конфликт и убрать метки — разные вещи: недоубранные метки уезжают прямо в коммит. Отступ перед меткой допускается намеренно: после правки внутри разбираемого блока метка может оказаться с отступом, и шаблон с `^` вплотную к метке её не видит. Дальше — заново проверки шага 1: слияние принесло чужой код, и то, что зелено было до него, ничего не говорит про после.
+Resolving a conflict and removing the markers are different things: markers left behind go straight into the commit. Leading whitespace before a marker is allowed on purpose: after an edit inside the block being resolved, a marker may end up indented, and a pattern with `^` right before the marker doesn't see it. Then rerun the checks of step 1: the merge brought in someone else's code, and what was green before it says nothing about after.
 
-**6. Коммит и пуш.** Файлы называются поимённо. Ветка на origin с тем же именем, но разошедшаяся, означает прошлый PR: отправлять надо под новым именем, а не форсом — форс поверх ветки влитого PR уничтожает историю, которую ещё могут читать.
+**6. Commit and push.** Files are named one by one. A branch on origin with the same name but diverged means a previous PR: push under a new name, not with force — a force push over the branch of a merged PR destroys history that people may still be reading.
 
-**7. PR.** Заголовок называет change по имени. В теле — что менялось и почему, чем проверено, что осталось нерешённым и куда записано. Дождись CI (`gh pr checks <номер> --watch`): красный CI — это возврат к шагу 1, а не сообщение владельцу. Если хук называет расхождение с веткой соседнего дерева, оно называется и в PR: нужен порядок слияния, а не сюрприз на второй кнопке. Кто жмёт кнопку слияния — правило проекта; если оно не записано, слияние за владельцем, и ему отдаётся ссылка.
+**7. PR.** The title names the change. The body: what changed and why, how it was checked, what remains unresolved and where it is recorded. Wait for CI (`gh pr checks <number> --watch`): red CI means going back to step 1, not a message to the owner. If the hook names a divergence with the branch of a neighboring worktree, name it in the PR as well: a merge order is needed, not a surprise at the second button. Who presses the merge button is a project rule (the skill addendum or `AGENTS.md`); if it isn't recorded, merging is up to the owner, and they get the link.
 
-## Прогон 2 — после слияния
+## Pass 2 — after the merge
 
-Запускается, когда PR влит.
+Runs when the PR is merged.
 
-1. `git fetch origin --prune`, затем `git pull` в основном каталоге: он остаётся на прежнем коммите и врёт следующей сессии.
-2. Своё дерево этой сессии и его локальная ветка сносятся без вопросов — работа в `main` (`orca worktree rm`).
-3. Удалённая ветка и чужие деревья — только с ответом владельца. Чужое дерево может быть занято живой сессией, и его снос унесёт её работу.
-4. `knowledge/due.sh --overdue` и хук хвостов сессии (`.harness/hooks/session-leftovers.sh`, запускается и руками) — оба молчат. Если хук всё ещё называет хвост, прогон не закончен.
+1. `git fetch origin --prune`, then `git pull` in the main checkout: otherwise it stays on the old commit and misleads the next session.
+2. This session's own worktree and its local branch are removed without asking — the work is in `main` (`orca worktree rm`).
+3. The remote branch and other worktrees — only with the owner's answer. Another worktree may be in use by a live session, and removing it would take its work with it.
+4. `knowledge/due.sh --overdue` and the session leftovers hook (`.harness/hooks/session-leftovers.sh`, can also be run by hand) are both silent. If the hook still names a leftover, the pass is not finished.
 
-## Чего не делать
+## What not to do
 
-- Не верить отчёту исполнителя вместо собственного прогона. Это не недоверие к исполнителю: разные слоты сборки дают разный результат на одном и том же дереве.
-- Не жать слияние PR, если проект не разрешил этого явно.
-- Не сносить чужое дерево и не форсить чужую ветку.
-- Не архивировать change, у которого в `tasks.md` остались невыполненные пункты, — либо доделать, либо назвать невыполненное в PR.
-- Не откладывать записи в `knowledge/`: то, что не записано в этом прогоне, не запишется никогда, а хук о нём не напомнит — он видит ветки и деревья, а не ненаписанные уроки.
+- Don't trust the executor's report instead of your own run. This is not distrust of the executor: different build slots give different results on the same tree.
+- Don't press merge on a PR unless the project explicitly allowed it.
+- Don't remove someone else's worktree and don't force-push someone else's branch.
+- Don't archive a change whose `tasks.md` still has unfinished items — either finish them or name what's unfinished in the PR.
+- Don't postpone the entries in `knowledge/`: what isn't recorded in this pass will never be recorded, and the hook won't remind you — it sees branches and worktrees, not unwritten lessons.

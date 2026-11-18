@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Слот post-edit-async (PostToolUse/Write|Edit, асинхронный), модуль rust:
-# линтует крейт, которому принадлежит файл. Выход 2 будит модель с текстом
-# ошибки.
+# Slot post-edit-async (PostToolUse/Write|Edit, asynchronous), module rust:
+# lints the crate the file belongs to. Exit 2 wakes the model with the error
+# text.
 #
-# Два предохранителя против шквала. Правка-миграция (смена подписи и перевод
-# на неё десятков вызовов) трогает файлы по одному, и до последнего из них
-# крейт красный по одной и той же причине. Без предохранителей каждая правка
-# будила сессию тем же текстом — девяносто пробуждений подряд.
+# Two fuses against a flood. A migration edit (changing a signature and moving
+# dozens of calls onto it) touches files one by one, and until the last of them
+# the crate is red for one and the same reason. Without the fuses every edit
+# woke the session with the same text — ninety wake-ups in a row.
 #
-#   1. Замок на крейт: пока идёт предыдущий прогон, новый не запускается.
-#      Он смотрел бы на то же дерево и сказал бы то же самое.
-#   2. Подпись ошибки: будит только новая. Подпись — множество строк `error`
-#      и `warning` без чисел, поэтому съехавшие номера строк и «due to N
-#      previous errors» её не меняют, а НОВАЯ ошибка меняет и будит.
+#   1. A lock per crate: while the previous run is going, a new one doesn't start.
+#      It would look at the same worktree and say the same thing.
+#   2. An error signature: only a new one wakes. The signature is the set of
+#      `error` and `warning` lines without numbers, so shifted line numbers and
+#      "due to N previous errors" don't change it, while a NEW error does and wakes.
 #
-# Умолчать насовсем ни то, ни другое не может: clippy запускается заново на
-# каждой правке, и первое же изменение причины (или её исчезновение) слышно.
+# Neither can stay silent forever: clippy restarts on every edit, and the first
+# change of the cause (or its disappearance) is heard.
 #
-# Третий предохранитель: устаревший вердикт не будит — см. `lib/staleness.sh`.
+# Third fuse: a stale verdict doesn't wake — see `lib/staleness.sh`.
 #
-# Подмена для тестов: `HARNESS_CLIPPY` — команда вместо `cargo clippy`,
-# `HARNESS_CLIPPY_STATE` — каталог состояния вместо каталога в git дерева.
+# Test substitutes: `HARNESS_CLIPPY` — a command instead of `cargo clippy`,
+# `HARNESS_CLIPPY_STATE` — a state directory instead of the one in the worktree's git dir.
 set -uo pipefail
 
 here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
@@ -28,9 +28,12 @@ here=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
 . "$here/lib/staleness.sh"
 # shellcheck source=lib/same-repo.sh
 . "$here/lib/same-repo.sh"
+# shellcheck source=lib/rust-crate.sh
+. "$here/lib/rust-crate.sh"
 
 input=$(cat)
-# Правка субагента не будит главную сессию — см. `js-typecheck.sh`.
+# A subagent's edit doesn't wake the main session — see `js-typecheck.sh`. The
+# executor is checked at the end of its work (`agent-checks.sh`).
 [ -n "$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null)" ] && exit 0
 f=$(printf '%s' "$input" | jq -r '.tool_response.filePath // .tool_input.file_path // empty' 2>/dev/null) || exit 0
 case "$f" in
@@ -38,37 +41,22 @@ case "$f" in
   *) exit 0 ;;
 esac
 
-# Один крейт в корне: пакет — `rootstock`, область — корень проекта,
-# которому принадлежит файл. Сборочный каталог — не исходник.
-case "$f" in
-  */target/* | target/*) exit 0 ;;
-esac
-case "$f" in
-  /*) file_dir=${f%/*} ;;
-  */*) file_dir=$PWD/${f%/*} ;;
-  *) file_dir=$PWD ;;
-esac
-# git в каталоге файла — только когда он в дереве проекта (см. lib/same-repo.sh).
-same_repo "$file_dir" || exit 0
-crate_dir=$(git -C "$file_dir" rev-parse --show-toplevel 2>/dev/null) || exit 0
-[ -f "$crate_dir/Cargo.toml" ] || exit 0
-# git даёт физический путь (на macOS `/private/var/…` вместо `/var/…`); путь
-# правленого файла приводится к тому же виду, иначе проверка устаревания
-# не узнает в нём себя.
-f="$(cd "$file_dir" && pwd -P)/${f##*/}"
-pkg="rootstock"
-# cargo исполняет build.rs, макросы и тулчейн из rust-toolchain.toml: файл
-# чужого клона не повод запускать их.
-same_repo "${crate_dir:-.}" || exit 0
+# The file's crate and its directory — `lib/rust-crate.sh`.
+crate_pkg=""
+crate_dir=""
+crate_file=""
+rust_crate "$f" || exit 0
+pkg=$crate_pkg
+f=$crate_file
 
-# Состояние — своё на рабочее дерево: два дерева линтуют разные исходники,
-# и подпись одного не должна гасить пробуждение в другом.
-# Ключ — корень рабочего дерева, а не текущий каталог: правку может сделать
-# субагент из любого подкаталога, и по `$PWD` состояние разъехалось бы
-# на несколько копий, а с ним и весь смысл подписи.
-# Место — каталог git этого дерева, а не общий временный: в `/tmp` каталог
-# с предсказуемым именем заранее заведёт другой пользователь машины, и запись
-# подписи пойдёт по его ссылке в чужой файл.
+# State is per worktree: two worktrees lint different sources, and the
+# signature of one must not suppress a wake-up in the other.
+# The key is the worktree root, not the current directory: a subagent may make
+# the edit from any subdirectory, and keyed by `$PWD` the state would split into
+# several copies, and with it the whole point of the signature.
+# The location is this worktree's git dir, not a shared temp one: in `/tmp` a
+# directory with a predictable name can be created in advance by another user of
+# the machine, and writing the signature would follow their link into a foreign file.
 tree=${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")}
 state=${HARNESS_CLIPPY_STATE:-$(git -C "$tree" rev-parse --path-format=absolute --git-path harness/clippy 2>/dev/null)}
 [ -n "$state" ] || exit 0
@@ -77,33 +65,32 @@ mkdir -p "$state" 2>/dev/null || exit 0
 lock="$state/$pkg.lock"
 seen="$state/$pkg.seen"
 
-# Замок старше десяти минут — след убитого прогона, а не работающего.
+# A lock older than ten minutes is the trace of a killed run, not a working one.
 find "$lock" -maxdepth 0 -type d -mmin +10 -exec rmdir {} + 2>/dev/null
 
 mkdir "$lock" 2>/dev/null || exit 0
 mark=$(stale_marker)
 trap 'rmdir "$lock" 2>/dev/null; stale_drop "$mark"' EXIT
 
-clippy=${HARNESS_CLIPPY:-cargo clippy}
-out=$(cd "$crate_dir" && $clippy -p "$pkg" --all-targets --all-features -q -- -D warnings 2>&1) && {
-  # Зелено: прежняя подпись забывается, и та же ошибка, вернувшись, разбудит.
+out=$(rust_clippy "$pkg" "$crate_dir") && {
+  # Green: the previous signature is forgotten, and the same error, if it returns, will wake.
   rm -f "$seen"
   exit 0
 }
 
-# Дерево ушло вперёд, пока считали: правка пачкой продолжается, и вердикт уже
-# не о том, что лежит на диске. Проверяется ДО подписи: записать подпись
-# устаревшего вердикта значило бы заглушить им же следующее, свежее пробуждение
-# с той же причиной.
+# The worktree moved on while we were checking: the batch of edits continues, and
+# the verdict is no longer about what is on disk. Checked BEFORE the signature:
+# recording the signature of a stale verdict would silence the next, fresh
+# wake-up with the same cause.
 if [ -n "$crate_dir" ] && stale_since "$mark" "$crate_dir" "$f"; then
   exit 0
 fi
 
-# Подпись: коды ошибок (E0061 и подобные) плюс текст ошибок без кода, без чисел.
-# Одна и та же миграция даёт разные формулировки одного кода («takes 3 arguments
-# but 2», «takes 2 arguments but 1») и разные наборы файлов — по коду они
-# сходятся в одно. Строки «could not compile» выброшены: там пляшут имена
-# тестов и счётчики, а причины в них нет.
+# Signature: error codes (E0061 and the like) plus text of errors without a code,
+# without numbers. One and the same migration gives different wordings of one code
+# ("takes 3 arguments but 2", "takes 2 arguments but 1") and different sets of
+# files — by code they converge into one. "could not compile" lines are dropped:
+# test names and counters jump around there, and there is no cause in them.
 signature=$(printf '%s' "$out" | awk '
   /could not compile/ { next }
   /^error\[/ { code = $0; sub(/^error\[/, "", code); sub(/\].*/, "", code); print code; next }
@@ -115,5 +102,5 @@ signature=$(printf '%s' "$signature" | cksum | cut -d' ' -f1)
 [ "$(cat "$seen" 2>/dev/null)" = "$signature" ] && exit 0
 printf '%s' "$signature" > "$seen"
 
-printf 'clippy: %s не проходит -D warnings\n\n%s\n' "$pkg" "$(printf '%s' "$out" | tail -60)" >&2
+printf 'clippy: %s fails -D warnings\n\n%s\n' "$pkg" "$(printf '%s' "$out" | tail -60)" >&2
 exit 2

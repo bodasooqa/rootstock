@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Общая часть Bash-хуков. Подключается через `. "${BASH_SOURCE[0]%/*}/lib/bash-scan.sh"`
-# — путь берётся от самого скрипта, чтобы хук работал и в рабочем дереве сессии.
+# Shared part of the Bash hooks. Sourced via `. "${BASH_SOURCE[0]%/*}/lib/bash-scan.sh"`
+# — the path is taken from the script itself so the hook works in a session worktree too.
 #
-# Вырезание heredoc'ов — не украшение, а урок: первая версия защитного хука
-# заблокировала запись документации, в тексте которой упоминались опасные
-# команды. Хук, срабатывающий на рассказ о себе, обучает себя обходить.
+# Cutting out heredocs is not decoration but a lesson: the first version of the
+# guard hook blocked writing documentation whose text mentioned dangerous
+# commands. A hook that fires on a story about itself teaches agents to bypass it.
 #
-# Ошибка разбора обязана быть в сторону запрета: вырезанное хук не видит.
-# Охранные хуки защищают от ошибки, а не от злонамеренного агента, поэтому
-# полного лексера bash здесь нет — есть правило «сомневаешься — не вырезай»:
-# - heredoc — только `<<` вне кавычек, вне арифметики (`((…))`, `$((…))`,
-#   `$[…]`, `let …`) и вне комментария; `<<<` — here-string, не heredoc;
-# - из терминатора снимаются только кавычки; `\` или `$` в нём (включая
-#   `$'…'` и `$"…"`) — сомнение;
-# - ведущие табы в строке терминатора снимаются только при `<<-`;
-# - сомнение также — `$'` или `$"` в строке, кавычка внутри арифметики или
-#   `let`, строка, оканчивающаяся неэкранированным `\`;
-# - сомнение или heredoc без закрывающей строки — команда сканируется целиком.
+# A parse error must err on the side of denial: the hook doesn't see what is cut out.
+# Guard hooks protect against mistakes, not against a malicious agent, so there
+# is no full bash lexer here — there is the rule "in doubt, don't cut":
+# - a heredoc is only `<<` outside quotes, outside arithmetic (`((…))`, `$((…))`,
+#   `$[…]`, `let …`) and outside a comment; `<<<` is a here-string, not a heredoc;
+# - only quotes are stripped from the terminator; a `\` or `$` in it (including
+#   `$'…'` and `$"…"`) is doubt;
+# - leading tabs in the terminator line are stripped only with `<<-`;
+# - also doubt: `$'` or `$"` in the line, a quote inside arithmetic or
+#   `let`, a line ending with an unescaped `\`;
+# - on doubt or a heredoc without a closing line, the whole command is scanned.
 
-# Читает событие хука со stdin и печатает команду с вырезанными телами heredoc'ов.
-# Возвращает 1, если команды в событии нет.
+# Reads the hook event from stdin and prints the command with heredoc bodies cut out.
+# Returns 1 if the event has no command.
 bash_scan() {
   local cmd
   cmd=$(jq -r '.tool_input.command // empty' 2>/dev/null) || return 1
@@ -44,12 +44,12 @@ bash_scan() {
       i = 1
       nterms = 0
       cmdstart = 1
-      # Сомнение: строки $'…' и $"…" и продолжение строки неэкранированным `\`.
+      # Doubt: $'…' and $"…" strings and line continuation with an unescaped `\`.
       if (index(s, "$" sq) || index(s, "$" dq)) full = 1
       if (match(s, /\\+$/) && RLENGTH % 2 == 1) full = 1
       while (i <= L) {
         c = substr(s, i, 1)
-        # Кавычки: состояние переживает перевод строки.
+        # Quotes: the state survives a newline.
         if (inq == sq) { if (c == sq) inq = ""; i++; continue }
         if (inq == dq) {
           if (c == bs) { i += 2; continue }
@@ -59,11 +59,11 @@ bash_scan() {
         }
         if (c == bs) { i += 2; cmdstart = 0; continue }
         if (c == sq || c == dq) { inq = c; i++; cmdstart = 0; continue }
-        # Комментарий до конца строки.
+        # Comment to the end of the line.
         if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t;|&(]/)) break
-        # Арифметика: сдвиг << в ней не heredoc. Незакрытая — до конца строки.
-        # Кавычка внутри пропускаемой области — сомнение: состояние кавычек
-        # дальше не отследить.
+        # Arithmetic: a << shift in it is not a heredoc. Unclosed — to the end of the line.
+        # A quote inside the skipped area is doubt: the quote state cannot be
+        # tracked further.
         if (substr(s, i, 3) == "$((" || substr(s, i, 2) == "((") {
           o = (substr(s, i, 1) == "$") ? 3 : 2
           j = index(substr(s, i + o), "))")
@@ -143,8 +143,8 @@ bash_scan() {
   '
 }
 
-# Отказ PreToolUse с причиной. Причина уходит модели, поэтому в ней —
-# что делать вместо, а не только запрет.
+# A PreToolUse denial with a reason. The reason goes to the model, so it says
+# what to do instead, not just the prohibition.
 deny() {
   jq -nc --arg r "$1" '{
     hookSpecificOutput: {

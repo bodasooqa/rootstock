@@ -1,11 +1,11 @@
-# Общие git-хуки обвязки. Управляемый файл: обновляется шаблоном, руками
-# не правится. Подключается из `lefthook.yml` проекта через `extends`; свои
-# джобы проект пишет там.
+# Shared harness git hooks. Managed file: updated by the template, not edited
+# by hand. Included from the project's `lefthook.yml` via `extends`; the project
+# writes its own jobs there.
 #
-# Делят ответственность с хуками агента: те стерегут каждую правку, lefthook —
-# коммит и пуш, включая ручные. pre-commit держим быстрым. На pre-push — только
-# то, что срабатывает редко и стережёт инварианты, которые дороже поймать
-# до PR; полные линтеры и тесты гоняет CI.
+# They share responsibility with the agent hooks: those guard every edit,
+# lefthook guards commit and push, including manual ones. pre-commit stays fast.
+# pre-push gets only what fires rarely and guards invariants that are cheaper to
+# catch before the PR; full linters and tests run in CI.
 
 pre-commit:
   parallel: true
@@ -18,27 +18,39 @@ pre-commit:
     - name: secrets
       run: ./.harness/lefthook/no-secrets.sh {staged_files}
 
-    # Архив закрытых вопросов и оглавления знания собираются скриптами: ручное
-    # разъезжается с содержимым. stage_fixed возвращает в индекс только
-    # staged-файлы, а архив и оглавления скрипты пишут сами, и в индексе их
-    # обычно нет — `--stage` ставит их туда, иначе перенос делился бы на два
-    # коммита.
+    # The closed questions archive and the knowledge tables of contents are built
+    # by scripts: hand edits drift from the content. stage_fixed puts back into
+    # the index only staged files, but the scripts write the archive and the
+    # tables of contents themselves, and they are usually not in the index;
+    # `--stage` puts them there, otherwise a move would split into two commits.
+    # In the monolith form `knowledge/index.sh` belongs to the project and may be
+    # absent; if present, it is called the same way, after the archive.
     - name: knowledge
       glob:
         - "knowledge/open-questions.md"
-      run: ./knowledge/archive-questions.sh --stage
+        - "knowledge/decisions.md"
+        - "knowledge/lessons.md"
+      run: ./knowledge/archive-questions.sh --stage && { [ ! -e knowledge/index.sh ] || ./knowledge/index.sh --stage; }
       stage_fixed: true
 
 pre-push:
   parallel: true
-  # Список файлов пуша для глобов — свой: встроенный при первом пуше без
-  # upstream сравнивает HEAD с origin/main двумя точками и берёт чужие правки
-  # main.
-  files: ./.harness/lefthook/push-files.sh
+  # The list of pushed files for globs is our own: on a first push without an
+  # upstream the built-in one compares HEAD with origin/main using two dots and
+  # picks up other people's changes on main.
+  #
+  # Windows: lefthook runs `files:` without a shell: it splits the line on
+  # spaces and executes the first word, and Windows does not execute `.sh` by
+  # itself. So the script is called via `sh` (Git for Windows has it) and is
+  # written in POSIX sh: on Linux `sh` is dash. lefthook hands `run:` to `sh -c`
+  # everywhere, and `./….sh` runs there by its shebang; but on Windows the `run:`
+  # line is passed in double quotes without escaping, so `run:` has no double quotes.
+  files: sh ./.harness/lefthook/push-files.sh
   jobs:
-    # Хук, который может тихо ничего не сделать, хуже отсутствующего: каждый
-    # проверяется случаем на срабатывание и случаем на пропуск. Там же тесты
-    # самого lefthook (архив вопросов, файлы пуша), поэтому и его правка их будит.
+    # A hook that can silently do nothing is worse than a missing one: each is
+    # tested with a case where it fires and a case where it skips. The same place
+    # holds the tests of lefthook itself (question archive, pushed files), so
+    # editing it wakes them too.
     - name: harness-hooks
       glob:
         - ".harness/**"
@@ -46,8 +58,8 @@ pre-push:
         - ".rootstock.toml"
       run: ./.harness/hooks/tests/run.sh
 
-    # Прослойка Pi переводит события Pi в те же слоты: её правка и правка хуков
-    # будят её тесты.
+    # The Pi layer maps Pi events to the same slots: editing it or the hooks
+    # wakes its tests.
     - name: harness-pi
       glob:
         - ".pi/extensions/**"
@@ -56,12 +68,12 @@ pre-push:
 
     - name: knowledge-tests
       glob: "knowledge/**"
-      run: for t in knowledge/tests/*.sh; do "./$t" || exit 1; done
+      run: for t in knowledge/tests/*.sh; do ./$t || exit 1; done
 
-    # Просроченный вопрос — тот, чей этап закрыт, чей change заархивирован или
-    # чей срок не назван этапом. Состояние меняется правкой таблицы этапов или
-    # самого списка, и проверка ходит следом за ними, а не за каждым пушем:
-    # чужая работа не должна краснеть из-за чужого долга.
+    # An overdue question is one whose stage is closed, whose change is archived,
+    # or whose due date is not a stage. The state changes with an edit to the
+    # stages table or to the list itself, and the check follows those edits, not
+    # every push: someone else's work must not go red over someone else's debt.
     - name: knowledge-due
       glob:
         - "knowledge/stages.md"

@@ -12,8 +12,6 @@
       "Bash(rustfmt *)",
       "Bash(git status)",
       "Bash(git status *)",
-      "Bash(git diff *)",
-      "Bash(git log *)",
       "Bash(git add *)",
       "Bash(gh pr view *)",
       "Bash(gh pr list *)",
@@ -21,13 +19,33 @@
       "Bash(gh pr diff *)",
       "Bash(gh run view *)",
       "Bash(gh run list *)",
-      "Bash(rg *)",
       "Bash(jq *)",
-      "Bash(openspec *)",
-      "Bash(lefthook *)",
+      "Bash(openspec status *)",
+      "Bash(openspec instructions *)",
+      "Bash(openspec list *)",
+      "Bash(openspec show *)",
+      "Bash(openspec validate *)",
+      "Bash(openspec schemas *)",
+      "Bash(openspec templates *)",
+      "Bash(openspec context *)",
+      "Bash(openspec doctor *)",
+      "Bash(openspec store list *)",
+      "Bash(openspec new change *)",
+      "Bash(openspec change *)",
+      "Bash(openspec spec *)",
+      "Bash(openspec archive *)",
+      "Bash(lefthook validate)",
       "Bash(shellcheck *)"
     ],
     "deny": [
+      "Bash(rg *--pre*)",
+      "Bash(git diff *--output*)",
+      "Bash(git diff *--ext-diff*)",
+      "Bash(git log *--output*)",
+      "Bash(git log *--ext-diff*)",
+      "Bash(git show *--output*)",
+      "Bash(git show *--ext-diff*)",
+      "Bash(cargo *--config*)",
       "Read(./.env)",
       "Read(./.env.*)",
       "Edit(./.claude/commands/opsx/**)",
@@ -80,6 +98,30 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.harness/hooks/dispatch.sh\" pre-handback",
+            "timeout": 600,
+            "statusMessage": "executor checks on affected packages"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "-developer$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.harness/hooks/dispatch.sh\" subagent-stop",
+            "timeout": 600,
+            "statusMessage": "executor checks on affected packages"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -97,7 +139,7 @@
             "timeout": 300,
             "async": true,
             "asyncRewake": true,
-            "statusMessage": "clippy по затронутому крейту"
+            "statusMessage": "clippy on the affected crate"
           }
         ]
       },

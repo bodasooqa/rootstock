@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Слот prompt (UserPromptSubmit): перед созданием change подкладывает открытые
-# вопросы, чей срок наступил.
+# Slot prompt (UserPromptSubmit): before a change is created, injects the open
+# questions that have come due.
 #
-# Шаг ритуала «не забудь заглянуть в открытые вопросы» обесценивается первым же
-# разом, когда его пролистали, и `.claude/commands/opsx/` всё равно generated —
-# дописать шаг туда нельзя. Поэтому не шаг, а справка: вопросы приезжают в контекст
-# сами, и пролистать их можно только вместе с заданием.
+# A ritual step "don't forget to look at the open questions" loses its value the
+# first time it is skimmed past, and `.claude/commands/opsx/` is generated anyway —
+# a step can't be added there. So not a step but a reference: the questions arrive
+# in the context by themselves, and skipping them means skipping the task too.
 set -uo pipefail
 
 command -v jq >/dev/null 2>&1 || exit 0
@@ -13,10 +13,10 @@ command -v jq >/dev/null 2>&1 || exit 0
 prompt=$(jq -r '.prompt // empty' 2>/dev/null) || exit 0
 [ -n "$prompt" ] || exit 0
 
-# Только создание change. `/opsx:apply` и `/opsx:archive` работают с уже
-# принятым решением, и справка там — шум.
+# Only change creation. `/opsx:apply` and `/opsx:archive` work on a decision
+# already made, and the reference there is noise.
 case "$prompt" in
-  *opsx:propose*) ;;
+  *opsx:propose*|*opsx-propose*|*'$openspec-propose'*) ;;
   *) exit 0 ;;
 esac
 
@@ -27,11 +27,11 @@ due="$root/knowledge/due.sh"
 report=$("$due" 2>/dev/null) || true
 [ -n "$report" ] || exit 0
 
-note="Открытые вопросы к этому этапу — их сроки наступили раньше, чем начался новый change:
+note="Open questions for this stage — they came due before the new change started:
 
 $report
 
-Вопрос, которого касается предлагаемый change, закрывается или переносится вместе с ним, а не после. Порядок — скилл stage-grooming."
+A question the proposed change touches is closed or moved together with it, not afterwards. The procedure is the stage-grooming skill."
 
 jq -nc --arg n "$note" '{
   hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: $n }

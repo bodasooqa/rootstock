@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Диспетчер хуков: один вход на слот, общие хуки и хуки проекта.
+# Hook dispatcher: one entry per slot, common hooks and project hooks.
 #
-# Использование: dispatch.sh <слот> < событие.json
+# Usage: dispatch.sh <slot> < event.json
 #
-# Агент (Claude Code, прослойка Pi `.pi/extensions/harness.ts`) зовёт диспетчер, а не хуки по одному:
-# так проект добавляет свои хуки файлом в `.harness/local/hooks/<слот>/`,
-# не трогая управляемую проводку. Контракт слота — `README.md` рядом.
+# Claude Code, Pi, and Codex call the dispatcher, not hooks one by one:
+# this way a project adds its hooks as a file in `.harness/local/hooks/<slot>/`
+# without touching the managed wiring. The slot contract is in `README.md` next door.
 #
-# Порядок: общие хуки слота в фиксированном порядке (отсутствующий модульный
-# хук пропускается), затем `.harness/local/hooks/<слот>/*.sh` по алфавиту.
+# Order: the slot's common hooks in fixed order (a missing module hook is
+# skipped), then `.harness/local/hooks/<slot>/*.sh` alphabetically.
 #
-# Вывод хуков сводится в один ответ: два JSON подряд агент не разберёт,
-# и отказ одного из них потерялся бы молча.
-#   - Код 2 останавливает слот: stderr хука уходит наверх, код выхода 2.
-#   - Отказ (`permissionDecision: "deny"`, `decision: "block"`,
-#     `continue: false`) останавливает слот: наружу уходит ровно этот JSON.
-#   - `additionalContext` всех хуков склеивается через пустую строку в один
-#     JSON; простой текст хуков идёт в тот же контекст.
-#   - Если JSON не было ни у кого, простой текст печатается как есть.
-#   - Прочий ненулевой код — не отказ: stderr уходит наверх, остальные хуки
-#     работают. Итоговый код 1, если сводного JSON нет (агент покажет ошибку
-#     человеку), и 0, если есть (иначе агент выбросил бы JSON).
+# Hook output is merged into one response: the agent can't parse two JSONs in a
+# row, and a denial from one of them would get lost silently.
+#   - Exit 2 stops the slot: the hook's stderr goes up, exit code 2.
+#   - A denial (`permissionDecision: "deny"`, `decision: "block"`,
+#     `continue: false`) stops the slot: exactly that JSON goes out.
+#   - `additionalContext` of all hooks is joined with a blank line into one
+#     JSON; plain hook text goes into the same context.
+#   - If nobody produced JSON, plain text is printed as is.
+#   - Any other non-zero code is not a denial: stderr goes up, the other hooks
+#     run. The final code is 1 if there is no merged JSON (the agent will show the
+#     error to the human), and 0 if there is (otherwise the agent would drop the JSON).
 set -uo pipefail
 
 slot=${1:-}
@@ -32,8 +32,10 @@ case "$slot" in
   post-bash) event=PostToolUse common="bash-edit" ;;
   post-edit) event=PostToolUse common="rust-fmt js-fmt" ;;
   post-edit-async) event=PostToolUse common="rust-clippy js-typecheck" ;;
+  subagent-stop) event=SubagentStop common="agent-checks" ;;
+  pre-handback) event=PreToolUse common="agent-checks" ;;
   *)
-    printf 'dispatch.sh: неизвестный слот «%s». Слоты: session-start, session-end, prompt, pre-bash, post-bash, post-edit, post-edit-async.\n' "$slot" >&2
+    printf 'dispatch.sh: unknown slot "%s". Slots: session-start, session-end, prompt, pre-bash, post-bash, post-edit, post-edit-async, subagent-stop, pre-handback.\n' "$slot" >&2
     exit 1
     ;;
 esac
@@ -47,7 +49,7 @@ input="$tmp/input"
 errf="$tmp/stderr"
 cat >"$input"
 
-# Список хуков слота: путь на строку.
+# The slot's hook list: one path per line.
 hooks=""
 for name in $common; do
   [ -f "$here/$name.sh" ] && hooks="$hooks$here/$name.sh"$'\n'
@@ -72,9 +74,9 @@ add_context() {
 
 while IFS= read -r hook; do
   [ -n "$hook" ] || continue
-  # Проект выключает свой хук снятием права на исполнение — как у git-хуков.
+  # A project disables its hook by removing the execute bit — as with git hooks.
   if [ ! -x "$hook" ]; then
-    printf 'dispatch.sh: %s не исполняемый, пропущен (chmod +x, чтобы включить)\n' "$hook" >&2
+    printf 'dispatch.sh: %s is not executable, skipped (chmod +x to enable)\n' "$hook" >&2
     continue
   fi
 

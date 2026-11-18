@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Слот session-start (SessionStart): докладывает, где сессия работает и кто ещё
-# занят в репозитории.
+# Slot session-start (SessionStart): reports where the session works and who else
+# is busy in the repository.
 #
-# Правило «своё дерево на сессию» держалось только прозой CLAUDE.md, а цена его
-# нарушения — чужие файлы в своём коммите. Сессия должна узнать обстановку
-# до первой правки, а не после чужого коммита. Хук смотрит только `git worktree`
-# и никаких менеджеров деревьев не вызывает.
+# The rule "one worktree per session" was held only by CLAUDE.md prose, and the
+# price of breaking it is other sessions' files in your commit. The session must
+# learn the situation before the first edit, not after someone else's commit. The
+# hook looks only at `git worktree` and calls no worktree managers.
 set -uo pipefail
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
@@ -16,14 +16,14 @@ common=$(git rev-parse --git-common-dir 2>/dev/null)
 branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 
 if [ "$gitdir" = "$common" ]; then
-  where="Сессия работает в ОБЩЕМ каталоге $root (ветка $branch). Индекс здесь делится со всеми сессиями."
-  own="нет"
+  where="The session works in the SHARED checkout $root (branch $branch). The index here is shared by all sessions."
+  own="no"
 else
-  where="Сессия работает в своём дереве $root (ветка $branch)."
-  own="да"
+  where="The session works in its own worktree $root (branch $branch)."
+  own="yes"
 fi
 
-# Чужие деревья: всё из git worktree list, кроме текущего.
+# Other worktrees: everything from git worktree list except the current one.
 others=$(git worktree list --porcelain 2>/dev/null | awk -v self="$root" '
   /^worktree /{ wt = substr($0, 10) }
   /^branch /{ br = substr($0, 8); sub(/^refs\/heads\//, "", br)
@@ -32,28 +32,28 @@ others=$(git worktree list --porcelain 2>/dev/null | awk -v self="$root" '
 
 note="$where"
 if [ -n "$others" ]; then
-  note="$note"$'\n'"Другие рабочие деревья этого репозитория:"$'\n'"$others"
+  note="$note"$'\n'"Other worktrees of this repository:"$'\n'"$others"
 fi
 
-# Общий каталог сборки на все деревья не годится: пакет во всех деревьях
-# называется одинаково, а код в них разный, и сборка одного дерева ложится
-# на место другого. Конфиг машинно-зависим и не коммитится, поэтому сам он
-# не исчезнет — на машине, где он остался, зелёный прогон в дереве ничего
-# не доказывает.
+# A build directory shared by all worktrees doesn't work: the package is named
+# the same in every worktree while the code differs, and one worktree's build
+# lands on top of another's. The config is machine-specific and not committed,
+# so it won't go away by itself — on a machine where it remains, a green run in
+# a worktree proves nothing.
 common_abs=$(cd "$common" 2>/dev/null && pwd)
 if [ -n "$common_abs" ]; then
   cargo_config="$(dirname "$common_abs")/.cargo/config.toml"
   if grep -qs '^[[:space:]]*target-dir' "$cargo_config"; then
-    note="$note"$'\n'"Общий каталог сборки настроен: в $cargo_config стоит target-dir. Деревья с общим каталогом затирают сборки друг друга. Убрать: rm -f $cargo_config."
+    note="$note"$'\n'"A shared build directory is configured: $cargo_config sets target-dir. Worktrees with a shared directory overwrite each other's builds. To remove: rm -f $cargo_config."
   fi
 fi
 
-# Git-хуки общие на все деревья, а lefthook вписывает в них абсолютный путь к
-# своему бинарю. Установка из дерева (postinstall пакета lefthook при `bun
-# install`) уводит путь в node_modules этого дерева; дерево сносят — и
-# pre-commit с pre-push молча перестают работать во всём репозитории. Путь
-# в node_modules обязан вести в основной каталог; путь вне node_modules
-# (lefthook стоит глобально) обязан существовать.
+# Git hooks are shared by all worktrees, and lefthook writes the absolute path to
+# its binary into them. Installing from a worktree (the lefthook package's
+# postinstall on `bun install`) points the path into that worktree's node_modules;
+# the worktree is removed — and pre-commit and pre-push silently stop working in
+# the whole repository. A path into node_modules must lead to the main checkout;
+# a path outside node_modules (lefthook installed globally) must exist.
 main_dir=$(cd "$common/.." 2>/dev/null && pwd -P)
 if [ -n "$main_dir" ] && [ -f "$main_dir/lefthook.yml" ]; then
   hooks_dir=$(git rev-parse --path-format=absolute --git-path hooks 2>/dev/null)
@@ -62,39 +62,41 @@ if [ -n "$main_dir" ] && [ -f "$main_dir/lefthook.yml" ]; then
     hook="$hooks_dir/$h"
     bin=$(sed -n 's|^[[:space:]]*elif \(/[^ ]*/lefthook\) -h.*|\1|p' "$hook" 2>/dev/null | head -n 1)
     case "$bin" in
-      "") broken="$broken"$'\n'"  $hook — нет пути к lefthook" ;;
-      "$main_dir/node_modules/"*) [ -x "$bin" ] || broken="$broken"$'\n'"  $hook → $bin — файла нет" ;;
-      */node_modules/*) broken="$broken"$'\n'"  $hook → $bin — не основной каталог" ;;
-      *) [ -x "$bin" ] || broken="$broken"$'\n'"  $hook → $bin — файла нет" ;;
+      "") broken="$broken"$'\n'"  $hook — no path to lefthook" ;;
+      "$main_dir/node_modules/"*) [ -x "$bin" ] || broken="$broken"$'\n'"  $hook → $bin — file missing" ;;
+      */node_modules/*) broken="$broken"$'\n'"  $hook → $bin — not the main checkout" ;;
+      *) [ -x "$bin" ] || broken="$broken"$'\n'"  $hook → $bin — file missing" ;;
     esac
   done
   if [ -n "$broken" ]; then
-    note="$note"$'\n'"Git-хуки сломаны, pre-commit и pre-push не работают:$broken"$'\n'"Почини: cd $main_dir && lefthook install"
+    note="$note"$'\n'"Git hooks are broken, pre-commit and pre-push don't run:$broken"$'\n'"Fix: cd $main_dir && lefthook install"
   fi
 fi
 
-# Просроченные открытые вопросы. Одна строка, без перечисления: список печатает
-# `knowledge/due.sh`, а доклад лишь не даёт долгу быть незаметным.
-# Скрипт — из проекта хука, как у knowledge-due.sh, а не из дерева каталога
-# сессии: сессия, начатая в чужом клоне, не исполняет его код.
+# Overdue open questions. One line, no listing: `knowledge/due.sh` prints the
+# list, and the report only keeps the debt from going unnoticed.
+# The script comes from the hook's project, as in knowledge-due.sh, not from the
+# worktree of the session's directory: a session started in a foreign clone
+# doesn't execute its code.
 due="$(cd "${BASH_SOURCE[0]%/*}/../.." 2>/dev/null && pwd)/knowledge/due.sh"
 if [ -x "$due" ]; then
-  overdue=$("$due" --overdue 2>/dev/null | sed -n 's/^Просрочено вопросов: \([0-9]*\)$/\1/p')
+  overdue=$("$due" --overdue 2>/dev/null | sed -n 's/^Overdue questions: \([0-9]*\)$/\1/p')
   if [ -n "$overdue" ]; then
-    note="$note"$'\n'"Просроченных открытых вопросов: $overdue. Список — knowledge/due.sh --overdue, разбор — скилл stage-grooming."
+    note="$note"$'\n'"Overdue open questions: $overdue. List — knowledge/due.sh --overdue, triage — the stage-grooming skill."
   fi
 fi
 
-# Хвосты прошлой сессии: тот же текст, что уходит человеку на выходе, только
-# здесь он приезжает модели на входе — прибирать удобнее в начале, а не в конце.
+# Leftovers of the previous session: the same text that goes to the human on
+# exit, only here it reaches the model on entry — tidying up is easier at the
+# start than at the end.
 leftovers="${BASH_SOURCE[0]%/*}/session-leftovers.sh"
 if [ -x "$leftovers" ]; then
   tails=$("$leftovers" 2>/dev/null)
   [ -n "$tails" ] && note="$note"$'\n'"$tails"
 fi
 
-if [ "$own" = "нет" ]; then
-  note="$note"$'\n'"Правка файлов из общего каталога разрешена только когда других сессий по этому репозиторию заведомо нет. Иначе заведи своё дерево: orca worktree create. Валовая постановка в индекс здесь запрещена хуком — ставь названные пути."
+if [ "$own" = "no" ]; then
+  note="$note"$'\n'"Editing files from the shared checkout is allowed only when there are certainly no other sessions on this repository. Otherwise create your own worktree: orca worktree create. Wholesale staging is forbidden here by a hook — stage named paths."
 fi
 
 jq -nc --arg n "$note" '{

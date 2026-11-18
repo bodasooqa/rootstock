@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Выбор версии харнесса для обновления. Зовётся из
-# `.github/workflows/harness-update.yml`; логика вынесена сюда, чтобы её можно
-# было проверить без GitHub (`.harness/update/tests/next-version.sh`).
+# Picks the harness version to update to. Called from
+# `.github/workflows/harness-update.yml`; the logic lives here so it can be
+# tested without GitHub (`.harness/update/tests/next-version.sh`).
 #
-# Использование:
-#   next-version.sh [--want <тег>] <текущая> < теги
-#       Теги источника — по одному в строке, имена (`v0.2.0`) или ссылки
-#       (`refs/tags/v0.2.0`). Текущая — `version` из `.rootstock.toml`:
-#       тег `vX.Y.Z` или вывод git describe `vX.Y.Z-N-g<хеш>` (проект создан
-#       не с тега — его версия считается равной тегу, от которого он вырос).
-#       Печатает строки `ключ=значение` для $GITHUB_OUTPUT:
-#         current=vX.Y.Z   версия проекта;
-#         next=vA.B.C      версия обновления, пусто — обновлять нечего;
-#         major=true       A больше X (иначе false).
-#       Без --want берётся последний тег `vX.Y.Z` по semver, пре-релизы
-#       (`v1.0.0-rc.1`) пропускаются. С --want — этот тег, пре-релиз тоже; он
-#       обязан быть среди тегов.
+# Usage:
+#   next-version.sh [--want <tag>] <current> < tags
+#       Source tags, one per line, as names (`v0.2.0`) or refs
+#       (`refs/tags/v0.2.0`). Current is `version` from `.rootstock.toml`:
+#       a tag `vX.Y.Z` or git describe output `vX.Y.Z-N-g<hash>` (a project
+#       created not from a tag; its version counts as the tag it grew from).
+#       Prints `key=value` lines for $GITHUB_OUTPUT:
+#         current=vX.Y.Z   project version;
+#         next=vA.B.C      version to update to, empty if there is nothing to update;
+#         major=true       A is greater than X (otherwise false).
+#       Without --want, takes the latest `vX.Y.Z` tag by semver, skipping
+#       pre-releases (`v1.0.0-rc.1`). With --want, that tag, pre-release too; it
+#       must be among the tags.
 #   next-version.sh --lt <a> <b>
-#       Код 0, если версия a меньше b, иначе 1.
+#       Code 0 if version a is less than b, otherwise 1.
 #
-# Код 2 — ошибка аргументов, нераспознанная версия или --want без такого тега.
+# Code 2: argument error, unrecognized version, or --want without such a tag.
 set -euo pipefail
 
 die() {
@@ -27,8 +27,8 @@ die() {
   exit 2
 }
 
-# Разбор версии в глобальные ver_major, ver_minor, ver_patch, ver_pre.
-# Код 1, если строка — не версия vX.Y.Z[-пре-релиз].
+# Parses a version into globals ver_major, ver_minor, ver_patch, ver_pre.
+# Code 1 if the string is not a version vX.Y.Z[-pre-release].
 parse() {
   local re='^v([0-9]+)\.([0-9]+)\.([0-9]+)(-([0-9A-Za-z.-]+))?$'
   [[ $1 =~ $re ]] || return 1
@@ -38,9 +38,9 @@ parse() {
   ver_pre=${BASH_REMATCH[5]}
 }
 
-# Код 0, если версия $1 меньше $2 по semver. Обе уже проверены parse.
-# Пре-релиз меньше релиза той же X.Y.Z; два пре-релиза сравниваются как
-# версии (`sort -V`) — точного порядка semver для них здесь не нужно.
+# Code 0 if version $1 is less than $2 by semver. Both already checked by parse.
+# A pre-release is less than the release of the same X.Y.Z; two pre-releases are
+# compared as versions (`sort -V`): exact semver order isn't needed for them here.
 less() {
   local a_major a_minor a_patch a_pre
   parse "$1"
@@ -65,27 +65,27 @@ less() {
 }
 
 if [[ ${1:-} == --lt ]]; then
-  [[ $# -eq 3 ]] || die "--lt ждёт две версии"
-  parse "$2" || die "не версия: $2"
-  parse "$3" || die "не версия: $3"
+  [[ $# -eq 3 ]] || die "--lt expects two versions"
+  parse "$2" || die "not a version: $2"
+  parse "$3" || die "not a version: $3"
   less "$2" "$3"
   exit
 fi
 
 want=""
 if [[ ${1:-} == --want ]]; then
-  [[ -n ${2:-} ]] || die "--want ждёт тег"
+  [[ -n ${2:-} ]] || die "--want expects a tag"
   want=$2
   shift 2
 fi
-[[ $# -eq 1 ]] || die "ждём одну текущую версию (version из .rootstock.toml)"
+[[ $# -eq 1 ]] || die "expected one current version (version from .rootstock.toml)"
 
-# Хвост git describe `-N-g<хеш>` — коммиты после тега: версия та же.
+# The git describe tail `-N-g<hash>` is commits after the tag: same version.
 current=$1
 if [[ $current =~ ^(.+)-[0-9]+-g[0-9a-f]+$ ]]; then
   current=${BASH_REMATCH[1]}
 fi
-parse "$current" || die "текущая версия не распознана: $1 (ждём vX.Y.Z или vX.Y.Z-N-g<хеш>)"
+parse "$current" || die "current version not recognized: $1 (expected vX.Y.Z or vX.Y.Z-N-g<hash>)"
 current_major=$ver_major
 
 next=""
@@ -104,7 +104,7 @@ while IFS= read -r tag; do
 done
 
 if [[ -n $want && -z $next ]]; then
-  die "тега $want нет среди тегов источника"
+  die "tag $want is not among the source tags"
 fi
 
 major=false

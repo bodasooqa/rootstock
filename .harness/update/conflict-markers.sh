@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Маркеры конфликта слияния в файлах проекта. Зовут джоба `markers` в
-# `.github/workflows/harness.yml`: конфликт обновления харнесса (`rootstock
-# update`) остаётся маркерами в файлах, и CI на нём обязан краснеть.
+# Merge conflict markers in project files. Called by the `markers` job in
+# `.github/workflows/harness.yml`: a harness update conflict (`rootstock
+# update`) stays as markers in files, and CI must go red on it.
 #
-# Конфликт — три строки от начала строки по порядку: `<<<<<<< ` с подписью,
-# `=======` целиком, `>>>>>>> ` с подписью (между первой и второй может стоять
-# `||||||| ` — стиль diff3). Одиночная строка из семи `<` или `=` — рамка в
-# выводе, подчёркивание заголовка — конфликтом не считается, маркер в середине
-# строки (в кавычках, в коде) тоже.
+# A conflict is three lines, in order, at the start of a line: `<<<<<<< ` with a
+# label, `=======` alone, `>>>>>>> ` with a label (`||||||| ` may sit between the
+# first and the second, diff3 style). A lone line of seven `<` or `=` (a frame
+# in output, a heading underline) is not a conflict, nor is a marker in the
+# middle of a line (in quotes, in code).
 #
-# Ищется по отслеживаемым и неотслеживаемым неигнорируемым файлам репозитория,
-# бинарные пропускаются.
+# Searches tracked and untracked non-ignored files of the repository, skipping
+# binary ones.
 #
-# Печатает файлы с конфликтом и выходит с кодом 1; нет — код 0.
+# Prints the files with a conflict and exits with code 1; none, code 0.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -31,6 +31,6 @@ while IFS= read -r -d '' file; do
 done < <(git grep -I -l -z --untracked -E '^<<<<<<< ' || true)
 
 if ((found)); then
-  echo "conflict-markers.sh: в файлах выше маркеры конфликта слияния — разреши конфликт и закоммить" >&2
+  echo "conflict-markers.sh: the files above contain merge conflict markers; resolve the conflict and commit" >&2
 fi
 exit "$found"

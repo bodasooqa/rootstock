@@ -1,27 +1,29 @@
 ---
 name: contract-change
-description: Use when changing anything listed in the "Источники правды" table of the project's CLAUDE.md — a contract between packages or processes, a database schema, a serialized format, config defaults, or anything generated from them. The spec-first, regenerate-then-verify-consumers procedure.
+description: Use when changing anything listed in the "Sources of truth" table of the project's AGENTS.md — a contract between packages or processes, a database schema, a serialized format, config defaults, or anything generated from them. The spec-first, regenerate-then-verify-consumers procedure.
 ---
 
-# Изменение контракта
+# Changing a contract
 
-Контракт — всё, от чего зависит кто-то ещё: протокол между процессами, схема базы, формат записанных данных, дефолты конфигурации, generated-код. Правка любого из них — процедура, а не редактирование файла: у каждого свои потребители и своя регенерация.
+First check `.harness/local/skills/contract-change.md`: if the file exists, read it before starting work. It is the project addendum — the project's own regeneration and consumer verification steps; where it disagrees with the text below, the addendum wins.
 
-## Какие контракты есть в проекте
+A contract is anything someone else depends on: a protocol between processes, a database schema, a format of stored data, configuration defaults, generated code. Changing any of them is a procedure, not a file edit: each has its own consumers and its own regeneration.
 
-Список — таблица «Источники правды» корневого `CLAUDE.md`: что, где, кто и чем меняет. Скилл своего списка не держит. Строки нет, а файл явно контракт (от него зависят другой пакет, клиент, база или записанные данные) — сначала спроси, не заводить ли строку, и только потом правь.
+## Which contracts the project has
 
-По строке таблицы перед правкой выясни три вещи: кто потребители, чем регенерируется производное, чем проверяются потребители. Не записано — выясни по коду и допиши в таблицу той же правкой.
+The list is the "Sources of truth" table of the root `AGENTS.md`: what, where, who changes it and how. The skill keeps no list of its own. No row, but the file is clearly a contract (another package, the client, the database, or stored data depend on it) — first ask whether to add a row, and only then edit.
 
-## Порядок
+For a table row, find out three things before the edit: who the consumers are, what regenerates the derived files, what verifies the consumers. Not recorded — find out from the code and add it to the table in the same edit.
 
-**1. Сначала ТЗ.** Нужного поля, метрики, состояния или значения нет в ТЗ (`docs/design.md`)? Не добавляй его. Опиши, чего не хватает, и спроси. ТЗ — источник истины; код под него, а не наоборот. Дефолты конфигурации сверяются со значениями ТЗ.
+## Order
 
-**2. Меняй контракт целиком.** Новое поле добавляется так, чтобы старый потребитель не падал (значение по умолчанию при чтении). Ломающее изменение поднимает версию контракта, если она есть, и правится у всех потребителей в том же коммите.
+**1. Spec first.** The needed field, metric, state, or value isn't in the spec (`docs/design.md`)? Don't add it. Describe what is missing and ask. The spec is the source of truth; code follows it, not the other way round. Configuration defaults are checked against the spec's values.
 
-**3. Регенерируй.** Производное — только командой из таблицы, никогда руками. Generated-файл, поправленный руками, перезапишет первая же регенерация, а до неё он врёт.
+**2. Change the contract as a whole.** A new field is added so that an old consumer doesn't break (a default value on read). A breaking change bumps the contract version, if there is one, and is fixed in all consumers in the same commit.
 
-**4. Проверь потребителей.** Сборка и typecheck всех потребителей — обязательно, для любого контракта:
+**3. Regenerate.** Derived files — only by the command from the table, never by hand. A generated file edited by hand is overwritten by the very first regeneration, and until then it lies.
+
+**4. Verify the consumers.** Build and typecheck of all consumers — mandatory, for any contract:
 
 ```
 cargo fmt --check
@@ -29,16 +31,16 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-Изменение формата записанных данных дополнительно проверяется чтением уже существующих записей и фикстур.
+A change to the format of stored data is additionally checked by reading existing records and fixtures.
 
-**5. Тесты.** Для схемы базы — миграции с нуля и запись-чтение туда и обратно.
+**5. Tests.** For a database schema — migrations from scratch and a write-read round trip.
 
-**6. Коммит одним куском.** Контракт, потребители, generated и тесты — в одном коммите. Промежуточное состояние, где generated отстал от источника, ломает сборку у всех.
+**6. Commit in one piece.** Contract, consumers, generated files, and tests — in one commit. An intermediate state where generated files lag behind the source breaks the build for everyone.
 
-## Запрещённые сокращения
+## Forbidden shortcuts
 
-- Править уже применённую миграцию вместо новой. Схема меняется только добавлением миграции.
-- Править generated руками, чтобы «быстро починить сборку».
-- Захардкодить порог или значение «временно» вместо ключа конфигурации со ссылкой на параграф ТЗ.
-- Переименовать поле в коде и забыть, что оно уходит в сериализацию: имена на проводе задаются явно, а не выводятся из имён в коде.
-- Изменить формат записанных данных и не проверить старые записи. Если совместимость сохранить нельзя — записи пересоздаются, и это отмечается в отчёте по этапу.
+- Editing an already applied migration instead of adding a new one. The schema changes only by adding a migration.
+- Editing generated files by hand to "quickly fix the build".
+- Hardcoding a threshold or value "temporarily" instead of a configuration key with a link to the spec paragraph.
+- Renaming a field in code and forgetting that it goes into serialization: wire names are set explicitly, not derived from names in code.
+- Changing the format of stored data without checking old records. If compatibility can't be kept, the records are recreated, and this is noted in the stage report.
